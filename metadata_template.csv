@@ -1,0 +1,5 @@
+Monitor,start_datetime,stop_datetime,first_DD_day,pulse_time,pulse_duration_min,genotype,condition,sex,notes
+1,1/15/2024 9:00,1/28/2024 9:00,1/18/2024 9:00,ZT15,60,w1118,ZT15_60min,M,rig 1 board A
+2,1/15/2024 9:00,1/28/2024 9:00,1/18/2024 9:00,ZT15,60,per01,ZT15_60min,M,rig 1 board B
+3,1/15/2024 9:00,1/28/2024 9:00,1/18/2024 9:00,,,w1118,noLP,F,no light pulse (both columns blank)
+4,1/15/2024 9:00,1/28/2024 9:00,1/18/2024 9:00,,,per01,noLP,F,repeat of monitor 2 cohort

@@ -1,0 +1,41 @@
+# Tooling configuration only.
+#
+# There is deliberately no [build-system] or [project] section here, so this file
+# does NOT turn the repo into an installable package — dependencies live in
+# requirements.txt (and the conda environment). Its only job is to give every
+# contributor and editor ONE shared definition of "clean," so `ruff check`
+# reports the same issues for everyone.
+#
+#   ruff check .          # report problems
+#   ruff check . --fix    # auto-fix the safe ones
+#   ruff format .         # apply consistent formatting
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# core/ and app/ are import roots at runtime (the pages add them to sys.path),
+# so tell the import sorter to treat their modules as first-party.
+src = [".", "core", "app"]
+
+[tool.ruff.lint]
+# E4/E7/E9 + F are the real-bug checks (bad imports, broken statements, syntax
+# errors, unused imports/variables, undefined names). The rest are the
+# standardization rules: I (import ordering), UP (modern Python 3.11 syntax),
+# B (bugbear), C4 (comprehensions), SIM (simplifications). Line-length (E5) is
+# intentionally NOT enforced — this codebase has long, deliberate explanatory
+# comments, and flagging them would be pure noise.
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+# Patterns this scientific codebase uses ON PURPOSE, so a clean `ruff check`
+# means "no real issues," not "no stylistic opinions":
+ignore = [
+    "E402",   # import-not-at-top — pages run sys.path.insert(...) before importing core
+    "E712",   # `== True` / `== False` — intentional pandas/numpy element-wise masking
+    "E741",   # ambiguous names (l/I/O) — a few short-lived loop indices
+    "E702",   # statement;statement — a handful of deliberate one-liners
+    "E731",   # lambda assignment — one small callback/label map
+    "C408",   # dict() call — the idiomatic form for plotly layout specs
+    "B905",   # zip() without strict= — a blanket strict=False would bury the question
+    "UP038",  # isinstance(x, X | Y) — deprecated in ruff and slower than the tuple form
+    "SIM108", # if-else → ternary — hurts readability in the numeric branches here
+]

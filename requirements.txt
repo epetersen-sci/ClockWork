@@ -1,0 +1,41 @@
+# Pythomics runtime dependencies. Install everything with:
+#
+#     pip install -r requirements.txt
+#
+# Python 3.10+ (developed and tested on 3.11).
+#
+# --- Reproducibility-critical pins (==) ------------------------------------
+# These libraries' DEFAULT behaviour is baked into Pythomics' published numbers
+# (astropy LombScargle defaults, PyWavelets cwt precision, scipy.signal
+# find_peaks / correlate / butter, numpy std/median). Do NOT bump casually.
+numpy==2.2.5
+scipy==1.17.0
+astropy==7.2.0
+PyWavelets==1.8.0
+
+# --- Data & I/O ------------------------------------------------------------
+pandas>=2.0
+xarray>=2024.7
+netCDF4>=1.6           # NetCDF backend for the single-source-of-truth dataset (.nc)
+openpyxl>=3.1          # Excel metadata read + export
+
+# --- Analysis --------------------------------------------------------------
+hmmlearn>=0.3.3        # HMM sleep/wake state classification
+statsmodels>=0.14      # MESA (Burg maximum-entropy) period analysis + multipletests
+joblib>=1.3
+
+# --- UI & plotting ---------------------------------------------------------
+streamlit>=1.30
+plotly>=5.18
+matplotlib>=3.9
+seaborn>=0.13
+kaleido>=0.2           # static PNG export for Plotly figures
+tqdm>=4.67
+
+# --- Optional: GPU acceleration for CWT (PyTorch Wavelet Toolbox) -----------
+# CWT falls back to CPU PyWavelets automatically if these are absent. Install
+# the CUDA build that matches your system -- see
+# https://pytorch.org/get-started/locally/
+#   pip install torch ptwt
+# torch>=2.0
+# ptwt>=0.1
