@@ -110,7 +110,7 @@ def _clear_dataset_state():
 def _stash_full(ds):
     """Store the unfiltered dataset alongside the working ``dataset`` so a
     Reset button can restore the full set without re-reading from disk."""
-    st.session_state.dataset_full = ds
+    st.session_state.dataset_full = dam_utilities.ensure_numpy_backed(ds)
 
 
 def _apply_group_filter(selected_groups):
@@ -120,10 +120,13 @@ def _apply_group_filter(selected_groups):
     ds_full = st.session_state.dataset_full
     if ds_full is None or "group" not in ds_full.coords:
         return
+    # Sanitize in case this session still holds a Dataset built before
+    # ArrowStringArray coords were coerced to numpy (breaks .sel/.isel).
+    ds_full = dam_utilities.ensure_numpy_backed(ds_full)
+    st.session_state.dataset_full = ds_full
     selected = {str(g) for g in selected_groups}
     mask = np.array([str(g) in selected for g in ds_full["group"].values])
-    keep_ids = ds_full["id"].values[mask]
-    filtered = ds_full.sel(id=list(keep_ids))
+    filtered = ds_full.isel(id=np.flatnonzero(mask))
     _invalidate_derived_caches()
     st.session_state.dataset = filtered
     st.session_state.dataset_DD = None
@@ -621,6 +624,7 @@ with tab_combine:
                         datasets[ds_idx] = ds.assign_coords(id=new_ids)
 
                 combined = xr.concat(datasets, dim="id")
+                combined = dam_utilities.ensure_numpy_backed(combined)
 
                 # Combined datasets inherit no clear partitioning from
                 # their constituents; stamp 'full' unless every input
