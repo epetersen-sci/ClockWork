@@ -171,7 +171,9 @@ def load_dataset_from_netcdf(filepath: str) -> xr.Dataset:
     for attr_to_remove in attrs_to_remove:
         del ds_loaded.attrs[attr_to_remove]
 
-    return ds_loaded
+    # Defense in depth: NetCDF normally yields numpy, but any pandas/Arrow-backed
+    # remnant would break .sel/.isel — normalize before returning to the app.
+    return dam_utilities.ensure_numpy_backed(ds_loaded)
 
 
 def save_data_to_csv(ds: xr.Dataset, value_col: str, save_path: str):

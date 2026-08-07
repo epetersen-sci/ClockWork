@@ -35,6 +35,68 @@ from tqdm import tqdm
 import dam_processor
 
 
+def _as_numpy_array(values) -> np.ndarray:
+    """Materialize values as a plain ``np.ndarray``.
+
+    pandas 2.x with pyarrow can expose string columns as ``ArrowStringArray``
+    (via ``.values`` / ExtensionArray). xarray cannot index those backends
+    (``TypeError: Invalid array type`` on ``.sel`` / ``.isel``). Always convert
+    pandas objects through ``to_numpy()`` so Dataset storage stays numpy-backed.
+    """
+    if isinstance(values, np.ndarray):
+        return values
+    if isinstance(values, (pd.Series, pd.Index)):
+        return np.asarray(values.to_numpy())
+    to_numpy = getattr(values, "to_numpy", None)
+    if callable(to_numpy):
+        return np.asarray(to_numpy())
+    return np.asarray(values)
+
+
+def _needs_numpy_materialization(data) -> bool:
+    """True when xarray's indexer cannot wrap ``data`` (e.g. raw ArrowStringArray)."""
+    if isinstance(data, np.ndarray):
+        return False
+    module = type(data).__module__ or ""
+    if module.startswith(("dask.", "sparse", "cupy.", "jax.", "pint.")):
+        return False
+    try:
+        from xarray.core.indexing import as_indexable
+
+        as_indexable(data)
+        return False
+    except TypeError:
+        return True
+    except Exception:
+        # Unknown backend — leave alone rather than force-convert.
+        return False
+
+
+def ensure_numpy_backed(ds: xr.Dataset) -> xr.Dataset:
+    """Replace storage that xarray cannot index with plain numpy arrays.
+
+    Fixes ``TypeError: Invalid array type: ArrowStringArray`` (and similar
+    pandas ExtensionArrays) on ``.sel`` / ``.isel``. Idempotent: values that
+    xarray can already index are left unchanged.
+    """
+    coord_updates = {}
+    for name, da in ds.coords.items():
+        if not _needs_numpy_materialization(da.variable._data):
+            continue
+        coord_updates[name] = (da.dims, _as_numpy_array(da.values))
+    if coord_updates:
+        ds = ds.assign_coords(coord_updates)
+
+    var_updates = {}
+    for name, da in ds.data_vars.items():
+        if not _needs_numpy_materialization(da.variable._data):
+            continue
+        var_updates[name] = xr.Variable(da.dims, _as_numpy_array(da.values), attrs=da.attrs)
+    if var_updates:
+        ds = ds.assign(var_updates)
+    return ds
+
+
 def resolve_export_dir(ds=None, working_dir=None):
     """Return the canonical base directory for on-disk exports.
 
@@ -394,11 +456,11 @@ def regroup_dataset(ds, group_columns):
     chosen = [c for c in group_columns if c in ds.coords]
     if not chosen:
         return ds
-    parts = [np.asarray(ds[c].values).astype(str) for c in chosen]
+    parts = [_as_numpy_array(ds[c].values).astype(str) for c in chosen]
     label = parts[0]
     for p in parts[1:]:
         label = np.char.add(np.char.add(label, "-"), p)
-    out = ds.assign_coords(group=("id", label))
+    out = ds.assign_coords(group=("id", _as_numpy_array(label)))
     out.attrs = dict(ds.attrs)
     out.attrs["group_columns"] = list(chosen)
     return out
@@ -507,31 +569,33 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     )
 
     data_vars = {"activity": (["time", "id"], activity_values)}
+    # All coords go through _as_numpy_array so pandas Arrow/string dtypes never
+    # land in the Dataset (xarray cannot .sel/.isel ArrowStringArray).
     coords = {
-        "id": ("id", metadata["id"].values),
-        "time": ("time", dam_data.index.values),
-        "start_datetime": ("id", metadata.start_datetime.values),
-        "stop_datetime": ("id", metadata.stop_datetime.values),
+        "id": ("id", _as_numpy_array(metadata["id"])),
+        "time": ("time", _as_numpy_array(dam_data.index)),
+        "start_datetime": ("id", _as_numpy_array(metadata["start_datetime"])),
+        "stop_datetime": ("id", _as_numpy_array(metadata["stop_datetime"])),
     }
     if "file" in metadata.columns:
-        coords["file"] = ("id", metadata.file.values)
-    coords["genotype"] = ("id", metadata.genotype.values)
+        coords["file"] = ("id", _as_numpy_array(metadata["file"]))
+    coords["genotype"] = ("id", _as_numpy_array(metadata["genotype"]))
     if "first_DD_day" in metadata.columns:
-        coords["first_DD_day"] = ("id", metadata.first_DD_day.values)
+        coords["first_DD_day"] = ("id", _as_numpy_array(metadata["first_DD_day"]))
     if "pulse_time" in metadata.columns:
         coords["pulse_zt_hour"] = (
             "id",
-            np.array([_parse_zt_hour(v) for v in metadata.pulse_time.values], dtype="float32"),
+            np.array([_parse_zt_hour(v) for v in metadata["pulse_time"].to_numpy()], dtype="float32"),
         )
     if "pulse_duration_min" in metadata.columns:
         coords["pulse_duration_minutes"] = (
             "id",
-            np.asarray(metadata.pulse_duration_min.values, dtype="float32"),
+            np.asarray(metadata["pulse_duration_min"].to_numpy(), dtype="float32"),
         )
 
     # Add all remaining metadata columns as per-fly coordinates
     for col in properties:
-        coords[col] = ("id", metadata.set_index("id")[col])
+        coords[col] = ("id", _as_numpy_array(metadata.set_index("id")[col]))
 
     # Combined group label for group-level analysis. ``group_columns`` chooses which
     # metadata factors define the comparison group; when None we reproduce the
@@ -543,7 +607,7 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
         chosen = [c for c in ("genotype", "temperature") if c in metadata.columns]
     group_series = derive_group_labels(metadata, chosen) if chosen else None
     if group_series is not None:
-        coords["group"] = ("id", group_series)
+        coords["group"] = ("id", _as_numpy_array(group_series))
         attrs["group_columns"] = list(chosen)
 
     ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
@@ -562,7 +626,7 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
         time_index = pd.date_range(start=first_time_str, end=last_time_str, freq="min")
         ds = ds.assign_coords(time=time_index)
 
-    return ds
+    return ensure_numpy_backed(ds)
 
 
 def _compute_moving(ds, force=False):

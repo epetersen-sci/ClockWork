@@ -326,6 +326,11 @@ def sleep_analysis(
     # sleep_state column is included automatically since it is part of combined_sleep_bouts_df
     indexed_bouts = combined_sleep_bouts_df.set_index(["id", "sleep_bout_number"])
     bout_ds = xr.Dataset.from_dataframe(indexed_bouts)
+    # from_dataframe can preserve pandas Arrow string dtypes; coerce so later
+    # .sel/.isel on the merged dataset never hits ArrowStringArray.
+    from dam_utilities import ensure_numpy_backed
+
+    bout_ds = ensure_numpy_backed(bout_ds)
 
     # Drop pre-existing sleep variables if re-running to avoid merge conflicts
     _sleep_vars = [
