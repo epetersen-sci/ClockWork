@@ -331,11 +331,12 @@ Period Analysis first; this module only displays what that one stored.
 ### Sleep and Activity
 
 The main descriptive-plots module. Daily activity profile, daily sleep profile,
-sleep bout duration histogram, sleep-state totals (short / intermediate / long,
-as percentage or absolute), and day/night activity and sleep summaries — using
-subjective time bins when the data is DD. A ZT bin-size slider and a group
-filter apply throughout. Every chart has a matching group-level and per-fly CSV
-export.
+per-fly sleep bout duration curves (log-duration KDE or survival/CCDF, mean ±
+SEM per group with a group-comparison significance test), sleep-state totals
+(short / intermediate / long, as percentage or absolute), and day/night
+activity and sleep summaries — using subjective time bins when the data is DD.
+A ZT bin-size slider and a group filter apply throughout. Every chart has a
+matching group-level and per-fly CSV export.
 
 ### HMM Analysis
 

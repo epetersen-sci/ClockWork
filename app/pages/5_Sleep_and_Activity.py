@@ -1,12 +1,14 @@
 """
-Sleep and Activity Page - LD activity & sleep patterns, bout histogram,
-per-group activity/sleep summaries, and sleep-state (short/intermediate/long)
-totals (interactive Plotly plots + save-to-working-folder CSV export).
+Sleep and Activity Page - LD activity & sleep patterns, per-fly sleep bout
+duration curves, per-group activity/sleep summaries, and sleep-state
+(short/intermediate/long) totals (interactive Plotly plots +
+save-to-working-folder CSV export).
 """
 
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -21,6 +23,7 @@ for p in [CORE_DIR, APP_DIR]:
 import dam_utilities
 import export_helpers as ex
 import plotting
+import sleep_analysis
 from analysis_detection import detect_analyses
 from dataset_meta import PHASE_DD, PHASE_LD, dataset_fingerprint, dataset_phase
 
@@ -103,6 +106,22 @@ def _cached_summary_table(
         selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
         bin_size_minutes=bin_size_minutes,
         phase_label=phase_label,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _cached_bout_duration_lines(
+    _fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
+):
+    """Cache the per-fly bout-duration curve computation (KDE/survival curves
+    + per-fly summary stats + the group-comparison test) — the same numbers
+    drive the plot and both CSV exports below, so they can't drift apart."""
+    return plotting.sleep_bout_duration_lines(
+        _ds,
+        method=method,
+        selected_genotypes=list(selected_genotypes) if selected_genotypes else None,
+        selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
+        show_individual=show_individual,
     )
 
 
@@ -320,19 +339,65 @@ if analyses["sleep"]:
 
     st.divider()
 
-    # Sleep Bout Histogram
-    st.subheader("Sleep Bout Duration Histogram")
+    # Sleep Bout Duration
+    st.subheader("Sleep Bout Duration")
     if "duration" in ds.data_vars:
-        fig = plotting.sleep_bout_histogram(
-            ds,
-            selected_genotypes=selected_genotypes,
-            selected_temperatures=selected_temperatures,
+        st.caption(
+            "One curve per fly (not one pooled histogram) — a fly with many bouts no "
+            "longer outweighs a fly with few, so genotypes overlay cleanly as lines."
         )
-        st.plotly_chart(fig, width="stretch")
+        _bd_col1, _bd_col2 = st.columns([2, 1])
+        with _bd_col1:
+            _bd_method_label = st.radio(
+                "Curve type",
+                ["KDE (log-duration)", "Survival curve (CCDF)"],
+                index=0,
+                horizontal=True,
+                key="bout_curve_method",
+            )
+        with _bd_col2:
+            bout_show_individual = st.checkbox(
+                "Show individual flies", value=True, key="bout_show_individual"
+            )
+        bout_method = "kde" if _bd_method_label.startswith("KDE") else "survival"
 
-        bout_df = ds["duration"].to_dataframe().reset_index().dropna(subset=["duration"])
+        _ds_fp_bout = dataset_fingerprint(ds)
+        bout_fig, bout_curves_df, bout_summary_df, bout_stats = _cached_bout_duration_lines(
+            _ds_fp_bout,
+            ds,
+            bout_method,
+            tuple(selected_genotypes) if selected_genotypes else None,
+            tuple(selected_temperatures) if selected_temperatures else None,
+            bout_show_individual,
+        )
+        st.plotly_chart(bout_fig, width="stretch", theme=None)
+
+        if bout_stats and np.isfinite(bout_stats.get("pvalue", float("nan"))):
+            st.caption(
+                f"{bout_stats['test'].upper()} across groups on per-fly "
+                f"log-mean bout duration: p={bout_stats['pvalue']:.4f} "
+                f"(normality {'passed' if bout_stats['normality_passed'] else 'failed'}, "
+                f"equal variance {'passed' if bout_stats['equal_variance_passed'] else 'failed'})."
+            )
+            if bout_stats["pairwise"]:
+                st.dataframe(pd.DataFrame(bout_stats["pairwise"]), width="stretch")
+
+        raw_bout_df = sleep_analysis.raw_bout_dataframe(
+            ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
+        )
         ex.save_df_button(
-            "Save Sleep Bout Data to working folder", bout_df, ds, "sleep_bouts.csv", key="dl_bouts"
+            "Save Sleep Bout Data to working folder",
+            raw_bout_df,
+            ds,
+            "sleep_bouts.csv",
+            key="dl_bouts",
+        )
+        ex.save_df_button(
+            "Save per-fly Bout Duration Summary (for stats) to working folder",
+            bout_summary_df,
+            ds,
+            "sleep_bout_duration_summary_per_fly.csv",
+            key="dl_bouts_summary",
         )
 
     st.divider()
