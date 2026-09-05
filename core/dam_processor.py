@@ -658,6 +658,7 @@ class MetadataProcessor:
 
             # --- Extract columns for the regions of interest, named by fly ID ---
             selected_columns = []
+            selected_regions = []
             missing_regions = []
             for region in regions_of_interest:
                 source_col = f"channel_{region}"
@@ -667,6 +668,7 @@ class MetadataProcessor:
                 if source_col in monitor_data.columns:
                     monitor_data[row_id] = monitor_data[source_col]
                     selected_columns.append(row_id)
+                    selected_regions.append(region)
                 else:
                     print(f"\nWARNING: {combo_label}: Region {region} not found in data file.")
                     missing_regions.append(region)
@@ -676,15 +678,19 @@ class MetadataProcessor:
                     # message that named neither the monitor nor the tube.
                     dropped_ids.append(row_id)
 
+            # ONE issue per monitor, not one per tube: a 96-well metadata row
+            # against a 32-channel file would otherwise emit 64 near-identical
+            # lines. The tubes are named as ranges so the entry still says
+            # exactly which ones.
             if missing_regions:
-                shown = ", ".join(map(str, missing_regions[:16]))
                 self.import_issues.append(
                     ImportIssue(
                         reason=import_diagnostics.REASON_REGION_NOT_IN_FILE,
                         detail=(
-                            f"region_id {shown}"
-                            f"{' ...' if len(missing_regions) > 16 else ''} requested, but "
-                            f"'Monitor{monitor_id}.txt' has only {num_channels} channels."
+                            f"region_id "
+                            f"{import_diagnostics.format_number_ranges(missing_regions)} "
+                            f"requested, but 'Monitor{monitor_id}.txt' has only "
+                            f"{num_channels} channels."
                         ),
                         monitor=monitor_id,
                         start_datetime=start_dt,
@@ -704,22 +710,28 @@ class MetadataProcessor:
             # are still imported — that is the existing behaviour and curation
             # handles them — but the import must say so, because otherwise the
             # symptom is an import that "worked" and analyses that come out empty.
+            # Grouped per monitor, with the dead tubes named as ranges: a whole
+            # monitor that never powered on is one line reading "tubes 1-32",
+            # not 32 lines, while two dead tubes still read "tubes 5, 19".
             if selected_columns:
-                empty_cols = [c for c in selected_columns if monitor_data[c].isna().all()]
-                if empty_cols:
+                empty_regions = [
+                    region
+                    for col, region in zip(selected_columns, selected_regions)
+                    if monitor_data[col].isna().all()
+                ]
+                if empty_regions:
                     self.import_issues.append(
                         ImportIssue(
                             reason=import_diagnostics.REASON_NO_USABLE_DATA,
                             detail=(
-                                f"{len(empty_cols)} of {len(selected_columns)} selected "
+                                f"{len(empty_regions)} of {len(selected_columns)} selected "
                                 f"channels are entirely NaN over {start_dt} -> {stop_dt} "
-                                f"(no valid reading at any minute): "
-                                f"{', '.join(map(str, empty_cols[:8]))}"
-                                f"{' ...' if len(empty_cols) > 8 else ''}."
+                                f"(no valid reading at any minute) — tubes "
+                                f"{import_diagnostics.format_number_ranges(empty_regions)}."
                             ),
                             monitor=monitor_id,
                             start_datetime=start_dt,
-                            n_flies=len(empty_cols),
+                            n_flies=len(empty_regions),
                             excluded=False,
                         )
                     )

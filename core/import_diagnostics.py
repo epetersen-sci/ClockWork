@@ -54,7 +54,7 @@ TITLES = {
     REASON_WINDOW_OUTSIDE: "metadata window falls outside the data in the file",
     REASON_NO_ROWS_IN_WINDOW: "no readings inside the requested window",
     REASON_REGION_NOT_IN_FILE: "requested tubes are not in the file",
-    REASON_NO_USABLE_DATA: "readings present but all of them are unusable",
+    REASON_NO_USABLE_DATA: "tubes with no usable data",
     REASON_METADATA_UNREADABLE: "metadata file could not be read",
     REASON_METADATA_MISSING_COLUMNS: "metadata is missing required columns",
     REASON_METADATA_BAD_DATETIME: "metadata has unparseable date/time values",
@@ -99,9 +99,12 @@ HINTS = {
         "means 'the whole monitor'."
     ),
     REASON_NO_USABLE_DATA: (
-        "Every reading in the window failed (monitor_status != 1 means no data "
-        "was received). Check that the monitor was powered and connected for "
-        "this period."
+        "These tubes have no valid reading at any minute of the window "
+        "(monitor_status != 1 means no data was received, so those minutes are "
+        "NaN rather than zero). A whole monitor like this usually lost power or "
+        "its connection for the period; a few scattered tubes usually means "
+        "those positions were empty or the channel is faulty. The flies are "
+        "still imported — curation will drop them."
     ),
     REASON_METADATA_UNREADABLE: "Save the metadata as .csv or .xlsx and try again.",
     REASON_METADATA_MISSING_COLUMNS: (
@@ -185,6 +188,31 @@ class ImportIssue:
         if self.start_datetime is None:
             return f"Monitor {self.monitor}"
         return f"Monitor {self.monitor} / {self.start_datetime}"
+
+
+def format_number_ranges(numbers, max_parts=12):
+    """Collapse tube numbers into ranges: ``[1,2,3,5,7,8,9]`` -> ``"1-3, 5, 7-9"``.
+
+    Failures are reported per monitor, so one entry can cover every tube on it.
+    Listing 32 ids (or 8 of them and an ellipsis) hides the shape of the problem;
+    "1-32" says "the whole monitor" and "5, 19" says "two dead tubes" at a glance.
+    """
+    nums = sorted({int(n) for n in numbers})
+    if not nums:
+        return ""
+    spans = []
+    lo = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        spans.append((lo, prev))
+        lo = prev = n
+    spans.append((lo, prev))
+    parts = [str(a) if a == b else f"{a}-{b}" for a, b in spans]
+    if len(parts) > max_parts:
+        return ", ".join(parts[:max_parts]) + f", ... (+{len(parts) - max_parts} more)"
+    return ", ".join(parts)
 
 
 def format_timedelta(delta):
