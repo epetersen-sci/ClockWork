@@ -27,22 +27,25 @@ def display_name(key):
     return DISPLAY_NAMES.get(key, key)
 
 
-def render_status_grid(analyses, per_row=5):
-    """Render the completed/not-run grid for :func:`detect_analyses` output.
+def render_status_grid(analyses):
+    """Render the completed/not-run state for :func:`detect_analyses` output.
 
-    Wraps at ``per_row`` so nine analyses stay readable instead of being squeezed
-    into nine columns across the full page width.
+    Badges rather than ``st.metric``: the old home page did
+    ``st.columns(len(analyses))``, and nine metric columns squeezed the value
+    hard enough that "Completed" rendered as "Compl...". Badges are sized by
+    their text, wrap on their own, and stay legible at any window width.
     """
     from analysis_detection import get_status_label
 
-    items = list(analyses.items())
-    for start in range(0, len(items), per_row):
-        chunk = items[start : start + per_row]
-        # Pad the final row so its metrics keep the same width as the rows above
-        # instead of stretching to fill the page.
-        cols = st.columns(per_row)
-        for col, (key, completed) in zip(cols, chunk):
-            col.metric(display_name(key), get_status_label(completed))
+    done = [k for k, v in analyses.items() if v]
+    todo = [k for k, v in analyses.items() if not v]
+
+    if done:
+        st.markdown(" ".join(f":green-badge[:material/check: {display_name(k)}]" for k in done))
+    if todo:
+        st.markdown(" ".join(f":gray-badge[{display_name(k)}]" for k in todo))
+    if not analyses:
+        st.caption(get_status_label(False))
 
 
 def refresh(ds):

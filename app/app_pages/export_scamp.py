@@ -3,7 +3,7 @@ SCAMP Export Page — write curated, LD/DD-split datasets into the legacy
 "luc"-format files that SCAMP (`scamp.m`) ingests.
 
 Requires the dataset to be curated and phase-split: the Data Loading +
-Preprocessing pages produce ``session_state.dataset_LD`` and
+Curate & split pages produce ``session_state.dataset_LD`` and
 ``session_state.dataset_DD``. The SCAMP loader needs equal-length files per
 "board", so this page selects a common window per board (see
 ``scamp_export/README.md`` for details).

@@ -151,7 +151,7 @@ with tab_fresh:
             st.info(
                 "LD and DD phases detected (`first_DD_day` column present). "
                 "The full dataset will be loaded now — LD/DD splitting is available "
-                "in the **Preprocessing** page after curation."
+                "on the **Data → Curate & split** page after curation."
             )
 
         # --- Group definition: which metadata columns define the comparison "group" ---

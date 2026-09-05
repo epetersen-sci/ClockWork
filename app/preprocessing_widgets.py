@@ -7,8 +7,10 @@ Renders one expander with three columns (LS, AC, CWT), each showing the same
 parameters with method-appropriate defaults. Returns a dict of
 :class:`PreprocessConfig` keyed by method name (``'LS'``, ``'AC'``, ``'CWT'``).
 
-Pages 3 (production) and 11 (parameter sweep) call this so they share an
-identical UI surface and identical preprocessing semantics.
+Only the Period analysis page calls this today. It stays a shared widget rather
+than inlined there because the ``key_prefix`` argument is what keeps the three
+methods' controls from colliding, and because a second caller (a parameter sweep)
+was the original reason for it.
 """
 
 from __future__ import annotations

@@ -25,17 +25,20 @@ any point and reload without recomputing.
   - [Which columns each analysis needs](#which-columns-each-analysis-needs)
   - [Format rules](#format-rules)
 - [The modules](#the-modules)
-  - [Data Loading](#data-loading)
-  - [Preprocessing](#preprocessing)
-  - [Period Analysis](#period-analysis)
+  - [Import](#import)
+  - [Groups & subsets](#groups--subsets)
+  - [Curate & split](#curate--split)
+  - [Period analysis](#period-analysis)
   - [Periodograms](#periodograms)
-  - [Sleep and Activity](#sleep-and-activity)
-  - [HMM Analysis](#hmm-analysis)
-  - [HMM Model Selection](#hmm-model-selection)
-  - [Sleep Deprivation](#sleep-deprivation)
-  - [Phase Shift](#phase-shift)
-  - [SCAMP Export](#scamp-export)
-  - [Export](#export)
+  - [Rhythmicity](#rhythmicity)
+  - [Phase shift](#phase-shift)
+  - [Sleep analysis](#sleep-analysis)
+  - [Sleep & activity](#sleep--activity)
+  - [Sleep deprivation](#sleep-deprivation)
+  - [HMM model selection](#hmm-model-selection)
+  - [HMM analysis](#hmm-analysis)
+  - [Save & export](#save--export)
+  - [SCAMP export](#scamp-export)
 - [How the algorithms work](#how-the-algorithms-work)
   - [Lomb-Scargle periodogram](#lomb-scargle-periodogram)
   - [Autocorrelation rhythmicity index](#autocorrelation-rhythmicity-index)
@@ -117,17 +120,21 @@ taken, append `--server.port 8502`.
 1. Put your `MonitorXXX.txt` files in one folder.
 2. Build a metadata file next to them — start from `metadata_template.csv` and
    read [The metadata file](#the-metadata-file) first.
-3. **Data Loading** → *Fresh Start* → point at both → **Load & Validate Data** →
+3. **Data → Import** → *Fresh Start* → point at both → **Load & Validate Data** →
    **Create Dataset**. Choose which metadata columns define your comparison
    groups.
-4. **Preprocessing** → curate dead flies → apply the LD/DD split.
-5. **Sleep and Activity** → run sleep analysis at the top of the page. Every
-   sleep-dependent page downstream (**HMM Analysis**, **Sleep Deprivation**,
-   **Export**) reads the result from here.
-6. Then whichever analysis you need: **Period Analysis** for circadian period,
-   **Sleep and Activity** for sleep/activity profiles, **HMM Analysis** for
-   sleep-state structure, **Phase Shift** for light-pulse experiments.
-7. **Export** → save the dataset as `.nc` so you never have to recompute.
+4. **Data → Groups & subsets** → check what loaded; optionally narrow to a subset
+   of groups before you spend time curating flies you will drop.
+5. **Data → Curate & split** → curate dead flies → apply the LD/DD split →
+   generate the heatmap to check the result.
+6. **Sleep & activity → Sleep analysis** → run it. Every sleep-dependent page
+   downstream (**Sleep & activity**, **Sleep deprivation**, **Save & export**)
+   reads the result from here.
+7. Then whichever analysis you need: **Period analysis** for circadian period,
+   **Sleep & activity** for sleep/activity profiles, **HMM analysis** for
+   sleep-state structure, **Phase shift** for light-pulse experiments.
+8. **Export → Save & export** → save the dataset as `.nc` so you never have to
+   recompute.
 
 > **Watch the terminal on first load.** Some validation problems — most
 > importantly a monitor being dropped because its dates fall outside the data
@@ -137,7 +144,7 @@ taken, append `--server.port 8502`.
 ### Try it on the example data
 
 `example_data/` holds a complete six-monitor experiment (192 flies, six
-genotypes) with its `metadata.xlsx`. Point Data Loading at that folder to see
+genotypes) with its `metadata.xlsx`. Point **Data → Import** at that folder to see
 the whole workflow run end to end.
 
 **You do not need to pre-trim your recordings.** The example files deliberately
@@ -167,7 +174,7 @@ group the flies.
 | `genotype` | **Yes** | `w1118` | Attached to every fly. The default group label. |
 | `first_DD_day` | For DD/LD work | `2025-01-18 09:00:00` | **CT0 (subjective morning) of the first full DD day** — not the last lights-off. Without it there is no LD/DD split and period analysis silently runs on the combined record. |
 | `region_id` | Situational | `1-16`, `5`, `1,3,5`, `65-96` | Which channels this row covers. Blank → channels **1–32 only**. Required on non-DAM monitor sources (e.g. FlyBox) — see [Format rules](#format-rules). |
-| `pulse_time` | Phase Shift only | `ZT15` | Light-pulse time as a ZT hour. Accepts `ZT15`, `zt15`, `ZT 15`, `15`, `15.5`. Leave **blank** for unpulsed controls (blank means "no pulse"; `0` would mean ZT0). |
+| `pulse_time` | Phase shift only | `ZT15` | Light-pulse time as a ZT hour. Accepts `ZT15`, `zt15`, `ZT 15`, `15`, `15.5`. Leave **blank** for unpulsed controls (blank means "no pulse"; `0` would mean ZT0). |
 | `pulse_duration_min` | Optional | `60` | Pulse length. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. |
 | `condition` | Recommended | `ZT15_60min` | Default second grouping key for phase-shift comparisons. |
 | `temperature` | Optional | `25C` | Historically the second half of the default group label. |
@@ -236,36 +243,44 @@ Beyond formatting, five rules govern whether your data loads correctly.
 
 ## The modules
 
-The modules fall into four sections. The descriptions below follow the order the
-sidebar lists them in.
+The sidebar groups the modules into four sections. The descriptions below follow
+the order the sidebar lists them in.
 
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": true, "wrappingWidth": 400, "curve": "linear"}}}%%
 flowchart LR
-    A["<b>IMPORT AND PROCESSING</b><br/><br/>Data Loading<br/>Preprocessing"]
-    B["<b>ANALYSIS</b><br/><br/>Period Analysis<br/>HMM Analysis<br/>HMM Model Selection<br/>Sleep Deprivation<br/>Phase Shift"]
-    C["<b>VISUALIZATION</b><br/><br/>Periodograms<br/>Sleep and Activity<br/>SCAMP Export"]
-    D["<b>SAVE</b><br/><br/>Export"]
+    A["<b>DATA</b><br/><br/>Import<br/>Groups &amp; subsets<br/>Curate &amp; split"]
+    B["<b>CIRCADIAN ANALYSIS</b><br/><br/>Period analysis<br/>Periodograms<br/>Rhythmicity<br/>Phase shift"]
+    C["<b>SLEEP &amp; ACTIVITY</b><br/><br/>Sleep analysis<br/>Sleep &amp; activity<br/>Sleep deprivation<br/>HMM model selection<br/>HMM analysis"]
+    D["<b>EXPORT</b><br/><br/>Save &amp; export<br/>SCAMP export"]
 
-    A --> B --> C --> D
+    A --> B --> D
+    A --> C --> D
 
     classDef sec fill:#eef1f8,stroke:#4a5a86,stroke-width:1.5px,text-align:left
     class A,B,C,D sec
 ```
 
-**Import and processing** builds the dataset every other module reads, so run
-these two first. **Analysis** modules write results onto that dataset; they are
-independent of one another, so run only the ones you need. **Visualization**
-reads results back out as figures and tables. **Save** writes the whole dataset
-to disk, capturing whatever you have completed.
+**Data** builds the dataset every other module reads, so run it first.
+**Circadian analysis** and **Sleep & activity** write their results onto that
+dataset; the two tracks are independent of each other, so run only what you
+need. **Export** writes the whole dataset to disk, capturing whatever you have
+completed.
 
-Two modules pair with another. **Model Selection** cross-validates to pick a
-state count and emission model, which you then enter in **HMM Analysis**; it
-passes no data, only the parameter choice, so skip it if you already know your
-settings. **Periodograms** displays what **Period Analysis** computed, and stays
-empty until that module has run.
+Within each section the order is the order the work actually takes. Three pairs
+are worth knowing about:
 
-### Data Loading
+- **Periodograms** and **Rhythmicity** both read what **Period analysis**
+  computed and stay empty until it has run. Rhythmicity shares its phase and
+  period-range controls with Period analysis — the period range is *also* the
+  classification window, so changing it on either page changes both.
+- **HMM model selection** cross-validates to pick a state count and emission
+  model, which you then enter in **HMM analysis**. It passes no data, only the
+  parameter choice, so skip it if you already know your settings.
+- **Sleep analysis** produces the sleep variables that **Sleep & activity**,
+  **Sleep deprivation** and the sleep exports all read.
+
+### Import
 
 Three tabs. **Fresh Start** imports raw `MonitorXXX.txt` files plus a metadata
 file, validates the dates against each file's actual range, and builds the
@@ -274,98 +289,131 @@ completed analysis. **Combine Datasets** concatenates several `.nc` files into
 one, disambiguating duplicate fly IDs.
 
 This is also where you choose which metadata columns define your comparison
-groups. A reversible group filter is also available here: filtering retains the
-full dataset and clears every downstream cache, so subsetting can be undone.
+groups — the `group` coordinate every downstream comparison, plot and export
+uses.
 
 **Produces:** the master dataset. **Every other module depends on this one.**
 
-### Preprocessing
+### Groups & subsets
+
+What is currently loaded: fly and timepoint counts, the number of groups, and
+the full ID↔group table. Below that, a reversible group filter — applying a
+selection drops the other flies from the working dataset and clears every cached
+analysis, and *Reset* restores the full set from the unfiltered copy kept
+alongside it.
+
+It sits before **Curate & split** deliberately. Subsetting first means you never
+curate flies you are about to drop, and never have curation silently invalidated
+afterwards.
+
+### Curate & split
 
 Three sequential steps.
 
-**Curate dead animals** — flags flies whose activity ceases, using a rolling
+**1. Curate dead animals** — flags flies whose activity ceases, using a rolling
 window and an immobility threshold, and trims each fly's record at its death.
 Controls: minimum days alive, rolling window (hours), immobility proportion.
 
-**Apply the LD/DD split** — uses `first_DD_day` to divide each fly's record into
-the entrained (LD) and free-running (DD) epochs. Optionally discards the first
-DD day, which is a transition day. An activity heatmap is provided here for
-inspecting the result.
+**2. Apply the LD/DD split** — uses `first_DD_day` to divide each fly's record
+into the entrained (LD) and free-running (DD) epochs. Optionally discards the
+first DD day, which is a transition day.
 
-**Sleep analysis** — applies the 5-minute immobility rule and classifies each
-bout as short, intermediate or long.
+**3. Inspect the result** — an activity/movement heatmap, one panel per phase,
+with flies ordered into contiguous group blocks and the y-axis labelled by group
+name. This is how you check that curation and the split did what you expected.
 
-**Produces:** `is_alive`, the LD and DD partitions, `sleep` and the per-state
-sleep masks, and a per-bout table.
+**Produces:** `is_alive`, `moving`, and the LD and DD partitions.
 
-### Period Analysis
+### Period analysis
 
 The core circadian engine. Runs up to four
 independent period estimators — [CWT](#continuous-wavelet-transform-cwt),
 [Lomb-Scargle](#lomb-scargle-periodogram),
 [Autocorrelation](#autocorrelation-rhythmicity-index) and [MESA](#mesa--maximum-entropy-spectral-analysis) —
-each with its own advanced-parameter expander and a plain-language explanation
-of the method.
+one per tab, each with its own advanced-parameter expander and a plain-language
+explanation of the method.
 
-Three shared controls sit at the top and govern all four methods:
+Four shared controls sit above the tabs and govern all four methods:
 
 - **Period search range** (default 16–36 h) — one knob that drives both the
-  search and the classification window, so they can't drift apart.
-- **Minimum DD days** (default 4) — a *flag*, not a filter; short records are
-  surfaced with their length rather than dropped.
+  search and the classification window, so they can't drift apart. It carries
+  over to the Rhythmicity page.
+- **Minimum DD days** (default 4) — a *filter*: flies below it are excluded, and
+  the page reports how many.
 - **Max gap to bridge** (default 60 min) — see [Gap handling](#gap-handling).
-
-Below the runners: a per-fly summary table; an **interactive threshold
-explorer** that shows live which flies would be called rhythmic as you drag each
-algorithm's cutoff; and the **rhythmicity classification** section.
-**Autocorrelation is the canonical classifier** — its call is what gates
-downstream group filtering. The LS and CWT classifiers are diagnostic.
+- **Preprocessing (per-method)** — bin / smooth / low-pass / detrend / normalize,
+  with per-method defaults following their reference implementations.
 
 Defaults to the DD partition when a split exists, which is the correct epoch
 for free-running period.
 
 ### Periodograms
 
-A read-only companion to Period Analysis. Shows group-averaged spectra (mean ± SEM) for
+A read-only companion to Period analysis. Shows group-averaged spectra (mean ± SEM) for
 whichever methods you've run — one panel per method, each on its own y-axis
 because the strength metrics are **not comparable across methods**. Run
-Period Analysis first; this module only displays what that one stored.
+Period analysis first; this module only displays what that one stored.
 
-### Sleep and Activity
+### Rhythmicity
 
-The main descriptive-plots module. Daily activity profile, daily sleep profile,
-per-fly sleep bout duration curves (log-duration KDE or survival/CCDF, mean ±
-SEM per group with a group-comparison significance test), sleep-state totals
-(short / intermediate / long, as percentage or absolute), and day/night
-activity and sleep summaries — using subjective time bins when the data is DD.
-A ZT bin-size slider and a group filter apply throughout. Every chart has a
-matching group-level and per-fly CSV export.
+The other half of Period analysis: what the numbers mean rather than how to
+compute them. A per-fly summary table (period plus strength for all four
+methods); an **interactive threshold explorer** that shows live which flies
+would be called rhythmic as you drag each algorithm's cutoff; the
+**rhythmicity classification** itself; and a threshold sensitivity sweep.
 
-### HMM Analysis
+**Autocorrelation is the canonical classifier** — its call is what gates
+downstream group filtering. The LS and CWT classifiers are diagnostic.
 
-Fits a Hidden Markov Model of sleep state to the activity data. Choose the
-phase (LD, DD, both together, or both fitted separately) and one of three
-presets — see [Hidden Markov sleep states](#hidden-markov-sleep-states) for what
-each one is and when to pick it. The advanced expander exposes state count,
-training scope, emission model, transition constraints, restarts and decoding
-method.
+The phase picker and period range at the top mirror Period analysis's, sharing
+the same values, because the period range is also the classification window.
 
-Outputs: state occupancy summary, hypnogram heatmap, occupancy by group, group
-time-course across ZT, and state fractions by time of day.
+### Phase shift
 
-**Run HMM Model Selection first** to choose a state count and emission model.
+Measures each fly's phase shift after a light pulse. Requires `pulse_time` in
+the metadata.
 
-### HMM Model Selection
+Two reference modes, and they are separate workflows rather than two halves of
+one: against an **unpulsed control group** (per-day group-average peak matching,
+following the lab's `peakphaseplot.m`), or against **each fly's own pre-pulse
+rhythm** (per-fly regression extrapolated across the pulse, which needs several
+pre-pulse days).
 
-k-fold cross-validation to pick the HMM's parameters *before* committing to a
-full run. Produces held-out log-likelihood (read the elbow), AIC and BIC per
-emission model, and an agreement-with-threshold-sleep percentage.
+Two marker methods: **peak matching** (the default — median error ~1 min on the
+validation cohort) or **onset regression** (Aschoff / Daan-Pittendrigh style —
+noisier, median ~3 min but a long tail; check the actogram before trusting it).
 
-Log-likelihood, AIC and BIC are only comparable **within one emission model**,
-because Poisson, Bernoulli and Gaussian likelihoods live on different scales. To
-compare *across* emission models, use the agreement percentage.
+A single-fly preview actogram lets you check marker detection before running the
+cohort. Results include a per-group box plot, a breakdown of *why*
+any flies abstained, per-fly double-plotted actograms with the fitted pre- and
+post-pulse lines overlaid, and CSV exports including the exact parameters used.
 
-### Sleep Deprivation
+### Sleep analysis
+
+Applies the 5-minute immobility rule and classifies each bout as short,
+intermediate or long. Pick the phase (LD is the standard reference), the
+immobility threshold, and the state duration bounds, then run.
+
+This is a pipeline step, not a plot: it writes `sleep`, the per-state sleep
+masks and the per-bout table back onto the master dataset. **Sleep & activity**,
+**Sleep deprivation**, the HMM agreement statistic and the sleep exports all
+read what it produces.
+
+### Sleep & activity
+
+The descriptive-plots module, in three tabs.
+
+**Daily profiles** — daily activity profile and daily sleep profile.
+**Bouts & states** — per-fly sleep bout duration curves (log-duration KDE or
+survival/CCDF, mean ± SEM per group with a group-comparison significance test)
+and sleep-state totals (short / intermediate / long, as percentage or absolute).
+**Day/night totals** — activity and sleep summaries, using subjective time bins
+when the data is DD.
+
+A ZT bin-size slider and a group filter in the sidebar apply throughout. Every
+chart has a matching group-level and per-fly CSV export.
+
+### Sleep deprivation
 
 Compares baseline sleep against post-deprivation recovery. Requires sleep
 analysis and an LD epoch. An interactive preview trace across all days helps
@@ -380,26 +428,42 @@ Note the scope: this is a **descriptive within-cohort readout** with no
 undisturbed-control arm and no significance test. It describes an observed
 change; it does not test a hypothesis.
 
-### Phase Shift
+### HMM model selection
 
-Measures each fly's phase shift after a light pulse. Requires `pulse_time` in
-the metadata.
+k-fold cross-validation to pick the HMM's parameters *before* committing to a
+full run. Produces held-out log-likelihood (read the elbow), AIC and BIC per
+emission model, and an agreement-with-threshold-sleep percentage.
 
-Two reference modes: against an **unpulsed control group** (per-day group-average
-peak matching, following the lab's `peakphaseplot.m`), or against **each fly's
-own pre-pulse rhythm** (per-fly regression extrapolated across the pulse, which
-needs several pre-pulse days).
+Log-likelihood, AIC and BIC are only comparable **within one emission model**,
+because Poisson, Bernoulli and Gaussian likelihoods live on different scales. To
+compare *across* emission models, use the agreement percentage.
 
-Two marker methods: **peak matching** (the default — median error ~1 min on the
-validation cohort) or **onset regression** (Aschoff / Daan-Pittendrigh style —
-noisier, median ~3 min but a long tail; check the actogram before trusting it).
+> Its data source currently differs from HMM analysis's — see
+> [`BACKLOG.md`](BACKLOG.md) item 3.
 
-A single-fly preview actogram lets you check marker detection before running the
-cohort. Results include a per-group box plot, a breakdown of *why*
-any flies abstained, per-fly double-plotted actograms with the fitted pre- and
-post-pulse lines overlaid, and CSV exports including the exact parameters used.
+### HMM analysis
 
-### SCAMP Export
+Fits a Hidden Markov Model of sleep state to the activity data. Choose the
+phase (LD, DD, both together, or both fitted separately) and one of three
+presets — see [Hidden Markov sleep states](#hidden-markov-sleep-states) for what
+each one is and when to pick it. The advanced expander exposes state count,
+training scope, emission model, transition constraints, restarts and decoding
+method.
+
+Results appear in four tabs: state occupancy summary, hypnogram heatmap,
+occupancy by group, and time-of-day views (group time-course across ZT and
+state fractions by day section).
+
+### Save & export
+
+Three tabs. **Dataset (.nc)** saves the dataset to NetCDF, optionally the LD and
+DD partitions as separate files too. **Activity & ZT tables** exports raw
+activity and ZT-binned group averages in GraphPad-friendly Mean/SD/N layout plus
+a matching per-fly long-format file. **Analysis results** exports the period
+summary (optionally filtered to rhythmic flies only), sleep bouts, and — if
+you've run it — HMM state assignments and ZT-binned state fractions.
+
+### SCAMP export
 
 Writes curated, LD/DD-split data into the legacy SCAMP MATLAB toolbox format so
 existing lab analyses keep working on ClockWork-cleaned data. Requires the LD/DD
@@ -409,14 +473,6 @@ and/or 30-min). Reports a per-board manifest and lists any dropped flies.
 
 There is also a standalone CLI — see
 [`scamp_export/README.md`](scamp_export/README.md).
-
-### Export
-
-Saves the dataset to NetCDF (optionally the LD and DD partitions as separate
-files too), plus CSV exports: raw activity, ZT-binned group averages in
-GraphPad-friendly Mean/SD/N layout, a matching per-fly long-format file, the
-period summary (optionally filtered to rhythmic flies only), sleep bouts, and —
-if you've run it — HMM state assignments and ZT-binned state fractions.
 
 ---
 
@@ -745,7 +801,7 @@ sleep-state duration bins, and every HMM hyperparameter.
 
 Everything — raw activity, curation flags, sleep masks, period results, HMM
 states — lives in **one `xarray.Dataset`** dimensioned `(id, time)`, backed by
-NetCDF. Save it in the Export module, reload it in Data Loading, and every
+NetCDF. Save it under **Export**, reload it under **Data → Import**, and every
 completed analysis comes back with it.
 
 Fly IDs are `YYYYMMDD_Monitor_Region`, e.g. `20250115_17_5`.

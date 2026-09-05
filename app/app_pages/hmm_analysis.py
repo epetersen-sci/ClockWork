@@ -320,204 +320,210 @@ analyses = detect_analyses(ds)
 if not analyses["hmm"]:
     st.stop()
 
-st.divider()
 
-# Summary table
-_phase_label = ds.attrs.get("hmm_phase")
-st.subheader("State Occupancy Summary" + (f" — {_phase_label} phase" if _phase_label else ""))
+# The four result views are peers, not a sequence — tabs rather than 500
+# lines of scrolling. Every plot here sits behind its own Generate button,
+# so the fact that tab bodies all execute each rerun costs nothing.
+tab_occupancy, tab_hypnogram, tab_group, tab_zt = st.tabs(
+    ["Occupancy", "Hypnogram", "By group", "Time of day"]
+)
 
-results = st.session_state.get("hmm_results")
+with tab_occupancy:
+    # Summary table
+    _phase_label = ds.attrs.get("hmm_phase")
+    st.subheader("State Occupancy Summary" + (f" — {_phase_label} phase" if _phase_label else ""))
 
-# Restore config: prefer session state, then dataset attrs, then infer from data
-config = st.session_state.get("hmm_config")
-if config is None:
-    config = load_hmm_config_from_attrs(ds)
-if config is None:
-    config = HMMConfig()
-    # Legacy fallback: infer n_states from the data itself
-    if "hmm_state" in ds.data_vars:
-        _max_state = int(ds["hmm_state"].where(ds["hmm_state"] != -1).max().item())
-        config.n_states = _max_state + 1
+    results = st.session_state.get("hmm_results")
 
-if results is not None:
-    try:
-        summary_df = get_advanced_hmm_summary(ds, results, config)
-        st.dataframe(summary_df, width="stretch", height=300)
+    # Restore config: prefer session state, then dataset attrs, then infer from data
+    config = st.session_state.get("hmm_config")
+    if config is None:
+        config = load_hmm_config_from_attrs(ds)
+    if config is None:
+        config = HMMConfig()
+        # Legacy fallback: infer n_states from the data itself
+        if "hmm_state" in ds.data_vars:
+            _max_state = int(ds["hmm_state"].where(ds["hmm_state"] != -1).max().item())
+            config.n_states = _max_state + 1
 
-        _fn = f"hmm_summary_{_phase_label}.csv" if _phase_label else "hmm_summary.csv"
-        ex.save_df_button(
-            "Save HMM Summary to working folder", summary_df, ds, _fn, key="dl_hmm_summary"
+    if results is not None:
+        try:
+            summary_df = get_advanced_hmm_summary(ds, results, config)
+            st.dataframe(summary_df, width="stretch", height=300)
+
+            _fn = f"hmm_summary_{_phase_label}.csv" if _phase_label else "hmm_summary.csv"
+            ex.save_df_button(
+                "Save HMM Summary to working folder", summary_df, ds, _fn, key="dl_hmm_summary"
+            )
+        except Exception as e:
+            st.warning(f"Could not compute advanced summary: {e}")
+
+
+with tab_hypnogram:
+    # ============================================================
+    # Hypnogram Heatmap
+    # ============================================================
+    st.subheader("Hypnogram Heatmap")
+
+    if "group" in ds.coords:
+        group_options = sorted({str(v) for v in ds["group"].values})
+        selected_group = st.selectbox(
+            "Filter by group (optional)", ["All groups"] + group_options, key="hmm_heatmap_group"
         )
-    except Exception as e:
-        st.warning(f"Could not compute advanced summary: {e}")
+        group_filter = None if selected_group == "All groups" else selected_group
+    else:
+        group_filter = None
 
-st.divider()
+    n_states_display = config.n_states if config is not None else 4
 
-# ============================================================
-# Hypnogram Heatmap
-# ============================================================
-st.subheader("Hypnogram Heatmap")
+    if st.button("Generate Hypnogram Heatmap", key="gen_hypnogram"):
+        with st.spinner("Generating heatmap..."):
+            try:
+                fig = plot_hypnogram_heatmap(ds, group_name=group_filter, n_states=n_states_display)
+                if fig is not None:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.warning("No data to display for the selected group.")
+            except Exception as e:
+                st.error(f"Heatmap error: {e}")
 
-if "group" in ds.coords:
-    group_options = sorted({str(v) for v in ds["group"].values})
-    selected_group = st.selectbox(
-        "Filter by group (optional)", ["All groups"] + group_options, key="hmm_heatmap_group"
-    )
-    group_filter = None if selected_group == "All groups" else selected_group
-else:
-    group_filter = None
 
-n_states_display = config.n_states if config is not None else 4
+with tab_group:
+    # ============================================================
+    # State Occupancy by Group
+    # ============================================================
+    st.subheader("State Occupancy by Group")
 
-if st.button("Generate Hypnogram Heatmap", key="gen_hypnogram"):
-    with st.spinner("Generating heatmap..."):
-        try:
-            fig = plot_hypnogram_heatmap(ds, group_name=group_filter, n_states=n_states_display)
-            if fig is not None:
-                st.pyplot(fig)
-                plt.close(fig)
-            else:
-                st.warning("No data to display for the selected group.")
-        except Exception as e:
-            st.error(f"Heatmap error: {e}")
+    if st.button("Generate State Occupancy Plot", key="gen_occupancy"):
+        with st.spinner("Generating state occupancy..."):
+            try:
+                fig, occ_df = plot_state_occupancy_by_group(
+                    ds, n_states=n_states_display, return_data=True
+                )
+                if fig is not None:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    st.session_state["_hmm_occ_df"] = occ_df
+                else:
+                    st.warning("No state data found.")
+            except Exception as e:
+                st.error(f"State occupancy error: {e}")
 
-st.divider()
+    _occ_df = st.session_state.get("_hmm_occ_df")
+    if _occ_df is not None and not _occ_df.empty:
+        _fn = f"hmm_state_occupancy_{_phase_label}.csv" if _phase_label else "hmm_state_occupancy.csv"
+        ex.save_df_button(
+            "Save State Occupancy data to working folder", _occ_df, ds, _fn, key="dl_hmm_occupancy"
+        )
 
-# ============================================================
-# State Occupancy by Group
-# ============================================================
-st.subheader("State Occupancy by Group")
 
-if st.button("Generate State Occupancy Plot", key="gen_occupancy"):
-    with st.spinner("Generating state occupancy..."):
-        try:
-            fig, occ_df = plot_state_occupancy_by_group(
-                ds, n_states=n_states_display, return_data=True
-            )
-            if fig is not None:
-                st.pyplot(fig)
-                plt.close(fig)
-                st.session_state["_hmm_occ_df"] = occ_df
-            else:
-                st.warning("No state data found.")
-        except Exception as e:
-            st.error(f"State occupancy error: {e}")
-
-_occ_df = st.session_state.get("_hmm_occ_df")
-if _occ_df is not None and not _occ_df.empty:
-    _fn = f"hmm_state_occupancy_{_phase_label}.csv" if _phase_label else "hmm_state_occupancy.csv"
-    ex.save_df_button(
-        "Save State Occupancy data to working folder", _occ_df, ds, _fn, key="dl_hmm_occupancy"
+    # ============================================================
+    # Group time-course (overlaid group comparison, mean ± SEM)
+    # ============================================================
+    st.subheader("Group Time-Course (overlaid comparison)")
+    st.caption(
+        "Group-averaged **metric-to-compare**: mean % time in one state (or total "
+        "sleep = DS+LS) across ZT, with every group **overlaid on shared axes** (± SEM "
+        "across flies) so genotype differences read at a glance — unlike the per-fly "
+        "hypnogram heatmap or the per-group ZT subplots above."
     )
 
-st.divider()
+    _tc_metric_options = ["Sleep (DS+LS)"] + list(STATE_NAMES_4[:n_states_display])
+    tc_c1, tc_c2 = st.columns(2)
+    with tc_c1:
+        tc_metric_choice = st.selectbox(
+            "Metric",
+            _tc_metric_options,
+            index=0,
+            key="tc_metric",
+            help="Total sleep (DS+LS) or a single state's occupancy.",
+        )
+    with tc_c2:
+        tc_bin_size = st.selectbox(
+            "ZT bin resolution (minutes)", [15, 30, 60], index=1, key="tc_bin_size"
+        )
 
-# ============================================================
-# Group time-course (overlaid group comparison, mean ± SEM)
-# ============================================================
-st.subheader("Group Time-Course (overlaid comparison)")
-st.caption(
-    "Group-averaged **metric-to-compare**: mean % time in one state (or total "
-    "sleep = DS+LS) across ZT, with every group **overlaid on shared axes** (± SEM "
-    "across flies) so genotype differences read at a glance — unlike the per-fly "
-    "hypnogram heatmap or the per-group ZT subplots above."
-)
-
-_tc_metric_options = ["Sleep (DS+LS)"] + list(STATE_NAMES_4[:n_states_display])
-tc_c1, tc_c2 = st.columns(2)
-with tc_c1:
-    tc_metric_choice = st.selectbox(
-        "Metric",
-        _tc_metric_options,
-        index=0,
-        key="tc_metric",
-        help="Total sleep (DS+LS) or a single state's occupancy.",
-    )
-with tc_c2:
-    tc_bin_size = st.selectbox(
-        "ZT bin resolution (minutes)", [15, 30, 60], index=1, key="tc_bin_size"
+    _tc_metric = (
+        "sleep"
+        if tc_metric_choice == "Sleep (DS+LS)"
+        else list(STATE_NAMES_4[:n_states_display]).index(tc_metric_choice)
     )
 
-_tc_metric = (
-    "sleep"
-    if tc_metric_choice == "Sleep (DS+LS)"
-    else list(STATE_NAMES_4[:n_states_display]).index(tc_metric_choice)
-)
+    if st.button("Generate Group Time-Course", key="gen_group_timecourse"):
+        with st.spinner("Computing group time-course..."):
+            try:
+                fig, tc_df = plot_group_state_timecourse(
+                    ds,
+                    n_states=n_states_display,
+                    metric=_tc_metric,
+                    bin_size_minutes=tc_bin_size,
+                    return_data=True,
+                )
+                if fig is not None:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    st.session_state["_hmm_tc_df"] = tc_df
+                else:
+                    st.warning("No HMM state data found for the selected metric.")
+            except Exception as e:
+                st.error(f"Group time-course error: {e}")
 
-if st.button("Generate Group Time-Course", key="gen_group_timecourse"):
-    with st.spinner("Computing group time-course..."):
-        try:
-            fig, tc_df = plot_group_state_timecourse(
-                ds,
-                n_states=n_states_display,
-                metric=_tc_metric,
-                bin_size_minutes=tc_bin_size,
-                return_data=True,
-            )
-            if fig is not None:
-                st.pyplot(fig)
-                plt.close(fig)
-                st.session_state["_hmm_tc_df"] = tc_df
-            else:
-                st.warning("No HMM state data found for the selected metric.")
-        except Exception as e:
-            st.error(f"Group time-course error: {e}")
+    _tc_df = st.session_state.get("_hmm_tc_df")
+    if _tc_df is not None and not _tc_df.empty:
+        _fn = f"hmm_group_timecourse_{_phase_label}.csv" if _phase_label else "hmm_group_timecourse.csv"
+        ex.save_df_button(
+            "Save Group Time-Course data to working folder", _tc_df, ds, _fn, key="dl_hmm_timecourse"
+        )
 
-_tc_df = st.session_state.get("_hmm_tc_df")
-if _tc_df is not None and not _tc_df.empty:
-    _fn = f"hmm_group_timecourse_{_phase_label}.csv" if _phase_label else "hmm_group_timecourse.csv"
-    ex.save_df_button(
-        "Save Group Time-Course data to working folder", _tc_df, ds, _fn, key="dl_hmm_timecourse"
-    )
 
-st.divider()
+with tab_zt:
+    # ============================================================
+    # State Fractions by Time of Day (ZT)
+    # ============================================================
+    st.subheader("State Fractions by Time of Day")
 
-# ============================================================
-# State Fractions by Time of Day (ZT)
-# ============================================================
-st.subheader("State Fractions by Time of Day")
+    zt_col1, zt_col2 = st.columns(2)
+    with zt_col1:
+        zt_section_options = ["Full resolution", 4, 6, 8, 12, 24]
+        zt_section_choice = st.selectbox(
+            "Day sections",
+            zt_section_options,
+            index=1,
+            key="zt_n_sections",
+        )
+    with zt_col2:
+        zt_bin_size = st.selectbox(
+            "ZT bin resolution (minutes)",
+            [15, 30, 60],
+            index=1,
+            key="zt_bin_size",
+        )
 
-zt_col1, zt_col2 = st.columns(2)
-with zt_col1:
-    zt_section_options = ["Full resolution", 4, 6, 8, 12, 24]
-    zt_section_choice = st.selectbox(
-        "Day sections",
-        zt_section_options,
-        index=1,
-        key="zt_n_sections",
-    )
-with zt_col2:
-    zt_bin_size = st.selectbox(
-        "ZT bin resolution (minutes)",
-        [15, 30, 60],
-        index=1,
-        key="zt_bin_size",
-    )
+    n_zt_sections = None if zt_section_choice == "Full resolution" else int(zt_section_choice)
 
-n_zt_sections = None if zt_section_choice == "Full resolution" else int(zt_section_choice)
+    if st.button("Generate ZT State Fractions", key="gen_zt_fractions"):
+        with st.spinner("Computing ZT state fractions..."):
+            try:
+                fig, zt_df = plot_zt_state_fractions(
+                    ds,
+                    n_states=n_states_display,
+                    bin_size_minutes=zt_bin_size,
+                    n_sections=n_zt_sections,
+                    return_data=True,
+                )
+                if fig is not None:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    st.session_state["_hmm_zt_df"] = zt_df
+                else:
+                    st.warning("No HMM state data found.")
+            except Exception as e:
+                st.error(f"ZT fractions error: {e}")
 
-if st.button("Generate ZT State Fractions", key="gen_zt_fractions"):
-    with st.spinner("Computing ZT state fractions..."):
-        try:
-            fig, zt_df = plot_zt_state_fractions(
-                ds,
-                n_states=n_states_display,
-                bin_size_minutes=zt_bin_size,
-                n_sections=n_zt_sections,
-                return_data=True,
-            )
-            if fig is not None:
-                st.pyplot(fig)
-                plt.close(fig)
-                st.session_state["_hmm_zt_df"] = zt_df
-            else:
-                st.warning("No HMM state data found.")
-        except Exception as e:
-            st.error(f"ZT fractions error: {e}")
-
-_zt_df = st.session_state.get("_hmm_zt_df")
-if _zt_df is not None and not _zt_df.empty:
-    _fn = f"hmm_zt_fractions_{_phase_label}.csv" if _phase_label else "hmm_zt_fractions.csv"
-    ex.save_df_button(
-        "Save ZT State Fractions data to working folder", _zt_df, ds, _fn, key="dl_hmm_zt"
-    )
+    _zt_df = st.session_state.get("_hmm_zt_df")
+    if _zt_df is not None and not _zt_df.empty:
+        _fn = f"hmm_zt_fractions_{_phase_label}.csv" if _phase_label else "hmm_zt_fractions.csv"
+        ex.save_df_button(
+            "Save ZT State Fractions data to working folder", _zt_df, ds, _fn, key="dl_hmm_zt"
+        )

@@ -68,4 +68,5 @@ else:
     cols[2].metric("Groups", len(set(groups)))
 
     st.subheader("Analysis status")
+    st.caption("Green = results are on the dataset. Grey = not run yet.")
     render_status_grid(analyses)

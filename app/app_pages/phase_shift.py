@@ -25,6 +25,7 @@ from calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
+from ui import status
 from ui.guards import require_dataset
 
 st.caption(
@@ -42,7 +43,7 @@ if "pulse_zt_hour" not in ds.coords:
         "This dataset has no **pulse_time** column. Phase-shift analysis needs to know at "
         "what circadian time the light pulse was given.\n\n"
         "Add a `pulse_time` column to your metadata file — a ZT hour such as `ZT15` — and "
-        "optionally `pulse_duration_min`, then reload the dataset on the **Data Loading** "
+        "optionally `pulse_duration_min`, then reload the dataset on the **Data → Import** "
         "page. See `metadata_template.csv` for the format. Leave the cell blank for any "
         "group that received no pulse."
     )
@@ -51,7 +52,7 @@ if "pulse_zt_hour" not in ds.coords:
 if ds.attrs.get("time_is_relative_minutes", 0) != 1:
     st.error(
         "Phase-shift analysis needs the relative-minute time axis produced by the standard "
-        "loading path. Reload the dataset on the **Data Loading** page."
+        "loading path. Reload the dataset on the **Data → Import** page."
     )
     st.stop()
 
@@ -346,6 +347,7 @@ if reference == "control":
                 ds.attrs["phase_shift_control_group"] = str(control_group)
                 ds.attrs["phase_shift_filter_hours"] = float(filter_hours)
                 st.session_state.dataset = ds
+                status.refresh(ds)
                 st.success(f"Done: {gres['per_day']['group'].nunique()} groups compared.")
                 st.rerun()
             except Exception as exc:
@@ -408,7 +410,7 @@ if reference == "control":
             yaxis_title="phase difference (hours)",
             height=460,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.caption(
             "Day 0 is flagged `filter_edge`: the smoothing filter pads the start of the "
             "record, so the first day's peak rests partly on synthetic padding and its "
@@ -417,7 +419,7 @@ if reference == "control":
         )
 
     with tab_table:
-        st.dataframe(per_day, use_container_width=True)
+        st.dataframe(per_day, width="stretch")
         st.download_button(
             "Download per-day phase differences (CSV)",
             per_day.to_csv(index=False).encode("utf-8"),
@@ -426,232 +428,239 @@ if reference == "control":
         )
         st.markdown("**Parameters used**")
         st.json({k: (list(v) if isinstance(v, tuple) else v) for k, v in gres["params"].items()})
-    st.stop()
 
-# ============================================================
-# Section 3: Preview one fly before committing to the cohort
-# ============================================================
-st.subheader("Preview")
-st.caption(
-    "Check one fly's markers and fits before running the whole cohort — if the markers are "
-    "landing in the wrong place, the parameters need adjusting, not the cohort re-run."
-)
+# The two references are mutually exclusive workflows, not two halves of one.
+# This used to be a bare st.stop() at the end of the control branch, which left
+# everything below unreachable in that mode — dead by position, not by
+# structure. Same behaviour, stated explicitly.
+else:
+    # ============================================================
+    # Section 3: Preview one fly before committing to the cohort
+    # ============================================================
+    st.subheader("Preview")
+    st.caption(
+        "Check one fly's markers and fits before running the whole cohort — if the markers are "
+        "landing in the wrong place, the parameters need adjusting, not the cohort re-run."
+    )
 
-fly_ids = [str(i) for i in ds_pulse["id"].values]
-pulsed_ids = [f for f, m in zip(fly_ids, pulse_minutes) if np.isfinite(m)]
-preview_id = st.selectbox("Fly", pulsed_ids, index=0)
+    fly_ids = [str(i) for i in ds_pulse["id"].values]
+    pulsed_ids = [f for f, m in zip(fly_ids, pulse_minutes) if np.isfinite(m)]
+    preview_id = st.selectbox("Fly", pulsed_ids, index=0)
 
-if st.checkbox("Show preview actogram", value=True):
-    with st.spinner("Computing preview..."):
-        try:
-            one = ds_pulse.sel(id=[preview_id])
-            res1 = ps_module.compute_phase_shift_analysis(one, **params)
-            row1 = res1["per_fly"].iloc[0]
+    if st.checkbox("Show preview actogram", value=True):
+        with st.spinner("Computing preview..."):
+            try:
+                one = ds_pulse.sel(id=[preview_id])
+                res1 = ps_module.compute_phase_shift_analysis(one, **params)
+                row1 = res1["per_fly"].iloc[0]
+                minutes = np.asarray(one["time"].values, dtype=float)
+                values = np.asarray(one["activity"].transpose("time", "id").values[:, 0], dtype=float)
+                shift_txt = (
+                    f"{row1['phase_shift_hours']:+.2f} h"
+                    if row1["status"] == "ok"
+                    else f"no value ({row1['status']})"
+                )
+                fig1 = plotting.phase_shift_actogram(
+                    minutes,
+                    values,
+                    day_markers=res1["day_markers"].get(preview_id),
+                    pre_fit=res1["fits"].get(preview_id, {}).get("pre"),
+                    post_fit=res1["fits"].get(preview_id, {}).get("post"),
+                    pulse_minute=row1.get("pulse_minute"),
+                    pulse_duration_minutes=(
+                        float(one["pulse_duration_minutes"].values[0])
+                        if "pulse_duration_minutes" in one.coords
+                        else None
+                    ),
+                    reference_day_index=(
+                        int(row1["reference_day_index"])
+                        if np.isfinite(row1.get("reference_day_index", np.nan))
+                        else None
+                    ),
+                    title=f"{preview_id} — {method} method, shift {shift_txt}",
+                )
+                st.plotly_chart(fig1, width="stretch")
+                if row1["status"] == "ok":
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Phase shift", f"{row1['phase_shift_hours']:+.2f} h")
+                    m2.metric("Period before", f"{row1['pre_period_hours']:.2f} h")
+                    m3.metric("Period after", f"{row1['post_period_hours']:.2f} h")
+                else:
+                    st.warning(f"No phase shift for this fly: **{row1['status']}**")
+            except Exception as exc:
+                st.error(f"Preview failed: {exc}")
+
+    # ============================================================
+    # Section 4: Run
+    # ============================================================
+    if st.button("Run Phase Shift Analysis", type="primary"):
+        with st.spinner(f"Measuring phase shifts for {n_total} flies..."):
+            try:
+                results = ps_module.compute_phase_shift_analysis(ds_pulse, **params)
+                st.session_state.phase_shift_results = results
+
+                # Record the parameters (scalars only) so the run is reproducible and the
+                # sidebar can report the analysis as done. Results themselves stay in
+                # session state — same convention as the Sleep Deprivation page.
+                for key, value in results["params"].items():
+                    if value is None:
+                        continue
+                    ds.attrs[f"phase_shift_{key}"] = int(value) if isinstance(value, bool) else value
+                ds.attrs["phase_shift_method"] = results["method"]
+                st.session_state.dataset = ds
+                # Phase shift records its results in attrs, not data_vars — re-detect
+                # so the home page's status grid reflects the run.
+                status.refresh(ds)
+
+                n_ok = int((results["per_fly"]["status"] == "ok").sum())
+                st.success(f"Done: {n_ok} of {len(results['per_fly'])} flies produced a phase shift.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Error: {exc}")
+                st.stop()
+
+    # ============================================================
+    # Section 5: Results
+    # ============================================================
+    if "phase_shift_results" not in st.session_state:
+        st.info("Set the method above and click **Run** to analyse the whole cohort.")
+        st.stop()
+
+    results = st.session_state.phase_shift_results
+    per_fly = results["per_fly"]
+
+    st.subheader("Results")
+
+    tab_summary, tab_actogram, tab_export = st.tabs(["Summary", "Per-Fly Actogram", "Data Export"])
+
+    _COLORS = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+    ]
+
+    with tab_summary:
+        ok = per_fly[per_fly["status"] == "ok"]
+        status_counts = per_fly["status"].value_counts()
+
+        if len(ok) == 0:
+            st.warning("No fly produced a usable phase shift.")
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Flies with a shift", f"{len(ok)} / {len(per_fly)}")
+            c2.metric("Median shift", f"{ok['phase_shift_hours'].median():+.2f} h")
+            c3.metric("Median period after", f"{ok['post_period_hours'].median():.2f} h")
+
+            groups = sorted(ok["group"].dropna().unique())
+            fig = go.Figure()
+            for i, grp in enumerate(groups):
+                vals = ok.loc[ok["group"] == grp, "phase_shift_hours"]
+                fig.add_trace(
+                    go.Box(
+                        y=vals,
+                        name=str(grp),
+                        boxpoints="all",
+                        jitter=0.4,
+                        pointpos=0,
+                        marker=dict(color=_COLORS[i % len(_COLORS)]),
+                    )
+                )
+            fig.add_hline(y=0, line_dash="dot", line_color="gray")
+            fig.update_layout(
+                title="Phase shift by group (positive = delay, negative = advance)",
+                yaxis_title="phase shift (hours)",
+                showlegend=False,
+                height=460,
+            )
+            st.plotly_chart(fig, width="stretch")
+
+        if len(status_counts) > 1 or "ok" not in status_counts:
+            st.markdown("**Why some flies have no value**")
+            _explain = {
+                "ok": "phase shift measured",
+                "no_pulse": "no pulse_time in the metadata (unpulsed control)",
+                "pulse_outside_record": "the pulse time falls outside this fly's recording",
+                "insufficient_pre": "too few usable days before the pulse",
+                "insufficient_post": "too few usable days after the pulse",
+                "implausible_period": "the fitted period was not circadian — the daily markers "
+                "did not track a consistent rhythm",
+            }
+            for status, count in status_counts.items():
+                st.markdown(f"- `{status}` — {count} fly/flies: {_explain.get(status, '')}")
+
+        st.dataframe(per_fly, width="stretch")
+
+    with tab_actogram:
+        st.caption(
+            "The dashed line continues the pre-pulse rhythm across the pulse. The gap between it "
+            "and the post-pulse line is the reported shift, so the number can be checked by eye."
+        )
+        view_ids = per_fly["fly_id"].tolist()
+        view_id = st.selectbox("Fly", view_ids, index=0, key="actogram_fly")
+        row = per_fly.set_index("fly_id").loc[view_id]
+
+        if view_id not in results["day_markers"]:
+            st.warning(f"No markers were detected for this fly (status `{row['status']}`).")
+        else:
+            one = ds_pulse.sel(id=[view_id])
             minutes = np.asarray(one["time"].values, dtype=float)
             values = np.asarray(one["activity"].transpose("time", "id").values[:, 0], dtype=float)
             shift_txt = (
-                f"{row1['phase_shift_hours']:+.2f} h"
-                if row1["status"] == "ok"
-                else f"no value ({row1['status']})"
+                f"{row['phase_shift_hours']:+.2f} h"
+                if row["status"] == "ok"
+                else f"no value ({row['status']})"
             )
-            fig1 = plotting.phase_shift_actogram(
+            fig = plotting.phase_shift_actogram(
                 minutes,
                 values,
-                day_markers=res1["day_markers"].get(preview_id),
-                pre_fit=res1["fits"].get(preview_id, {}).get("pre"),
-                post_fit=res1["fits"].get(preview_id, {}).get("post"),
-                pulse_minute=row1.get("pulse_minute"),
+                day_markers=results["day_markers"].get(view_id),
+                pre_fit=results["fits"].get(view_id, {}).get("pre"),
+                post_fit=results["fits"].get(view_id, {}).get("post"),
+                pulse_minute=row.get("pulse_minute"),
                 pulse_duration_minutes=(
                     float(one["pulse_duration_minutes"].values[0])
                     if "pulse_duration_minutes" in one.coords
                     else None
                 ),
                 reference_day_index=(
-                    int(row1["reference_day_index"])
-                    if np.isfinite(row1.get("reference_day_index", np.nan))
+                    int(row["reference_day_index"])
+                    if np.isfinite(row.get("reference_day_index", np.nan))
                     else None
                 ),
-                title=f"{preview_id} — {method} method, shift {shift_txt}",
+                title=f"{view_id} ({row['group']}) — {results['method']} method, shift {shift_txt}",
             )
-            st.plotly_chart(fig1, use_container_width=True)
-            if row1["status"] == "ok":
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Phase shift", f"{row1['phase_shift_hours']:+.2f} h")
-                m2.metric("Period before", f"{row1['pre_period_hours']:.2f} h")
-                m3.metric("Period after", f"{row1['post_period_hours']:.2f} h")
-            else:
-                st.warning(f"No phase shift for this fly: **{row1['status']}**")
-        except Exception as exc:
-            st.error(f"Preview failed: {exc}")
+            st.plotly_chart(fig, width="stretch")
 
-# ============================================================
-# Section 4: Run
-# ============================================================
-if st.button("Run Phase Shift Analysis", type="primary"):
-    with st.spinner(f"Measuring phase shifts for {n_total} flies..."):
-        try:
-            results = ps_module.compute_phase_shift_analysis(ds_pulse, **params)
-            st.session_state.phase_shift_results = results
-
-            # Record the parameters (scalars only) so the run is reproducible and the
-            # sidebar can report the analysis as done. Results themselves stay in
-            # session state — same convention as the Sleep Deprivation page.
-            for key, value in results["params"].items():
-                if value is None:
-                    continue
-                ds.attrs[f"phase_shift_{key}"] = int(value) if isinstance(value, bool) else value
-            ds.attrs["phase_shift_method"] = results["method"]
-            st.session_state.dataset = ds
-
-            n_ok = int((results["per_fly"]["status"] == "ok").sum())
-            st.success(f"Done: {n_ok} of {len(results['per_fly'])} flies produced a phase shift.")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Error: {exc}")
-            st.stop()
-
-# ============================================================
-# Section 5: Results
-# ============================================================
-if "phase_shift_results" not in st.session_state:
-    st.info("Set the method above and click **Run** to analyse the whole cohort.")
-    st.stop()
-
-results = st.session_state.phase_shift_results
-per_fly = results["per_fly"]
-
-st.subheader("Results")
-
-tab_summary, tab_actogram, tab_export = st.tabs(["Summary", "Per-Fly Actogram", "Data Export"])
-
-_COLORS = [
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-    "#17becf",
-]
-
-with tab_summary:
-    ok = per_fly[per_fly["status"] == "ok"]
-    status_counts = per_fly["status"].value_counts()
-
-    if len(ok) == 0:
-        st.warning("No fly produced a usable phase shift.")
-    else:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Flies with a shift", f"{len(ok)} / {len(per_fly)}")
-        c2.metric("Median shift", f"{ok['phase_shift_hours'].median():+.2f} h")
-        c3.metric("Median period after", f"{ok['post_period_hours'].median():.2f} h")
-
-        groups = sorted(ok["group"].dropna().unique())
-        fig = go.Figure()
-        for i, grp in enumerate(groups):
-            vals = ok.loc[ok["group"] == grp, "phase_shift_hours"]
-            fig.add_trace(
-                go.Box(
-                    y=vals,
-                    name=str(grp),
-                    boxpoints="all",
-                    jitter=0.4,
-                    pointpos=0,
-                    marker=dict(color=_COLORS[i % len(_COLORS)]),
-                )
-            )
-        fig.add_hline(y=0, line_dash="dot", line_color="gray")
-        fig.update_layout(
-            title="Phase shift by group (positive = delay, negative = advance)",
-            yaxis_title="phase shift (hours)",
-            showlegend=False,
-            height=460,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    if len(status_counts) > 1 or "ok" not in status_counts:
-        st.markdown("**Why some flies have no value**")
-        _explain = {
-            "ok": "phase shift measured",
-            "no_pulse": "no pulse_time in the metadata (unpulsed control)",
-            "pulse_outside_record": "the pulse time falls outside this fly's recording",
-            "insufficient_pre": "too few usable days before the pulse",
-            "insufficient_post": "too few usable days after the pulse",
-            "implausible_period": "the fitted period was not circadian — the daily markers "
-            "did not track a consistent rhythm",
-        }
-        for status, count in status_counts.items():
-            st.markdown(f"- `{status}` — {count} fly/flies: {_explain.get(status, '')}")
-
-    st.dataframe(per_fly, use_container_width=True)
-
-with tab_actogram:
-    st.caption(
-        "The dashed line continues the pre-pulse rhythm across the pulse. The gap between it "
-        "and the post-pulse line is the reported shift, so the number can be checked by eye."
-    )
-    view_ids = per_fly["fly_id"].tolist()
-    view_id = st.selectbox("Fly", view_ids, index=0, key="actogram_fly")
-    row = per_fly.set_index("fly_id").loc[view_id]
-
-    if view_id not in results["day_markers"]:
-        st.warning(f"No markers were detected for this fly (status `{row['status']}`).")
-    else:
-        one = ds_pulse.sel(id=[view_id])
-        minutes = np.asarray(one["time"].values, dtype=float)
-        values = np.asarray(one["activity"].transpose("time", "id").values[:, 0], dtype=float)
-        shift_txt = (
-            f"{row['phase_shift_hours']:+.2f} h"
-            if row["status"] == "ok"
-            else f"no value ({row['status']})"
-        )
-        fig = plotting.phase_shift_actogram(
-            minutes,
-            values,
-            day_markers=results["day_markers"].get(view_id),
-            pre_fit=results["fits"].get(view_id, {}).get("pre"),
-            post_fit=results["fits"].get(view_id, {}).get("post"),
-            pulse_minute=row.get("pulse_minute"),
-            pulse_duration_minutes=(
-                float(one["pulse_duration_minutes"].values[0])
-                if "pulse_duration_minutes" in one.coords
-                else None
-            ),
-            reference_day_index=(
-                int(row["reference_day_index"])
-                if np.isfinite(row.get("reference_day_index", np.nan))
-                else None
-            ),
-            title=f"{view_id} ({row['group']}) — {results['method']} method, shift {shift_txt}",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab_export:
-    st.download_button(
-        "Download per-fly phase shifts (CSV)",
-        per_fly.to_csv(index=False).encode("utf-8"),
-        file_name=f"phase_shift_{results['method']}_per_fly.csv",
-        mime="text/csv",
-    )
-
-    marker_rows = [
-        {"fly_id": fly, "day_index": day, "marker_minute": minute}
-        for fly, markers in results["day_markers"].items()
-        for day, minute in sorted(markers.items())
-    ]
-    if marker_rows:
-        markers_df = pd.DataFrame(marker_rows)
+    with tab_export:
         st.download_button(
-            "Download daily phase markers (CSV)",
-            markers_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"phase_shift_{results['method']}_daily_markers.csv",
+            "Download per-fly phase shifts (CSV)",
+            per_fly.to_csv(index=False).encode("utf-8"),
+            file_name=f"phase_shift_{results['method']}_per_fly.csv",
             mime="text/csv",
-            help="The per-day marker times the fits were built from — useful for checking "
-            "a suspicious result.",
         )
 
-    st.markdown("**Parameters used**")
-    st.json(results["params"])
+        marker_rows = [
+            {"fly_id": fly, "day_index": day, "marker_minute": minute}
+            for fly, markers in results["day_markers"].items()
+            for day, minute in sorted(markers.items())
+        ]
+        if marker_rows:
+            markers_df = pd.DataFrame(marker_rows)
+            st.download_button(
+                "Download daily phase markers (CSV)",
+                markers_df.to_csv(index=False).encode("utf-8"),
+                file_name=f"phase_shift_{results['method']}_daily_markers.csv",
+                mime="text/csv",
+                help="The per-day marker times the fits were built from — useful for checking "
+                "a suspicious result.",
+            )
+
+        st.markdown("**Parameters used**")
+        st.json(results["params"])

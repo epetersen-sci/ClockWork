@@ -13,6 +13,7 @@ from plotly.subplots import make_subplots
 import dam_utilities
 import sleep_deprivation as sd_module
 from analysis_detection import detect_analyses
+from ui import status
 from ui.guards import require_dataset
 
 # ============================================================
@@ -23,7 +24,7 @@ analyses = detect_analyses(ds)
 
 if not analyses.get("sleep", False):
     st.warning(
-        "Sleep analysis has not been run. Go to **Sleep and Activity** and run it first."
+        "Sleep analysis has not been run. Go to **Sleep analysis** and run it first."
     )
     st.stop()
 
@@ -199,6 +200,9 @@ if st.button("Run Sleep Deprivation Analysis", type="primary"):
             ds.attrs["sd_duration_minutes"] = int(sd_duration)
             ds.attrs["sd_bin_size_minutes"] = int(bin_size)
             st.session_state.dataset = ds
+            # SD records its results in attrs, not data_vars, so the status grid
+            # only learns about them if we re-detect here.
+            status.refresh(ds)
 
             st.success(
                 f"Analysis complete: {results['n_baseline_days']} baseline day(s), "

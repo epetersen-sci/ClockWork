@@ -75,7 +75,14 @@ DERIVED_CACHE_KEYS = (
 DERIVED_CACHE_PREFIXES = ("ultra_ls_ds_",)
 
 # Keys cleared only on a fresh load, never by a group filter.
-_DATASET_KEYS = ("dataset", "dataset_full", "dataset_path", "analyses", "_raw_metadata", "_raw_data")
+_DATASET_KEYS = (
+    "dataset",
+    "dataset_full",
+    "dataset_path",
+    "analyses",
+    "_raw_metadata",
+    "_raw_data",
+)
 
 
 def init_session_state():

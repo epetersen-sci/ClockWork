@@ -16,43 +16,22 @@ import streamlit as st
 import export_helpers as ex
 import plotting
 from dataset_meta import dataset_fingerprint
+from ui.filters import group_filter_sidebar, resolve_group_coord
 from ui.guards import require_dataset
 
 ds = require_dataset()
 
-# ------------------------------------------------------------------ #
-# Group coordinate: prefer the experimental 'group', fall back to
-# 'genotype', else a single pooled group. The overlays are BY GROUP.
-# ------------------------------------------------------------------ #
-if "group" in ds.coords:
-    group_coord = "group"
-elif "genotype" in ds.coords:
-    group_coord = "genotype"
-else:
-    group_coord = None
-
-if group_coord is not None:
-    group_vals = np.asarray([str(v) for v in ds[group_coord].values])
-    all_groups = sorted(set(group_vals.tolist()))
-    st.sidebar.subheader("Filter Groups")
-    selected_groups = st.sidebar.multiselect(
-        f"Groups ({group_coord})", all_groups, default=all_groups, key="pgram_groups"
-    )
-    # multiselect returns a list in the app; guard the None the headless test
-    # stub returns (and default to all groups if the widget hasn't populated).
-    if selected_groups is None:
-        selected_groups = list(all_groups)
-else:
-    group_vals = np.array(["All flies"] * ds.sizes["id"])
-    all_groups = ["All flies"]
-    selected_groups = ["All flies"]
+# Group coordinate: prefer the experimental `group`, fall back to `genotype`,
+# else a single pooled group. The overlays are BY GROUP.
+group_coord = resolve_group_coord(ds)
+group_vals, all_groups, selected_groups, _ = group_filter_sidebar(ds, key="pgram_groups")
 
 st.caption(
     "Group-averaged spectra (mean ± SEM across flies). Each method has its own "
     "y-axis — **the scales are not comparable across methods** (LS power vs "
     "autocorrelation vs wavelet power vs AR power). Period methods share a common "
     "period-in-hours x-axis; autocorrelation is shown vs lag. Plain-language "
-    "explanations of each method are on the **Period Analysis** page."
+    "explanations of each method are on the **Period analysis** page."
 )
 
 @st.cache_data(show_spinner=False)
@@ -165,7 +144,7 @@ SECTIONS = [
 _MESA_DISPLAY_NOTE = (
     "Shown at an **adaptive (FPE) AR order** so arrhythmic flies don't add "
     "spurious high-order humps; the reported MESA *period* still comes from the "
-    "sharper N/3 fit. Re-run MESA on **Period Analysis** to populate this curve."
+    "sharper N/3 fit. Re-run MESA on **Period analysis** to populate this curve."
 )
 
 fp = dataset_fingerprint(ds)
@@ -180,7 +159,7 @@ for key, var, axis_name, title, plot_kw, normalize, freq_to_period in SECTIONS:
         elif "mesa_periodogram" in ds.data_vars:
             var = "mesa_periodogram"
     if var not in ds.data_vars or axis_name not in ds.coords:
-        st.info(f"No {title} periodogram stored yet — run it on the **Period Analysis** page.")
+        st.info(f"No {title} periodogram stored yet — run it on the **Period analysis** page.")
         st.divider()
         continue
     _any = True
@@ -200,7 +179,7 @@ for key, var, axis_name, title, plot_kw, normalize, freq_to_period in SECTIONS:
         )
         # theme=None: the figure's own styling (black text, transparent bg) drives both
         # the on-screen chart and the "Download plot as PNG" export (see group_spectrum_plot).
-        st.plotly_chart(fig, use_container_width=True, theme=None)
+        st.plotly_chart(fig, width="stretch", theme=None)
         if spec_df is not None and not spec_df.empty:
             ex.save_df_button(
                 f"Save {title} group-average to working folder",
@@ -213,6 +192,6 @@ for key, var, axis_name, title, plot_kw, normalize, freq_to_period in SECTIONS:
 
 if not _any:
     st.warning(
-        "None of the period methods have been run yet. Go to **Period Analysis**, "
+        "None of the period methods have been run yet. Go to **Period analysis**, "
         "run Lomb-Scargle / Autocorrelation / CWT / MESA, then return here."
     )
