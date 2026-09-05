@@ -57,7 +57,7 @@ if _ds_phase in (PHASE_LD, PHASE_DD):
     # (no further masking — the file already IS the phase).
     _sleep_ds = ds
     _sleep_phase = _ds_phase
-    _sleep_phase_arg = "both"
+    _sleep_phase_arg = _sleep_phase
     st.info(
         f"Using the loaded **{_sleep_phase}** dataset for sleep analysis "
         f"({len(_sleep_ds['id'])} flies, {len(_sleep_ds['time'])} timepoints)."
