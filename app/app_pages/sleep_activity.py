@@ -37,16 +37,25 @@ ds = require_dataset()
 # tuple while the leading-underscore ``_ds`` arg is NOT hashed (per
 # Streamlit's caching convention). Returning plotly figures from a
 # cached function is supported — figures pickle cleanly.
+#
+# The fingerprint parameter is named ``fp``, NOT ``_fp``. Streamlit's
+# rule is purely syntactic — ANY leading-underscore parameter is left
+# out of the cache key, not just the dataset one — so naming it ``_fp``
+# excluded the very thing it exists to key on, and every one of these
+# caches then ignored which flies were in ``ds``. The visible symptom
+# was the sidebar group filter appearing to do nothing: narrow the
+# groups and the plots kept their old traces until some other cache
+# input (e.g. bin size) happened to change.
 # ----------------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
-def _cached_zt_binned(_fp, _ds, value_col, bin_size_minutes):
+def _cached_zt_binned(fp, _ds, value_col, bin_size_minutes):
     """Wrap dam_utilities.get_zt_binned_dataframe with a fingerprint key."""
     return dam_utilities.get_zt_binned_dataframe(_ds, value_col, bin_size_minutes)
 
 @st.cache_data(show_spinner=False)
 def _cached_summary_bars(
-    _fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
 ):
     """Cache the per-fly summary computation that feeds the bars figure.
     ``phase_label`` is included in the cache key so DD vs LD relabeling
@@ -62,7 +71,7 @@ def _cached_summary_bars(
 
 @st.cache_data(show_spinner=False)
 def _cached_daily_pattern(
-    _fp,
+    fp,
     _ds,
     variable,
     title,
@@ -86,7 +95,7 @@ def _cached_daily_pattern(
 
 @st.cache_data(show_spinner=False)
 def _cached_summary_table(
-    _fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
 ):
     """Per-group summary table (mean + SEM per period) for CSV export — the
     SAME numbers plotting.summary_bars draws (one computation, no drift)."""
@@ -101,7 +110,7 @@ def _cached_summary_table(
 
 @st.cache_data(show_spinner=False)
 def _cached_bout_duration_lines(
-    _fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
+    fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
 ):
     """Cache the per-fly bout-duration curve computation (KDE/survival curves
     + per-fly summary stats + the group-comparison test) — the same numbers
