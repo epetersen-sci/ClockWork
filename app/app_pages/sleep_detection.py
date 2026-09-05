@@ -9,8 +9,13 @@ It used to live at the top of Sleep & activity, wrapped in ``@st.fragment`` with
 a session-state message relay, purely so that it would execute before that
 page's sidebar group filter rebound ``ds`` — running it from below the filter
 would have silently dropped deselected flies from the MASTER dataset. Alone on
-its own page there is no filter to race, so the fragment and the relay are gone
-and the block is plain top-to-bottom code.
+its own page there is no filter to race, so the FRAGMENT is gone and the block
+is plain top-to-bottom code.
+
+The message relay stays, for its own separate reason: the run ends in
+``st.rerun()`` to refresh this page's "already completed" state, and that rerun
+discards everything already drawn — so the outcome is stashed in
+``_sleep_run_message`` and reported at the top of the next run instead.
 """
 
 import streamlit as st
@@ -57,6 +62,13 @@ if _ds_phase in (PHASE_LD, PHASE_DD):
     # (no further masking — the file already IS the phase).
     _sleep_ds = ds
     _sleep_phase = _ds_phase
+    # Pass the phase itself, NOT "both". This looks like it would re-mask an
+    # already-sliced dataset — the Stage-1 foot-gun — but select_phase's B4
+    # guard catches exactly this case: asked for the phase a dataset is already
+    # stamped with, it returns it as-is, with no re-derive and no re-mask. And
+    # it is strictly better than "both", because if the file is stamped LD and
+    # something asks for DD the guard RAISES instead of silently handing back
+    # the wrong epoch. Do not "fix" this back to "both".
     _sleep_phase_arg = _sleep_phase
     st.info(
         f"Using the loaded **{_sleep_phase}** dataset for sleep analysis "
