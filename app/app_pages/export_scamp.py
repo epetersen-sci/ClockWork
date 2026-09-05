@@ -3,29 +3,19 @@ SCAMP Export Page — write curated, LD/DD-split datasets into the legacy
 "luc"-format files that SCAMP (`scamp.m`) ingests.
 
 Requires the dataset to be curated and phase-split: the Data Loading +
-Preprocessing pages produce ``session_state.dataset_LD`` and
+Curate & split pages produce ``session_state.dataset_LD`` and
 ``session_state.dataset_DD``. The SCAMP loader needs equal-length files per
 "board", so this page selects a common window per board (see
 ``scamp_export/README.md`` for details).
 """
 
 import os
-import sys
 
 import streamlit as st
-
-# Wire ``core/`` and ``app/`` into sys.path, mirroring 11_Export.py.
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR, PROJECT_ROOT]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_utilities  # noqa: E402
 from scamp_export.scamp_exporter import export_dataset_to_scamp  # noqa: E402
 
-st.header("SCAMP Export")
 st.caption(
     "Write curated, LD/DD-split data into legacy SCAMP files so the lab's "
     "existing MATLAB sleep/circadian analyses can ingest the cleaned data."

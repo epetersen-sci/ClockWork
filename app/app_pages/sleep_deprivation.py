@@ -4,41 +4,27 @@ Sleep Deprivation Analysis — compare baseline sleep to post-SD recovery sleep.
 Requires sleep analysis to be completed first (Sleep and Activity page).
 """
 
-import os
-import sys
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-# Add core/ and app/ to import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 import dam_utilities
 import sleep_deprivation as sd_module
 from analysis_detection import detect_analyses
-
-st.header("Sleep Deprivation Analysis")
+from ui import status
+from ui.guards import require_dataset
 
 # ============================================================
 # Section 1: Prerequisites
 # ============================================================
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 analyses = detect_analyses(ds)
 
 if not analyses.get("sleep", False):
     st.warning(
-        "Sleep analysis has not been run. Go to **Sleep and Activity** and run it first."
+        "Sleep analysis has not been run. Go to **Sleep analysis** and run it first."
     )
     st.stop()
 
@@ -214,6 +200,9 @@ if st.button("Run Sleep Deprivation Analysis", type="primary"):
             ds.attrs["sd_duration_minutes"] = int(sd_duration)
             ds.attrs["sd_bin_size_minutes"] = int(bin_size)
             st.session_state.dataset = ds
+            # SD records its results in attrs, not data_vars, so the status grid
+            # only learns about them if we re-detect here.
+            status.refresh(ds)
 
             st.success(
                 f"Analysis complete: {results['n_baseline_days']} baseline day(s), "
@@ -247,12 +236,10 @@ tab_timecourse, tab_bars, tab_export = st.tabs(
     ["ZT Time-Course Plots", "Bar Graphs", "Data Export"]
 )
 
-
 # --- Helper: add light/dark shading to a figure ---
 def _shade_ld(fig):
     fig.add_vrect(x0=0, x1=12, fillcolor="yellow", opacity=0.07, line_width=0)
     fig.add_vrect(x0=12, x1=24, fillcolor="gray", opacity=0.10, line_width=0)
-
 
 # --- Color palette for genotypes ---
 _COLORS = [
@@ -268,10 +255,8 @@ _COLORS = [
     "#17becf",
 ]
 
-
 def _group_color(groups, grp):
     return _COLORS[groups.index(grp) % len(_COLORS)]
-
 
 # ================================================================
 # Tab 1: ZT Time-Course Plots
@@ -434,7 +419,6 @@ with tab_timecourse:
     )
     st.plotly_chart(fig3, width="stretch")
 
-
 # ================================================================
 # Tab 2: Bar Graphs
 # ================================================================
@@ -511,7 +495,6 @@ with tab_bars:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
         st.plotly_chart(fig_reb, width="stretch")
-
 
 # ================================================================
 # Tab 3: Data Export

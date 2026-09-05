@@ -27,6 +27,8 @@ Time representation note:
   both cases.
 """
 
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -484,13 +486,81 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
         Activity data; index is either DatetimeIndex or integer minutes.
     metadata : pd.DataFrame
         Must include: id, start_datetime, stop_datetime, file, genotype,
-        temperature, first_DD_day.
+        temperature, first_DD_day. Row ORDER does not matter — the rows are
+        matched to ``dam_data``'s columns by ``id`` before any coord is built
+        (see the alignment block below); passing them in a different order than
+        the activity columns used to mislabel flies silently.
 
     Returns
     -------
     xr.Dataset or None
         None if the time dimension is empty after processing.
     """
+    # ---------------------------------------------------------------------
+    # ALIGN metadata TO the activity columns before anything reads either.
+    #
+    # Every per-fly coord below (id, genotype, start/stop, group, ...) is taken
+    # from `metadata` in ROW order, while the activity matrix is taken from
+    # `dam_data` in COLUMN order. Those two orders are not the same thing, and
+    # when they diverged this function silently attached one fly's metadata to
+    # another fly's trace — no error, because the shapes still matched.
+    #
+    # They diverge routinely: dam_processor builds the activity frame by
+    # iterating `unique_combos.sort_values(["Monitor", "start_datetime"])` with
+    # Monitor cast to str, so monitor "10" sorts before "2", while the metadata
+    # keeps the spreadsheet's (numeric, natural) row order. Any experiment
+    # mixing single- and double-digit monitor numbers was affected.
+    #
+    # Reindexing metadata onto dam_data.columns makes the pairing explicit and
+    # order-independent: from here on, row i of metadata IS column i of the
+    # activity matrix, by fly id rather than by luck.
+    # ---------------------------------------------------------------------
+    if "id" not in metadata.columns:
+        raise ValueError(
+            "metadata must carry an 'id' column to be aligned with the activity "
+            "columns. It is built by MetadataProcessor.expand_metadata()."
+        )
+    # Plain Python strings on both sides: metadata['id'] can arrive as a pandas
+    # Arrow-backed string column, which set_index rejects outright (and which
+    # _as_numpy_array exists to defuse elsewhere in this module).
+    data_ids = [str(c) for c in dam_data.columns]
+    meta_ids = [str(v) for v in metadata["id"].tolist()]
+
+    _counts = Counter(meta_ids)
+    dup_ids = [i for i, n in _counts.items() if n > 1]
+    if dup_ids:
+        # With duplicates the reindex below would multiply rows instead of
+        # selecting them, so refuse rather than guess which row owns the tube.
+        raise ValueError(
+            f"metadata contains {len(dup_ids)} duplicated fly id(s), so activity "
+            f"columns cannot be matched to metadata rows unambiguously: "
+            f"{', '.join(dup_ids[:10])}{' ...' if len(dup_ids) > 10 else ''}. "
+            f"Overlapping region_id ranges on the same Monitor+start_datetime are "
+            f"the usual cause."
+        )
+
+    _meta_id_set = set(meta_ids)
+    missing_meta = [i for i in data_ids if i not in _meta_id_set]
+    if missing_meta:
+        raise ValueError(
+            f"{len(missing_meta)} activity column(s) have no metadata row: "
+            f"{', '.join(missing_meta[:10])}"
+            f"{' ...' if len(missing_meta) > 10 else ''}."
+        )
+
+    _data_id_set = set(data_ids)
+    extra_meta = [i for i in meta_ids if i not in _data_id_set]
+    if extra_meta:
+        # No activity column exists for these, so they cannot become flies. Loud,
+        # because the flies the user asked for are not all here.
+        print(
+            f"\nWARNING: {len(extra_meta)} metadata row(s) have no activity data and "
+            f"are dropped from the dataset: {', '.join(extra_meta[:10])}"
+            f"{' ...' if len(extra_meta) > 10 else ''}."
+        )
+
+    metadata = metadata.set_index(pd.Index(meta_ids)).loc[data_ids].reset_index(drop=True)
+
     # The light-pulse columns are excluded here (and attached as explicit coords
     # below) because a blank cell — an unpulsed control cohort — makes their unique
     # list a mix of strings/numbers and NaN, which NetCDF cannot serialize as an

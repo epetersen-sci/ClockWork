@@ -2,35 +2,20 @@
 Preprocessing Page - Dead animal curation, LD/DD split and activity heatmap.
 """
 
-import os
-import sys
 
 import streamlit as st
-
-# Add core/ (analysis modules) and app/ to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_utilities
 import plotting
 from analysis_detection import detect_analyses
+from ui.guards import require_dataset
 
-st.header("Preprocessing")
-
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 
 # ============================================================
 # Step 1: Curate Dead Animals
 # ============================================================
-st.subheader("1. Curate Dead Animals")
+st.subheader("1. Curate dead animals")
 
 if ds.attrs.get("curation_time_window_hours") is not None:
     st.info(
@@ -130,7 +115,7 @@ st.divider()
 # ============================================================
 # Step 2: Apply LD/DD Split (after curation)
 # ============================================================
-st.subheader("2. Apply LD/DD Split")
+st.subheader("2. Apply the LD/DD split")
 
 _already_split = ds.attrs.get("split_phase") is not None
 _has_dd_coord = "first_DD_day" in ds.coords
@@ -156,7 +141,7 @@ if _already_split:
     if _resplit:
         st.warning(
             "Re-splitting requires the original (unsplit) dataset. "
-            "Please reload your data from the Data Loading page."
+            "Please reload your data from the **Data → Import** page."
         )
 elif not _has_dd_coord:
     st.info(
@@ -275,7 +260,7 @@ st.divider()
 # ============================================================
 # Step 2b: Activity / Movement Heatmap
 # ============================================================
-st.subheader("Activity / Movement Heatmap")
+st.subheader("3. Inspect the result")
 
 # Re-read ds in case split was applied above
 ds = st.session_state.dataset
@@ -380,17 +365,3 @@ else:
                 )
             except Exception as e:
                 st.error(f"Heatmap error: {e}")
-
-st.divider()
-st.caption(
-    "**Sleep analysis has moved** to the Sleep and Activity page. Run it there once "
-    "curation and the LD/DD split are done."
-)
-
-# ============================================================
-# Current dataset summary
-# ============================================================
-st.subheader("Current Dataset")
-ds = st.session_state.dataset
-st.write(f"**Flies:** {len(ds['id'])} | **Timepoints:** {len(ds['time'])}")
-st.write(f"**Variables:** {', '.join(sorted(ds.data_vars))}")
