@@ -24,6 +24,18 @@ from load_and_save_datasets import load_dataset_from_netcdf
 from ui.state import clear_dataset_state
 
 
+def _md_lines(text):
+    """Keep the line breaks of a multi-line report line when Streamlit renders it
+    as markdown (a lone newline would otherwise collapse into a space, running the
+    facts and the suggested fix together in one paragraph)."""
+    return text.replace("\n", "  \n")
+
+
+def _render(severity, text):
+    """Render one ``(severity, text)`` report line with the matching widget."""
+    {"error": st.error, "warning": st.warning}.get(severity, st.caption)(_md_lines(text))
+
+
 def _stash_full(ds):
     """Store the unfiltered dataset alongside the working ``dataset`` so the
     Groups & subsets page can restore the full set without re-reading disk."""
@@ -119,24 +131,53 @@ with tab_fresh:
                         metadata_path, data_dir, gap_threshold_hours=gap_threshold
                     )
                     metadata, all_data = processor.run(progress_callback=_load_cb)
-                    st.session_state._raw_metadata = metadata
-                    st.session_state._raw_data = all_data
-                    st.success(
-                        f"Loaded {len(all_data.columns)} channels, {len(all_data)} timepoints"
-                    )
+                    n_imported = len(all_data.columns)
+
+                    if n_imported:
+                        st.session_state._raw_metadata = metadata
+                        st.session_state._raw_data = all_data
+                        st.success(f"Loaded {n_imported} channels, {len(all_data)} timepoints")
+                    else:
+                        # Nothing loaded. Do NOT stash the empty frames: with no
+                        # columns the Create Dataset step fails on an index error
+                        # deep in the xarray builder, which tells the user nothing.
+                        # The report below names the actual cause instead.
+                        st.session_state.pop("_raw_metadata", None)
+                        st.session_state.pop("_raw_data", None)
+
+                    # Why flies did not make it in — missing monitor file, a window
+                    # the file does not cover, tubes that are not there. Shown
+                    # first, and always, because a partial import is just as
+                    # silent as an empty one.
+                    _import_lines = processor.import_report_lines(n_imported=n_imported)
+                    if _import_lines:
+                        # Line 0 is the headline ("imported N of M"); the rest is
+                        # one entry per reason. The headline always shows; the
+                        # reasons open automatically when nothing came in.
+                        _head_sev, _head_text = _import_lines[0]
+                        _render(_head_sev, _head_text)
+                        _reasons = _import_lines[1:]
+                        if _reasons:
+                            with st.expander(
+                                f"Why — {len(_reasons)} reason(s) flies were dropped "
+                                f"or are unusable",
+                                expanded=(n_imported == 0),
+                            ):
+                                for _sev, _text in _reasons:
+                                    _render(_sev, _text)
+
                     # Surface the data-integrity report (status rule + gaps). A
                     # status!=1 row is no-data -> NaN, never zero (§2a). Cosmetic
                     # rows (a real reading survived) are quiet info; DATA-LOSS
                     # holes (NaN, no valid reading) are shown prominently.
                     for _sev, _text in processor.integrity_summary_lines():
-                        if _sev == "warning":
-                            st.warning(_text)
-                        elif _sev == "error":
-                            st.error(_text)
-                        else:
-                            st.caption(_text)
+                        _render(_sev, _text)
+                except dam_processor.MetadataError as e:
+                    # The metadata file itself is unusable — no monitor was even
+                    # opened. The message already names the problem and the fix.
+                    st.error(_md_lines(f"Could not read the metadata file:\n\n{e}"))
                 except Exception as e:
-                    st.error(f"Error loading data: {e}")
+                    st.error(f"Error loading data: {type(e).__name__}: {e}")
                 finally:
                     load_progress.empty()
 

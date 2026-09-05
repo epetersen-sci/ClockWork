@@ -152,3 +152,36 @@ README.
 If wiring it up: regrouping must clear every downstream cache, because `group` feeds every
 group-level comparison, plot and export. `ui/state.invalidate_derived_caches()` already does
 exactly that.
+
+## 13. Fly metadata can be attached to the wrong fly's activity trace
+
+**This one silently corrupts results — it is not a tidiness issue.** Found while adding the
+import diagnostics; recorded rather than fixed because the fix changes analysis output.
+
+`create_xarray_dataset` (`core/dam_utilities.py:469`) pairs the activity matrix with the
+metadata **positionally**: the values come from `dam_data.columns`, while `coords["id"]`,
+`coords["genotype"]` and every other per-fly coord come from `metadata` row order
+(`:575-598`). Nothing checks that the two orders agree.
+
+They disagree whenever the metadata rows are not already in string-sorted `(Monitor,
+start_datetime)` order, because `dam_processor.validate_files_and_dates:267-271` builds the
+activity frame by iterating `unique_combos.sort_values(["Monitor", "start_datetime"])` and
+`Monitor` is cast to `str` at `dam_processor.py:196` — so `"10"` sorts before `"2"`.
+
+A metadata file listing monitors 2 and 10 in that (numeric, natural) order produces:
+
+```
+metadata id order : ['20250301_2_1', '20250301_2_2', '20250301_10_1', '20250301_10_2']
+data column order : ['20250301_10_1', '20250301_10_2', '20250301_2_1', '20250301_2_2']
+xarray genotype   : ['AAA', 'AAA', 'ZZZ', 'ZZZ']   # monitor 10's traces labelled AAA
+```
+
+Monitor 10's flies are analysed under monitor 2's ids and genotypes, and vice versa. Any
+experiment mixing single- and double-digit monitor numbers is exposed, which is most of them.
+It fails silently — the shapes match, so nothing raises.
+
+Fix: reindex the metadata onto `dam_data.columns` before building the coords (and assert the
+two sets are equal), e.g. `metadata = metadata.set_index("id").loc[list(dam_data.columns)]
+.reset_index()`. Note the same positional assumption exists for the `attrs` built at `:507`.
+
+Worth checking whether any already-published `.nc` was built from an affected metadata file.

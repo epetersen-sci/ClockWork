@@ -15,6 +15,13 @@ Output:
     - validated_metadata : pd.DataFrame — one row per (monitor, region, start_datetime)
     - all_monitor_data   : pd.DataFrame — DatetimeIndex, columns = fly IDs
       (format: YYYYMMDD_Monitor_Region)
+
+Flies that could not be loaded are never dropped silently. Every exclusion is
+recorded on ``self.import_issues`` and rendered by ``import_report_lines`` /
+``_print_import_report`` (see ``import_diagnostics``), so an import that yields
+nothing can still say whether the monitor file was missing, the metadata window
+fell outside the recording, or the tubes are not in the file. Problems with the
+metadata file itself are raised as ``MetadataError`` before any monitor is read.
 """
 
 import os
@@ -25,6 +32,13 @@ import pandas as pd
 from tqdm import tqdm
 
 import dam_integrity
+import import_diagnostics
+from import_diagnostics import ImportIssue, MetadataError
+
+# Columns without which the pipeline cannot build a dataset at all. `genotype` is
+# here because create_xarray_dataset attaches it unconditionally as a coordinate;
+# omitting it used to surface as a bare KeyError three steps downstream.
+REQUIRED_METADATA_COLUMNS = ("Monitor", "start_datetime", "stop_datetime", "genotype")
 
 
 def _parse_region_ids(cell, n_channels=32):
@@ -127,10 +141,81 @@ class MetadataProcessor:
         # Per-monitor data-integrity findings (dam_integrity), populated during
         # validate_files_and_dates and surfaced to the user. Keyed by monitor id.
         self.integrity_report = {}
+        # Why flies did not make it in (import_diagnostics.ImportIssue), populated
+        # during validate_files_and_dates. An import that ends with 0 flies must be
+        # able to say which of file-missing / window-wrong / no-data caused it.
+        self.import_issues = []
+        # Flies the metadata asked for, before any exclusion — the denominator of
+        # the "imported N of M" headline.
+        self.n_flies_requested = 0
         if not os.path.exists(self.metadata_path):
             raise FileNotFoundError(f"Metadata file not found at: {self.metadata_path}")
         if not os.path.isdir(self.data_folder):
             raise FileNotFoundError(f"Data folder not found at: {self.data_folder}")
+
+    @staticmethod
+    def _check_metadata_shape(meta_df):
+        """Fail fast, and by name, on a metadata file the pipeline cannot use.
+
+        Runs on the file as written — BEFORE region expansion — so every row
+        number quoted back to the user is the row they can go and look at in
+        their spreadsheet (row 1 = the header, matching what Excel shows).
+
+        Each of these used to surface much later and much less legibly: a missing
+        column as a bare ``KeyError`` from whichever step first touched it, an
+        unparseable date as a pandas parser traceback, and a reversed window as an
+        import that quietly produced nothing.
+        """
+        if meta_df.empty:
+            raise MetadataError(
+                import_diagnostics.REASON_METADATA_EMPTY,
+                "the file parsed successfully but contains no data rows.",
+            )
+
+        missing = [c for c in REQUIRED_METADATA_COLUMNS if c not in meta_df.columns]
+        if missing:
+            raise MetadataError(
+                import_diagnostics.REASON_METADATA_MISSING_COLUMNS,
+                f"missing {', '.join(repr(c) for c in missing)}. "
+                f"Columns found: {', '.join(map(str, meta_df.columns))}.",
+            )
+
+        # Datetime columns. start/stop must parse on every row (a blank cell is a
+        # failure); first_DD_day is optional, so only non-blank cells are checked.
+        for col, allow_blank in (
+            ("start_datetime", False),
+            ("stop_datetime", False),
+            ("first_DD_day", True),
+        ):
+            if col not in meta_df.columns:
+                continue
+            parsed = pd.to_datetime(meta_df[col], errors="coerce")
+            bad = parsed.isna()
+            if allow_blank:
+                bad &= meta_df[col].notna() & (meta_df[col].astype(str).str.strip() != "")
+            if bad.any():
+                rows = [int(i) + 2 for i in meta_df.index[bad][:10]]
+                values = [repr(v) for v in meta_df.loc[bad, col].head(5).tolist()]
+                raise MetadataError(
+                    import_diagnostics.REASON_METADATA_BAD_DATETIME,
+                    f"{int(bad.sum())} row(s) have a '{col}' value that could not be "
+                    f"read as a date/time — spreadsheet row(s) "
+                    f"{', '.join(map(str, rows))}{' ...' if int(bad.sum()) > 10 else ''}; "
+                    f"value(s): {', '.join(values)}.",
+                )
+
+        starts = pd.to_datetime(meta_df["start_datetime"])
+        stops = pd.to_datetime(meta_df["stop_datetime"])
+        reversed_rows = stops <= starts
+        if reversed_rows.any():
+            rows = [int(i) + 2 for i in meta_df.index[reversed_rows][:10]]
+            first = meta_df.index[reversed_rows][0]
+            raise MetadataError(
+                import_diagnostics.REASON_STOP_BEFORE_START,
+                f"{int(reversed_rows.sum())} row(s) have stop_datetime at or before "
+                f"start_datetime — spreadsheet row(s) {', '.join(map(str, rows))}; "
+                f"e.g. start {starts[first]} -> stop {stops[first]}.",
+            )
 
     def expand_metadata(self):
         """
@@ -147,13 +232,28 @@ class MetadataProcessor:
         """
         print("--- Step 1: Loading and Expanding Metadata ---")
 
-        # Support both CSV and Excel formats
+        # Support both CSV and Excel formats. A read failure here is reported as a
+        # metadata problem rather than a raw pandas traceback: from the user's side
+        # "the metadata file is not readable" is the actionable fact, and the
+        # underlying error is kept as the detail.
         if self.metadata_path.endswith(".csv"):
-            meta_df = pd.read_csv(self.metadata_path)
+            reader, kind = pd.read_csv, "CSV"
         elif self.metadata_path.endswith((".xlsx", ".xls")):
-            meta_df = pd.read_excel(self.metadata_path)
+            reader, kind = pd.read_excel, "Excel"
         else:
-            raise ValueError("Metadata file must be a .csv or .xlsx/.xls file.")
+            raise MetadataError(
+                import_diagnostics.REASON_METADATA_UNREADABLE,
+                f"'{os.path.basename(self.metadata_path)}' is not a .csv or .xlsx/.xls file.",
+            )
+        try:
+            meta_df = reader(self.metadata_path)
+        except Exception as e:
+            raise MetadataError(
+                import_diagnostics.REASON_METADATA_UNREADABLE,
+                f"pandas could not read '{os.path.basename(self.metadata_path)}' as {kind}: {e}",
+            ) from e
+
+        self._check_metadata_shape(meta_df)
 
         # Region expansion is PER ROW, not per file (see _parse_region_ids):
         #   * a blank / missing region_id  -> the whole monitor (tubes 1-32)
@@ -180,6 +280,9 @@ class MetadataProcessor:
                 new_row["region_id"] = tube
                 expanded_rows.append(new_row)
         meta_df = pd.DataFrame(expanded_rows).reset_index(drop=True)
+        # Denominator for the import report: what the metadata asked for, before
+        # any combo is excluded.
+        self.n_flies_requested = len(meta_df)
         print(f"INFO: Will analyze {len(meta_df)} fly/channel combinations.")
 
         # Ensure correct column types
@@ -254,10 +357,35 @@ class MetadataProcessor:
             Metadata with failed combos removed (user is prompted if failures occur).
         all_monitor_data : pd.DataFrame
             DatetimeIndex DataFrame; columns are fly IDs from metadata.
+
+        Side effect: populates ``self.import_issues`` with one entry per reason
+        flies were excluded, for ``import_report_lines``.
         """
         print("\n--- Step 2: Validating Monitor Files and Data Integrity ---")
         failed_combos = []
         self.integrity_report = {}
+        self.import_issues = []
+        dropped_ids = []
+
+        def _fail(reason, combo_row_meta, monitor_id, start_dt, detail, hint=None):
+            """Record WHY a combo was excluded, then exclude it.
+
+            Every ``failed_combos.append`` goes through here so a silent drop is
+            impossible: the reason, the monitor, and the number of flies it cost
+            are captured at the point where the facts are still in hand.
+            """
+            failed_combos.append((monitor_id, start_dt))
+            self.import_issues.append(
+                ImportIssue(
+                    reason=reason,
+                    detail=detail,
+                    monitor=monitor_id,
+                    start_datetime=start_dt,
+                    n_flies=len(combo_row_meta),
+                    excluded=True,
+                    hint=hint,
+                )
+            )
 
         metadata_df["start_datetime"] = pd.to_datetime(metadata_df["start_datetime"])
         metadata_df["stop_datetime"] = pd.to_datetime(metadata_df["stop_datetime"])
@@ -299,7 +427,25 @@ class MetadataProcessor:
 
                 if not os.path.exists(monitor_filepath):
                     print(f"\nWARNING: {combo_label}: File not found at '{monitor_filepath}'.")
-                    failed_combos.append((monitor_id, start_dt))
+                    # List what IS in the folder: a Monitor number typo and a
+                    # wrong data directory look identical until you see this.
+                    present = sorted(
+                        f
+                        for f in os.listdir(self.data_folder)
+                        if f.lower().startswith("monitor") and f.lower().endswith(".txt")
+                    )
+                    if present:
+                        shown = ", ".join(present[:12]) + (" ..." if len(present) > 12 else "")
+                        found = f"Files present in that folder: {shown}."
+                    else:
+                        found = "That folder contains no Monitor*.txt files at all."
+                    _fail(
+                        import_diagnostics.REASON_FILE_MISSING,
+                        combo_meta,
+                        monitor_id,
+                        start_dt,
+                        f"expected '{monitor_filename}' in '{self.data_folder}'. {found}",
+                    )
                     continue
 
                 try:
@@ -340,7 +486,14 @@ class MetadataProcessor:
                     print(f"  Monitor {monitor_id}: Loaded file with {num_channels} channels")
                 except Exception as e:
                     print(f"\nWARNING: {combo_label}: Failed to read or parse file. Error: {e}")
-                    failed_combos.append((monitor_id, start_dt))
+                    _fail(
+                        import_diagnostics.REASON_FILE_UNREADABLE,
+                        combo_meta,
+                        monitor_id,
+                        start_dt,
+                        f"'{monitor_filename}' exists but could not be parsed as a raw "
+                        f"DAM file: {type(e).__name__}: {e}",
+                    )
                     continue
 
             monitor_data = monitor_file_cache[monitor_id].copy()
@@ -350,19 +503,98 @@ class MetadataProcessor:
             min_date = monitor_data["datetime"].min()
             max_date = monitor_data["datetime"].max()
 
-            if not (start_dt >= min_date and stop_dt <= max_date):
+            starts_early = start_dt < min_date
+            ends_late = stop_dt > max_date
+            if starts_early or ends_late:
                 print(
                     f"\nWARNING: {combo_label}: start/stop datetimes are outside the available data range."
                 )
                 print(f"  Metadata Range: {start_dt} to {stop_dt}")
                 print(f"  Available Range: {min_date} to {max_date}")
-                failed_combos.append((monitor_id, start_dt))
+
+                # Name WHICH bound is wrong and BY HOW MUCH. The motivating case
+                # was a file truncated to 09:01 against a 09:00 start — a
+                # one-minute overhang that silently cost the whole monitor, and
+                # is indistinguishable from a wrong-year typo in a report that
+                # only says "outside the available data range".
+                file_range = f"the file covers {min_date} -> {max_date}"
+                if starts_early and ends_late:
+                    reason = import_diagnostics.REASON_WINDOW_OUTSIDE
+                    detail = (
+                        f"metadata asks for {start_dt} -> {stop_dt}, which overhangs "
+                        f"the file at both ends by "
+                        f"{import_diagnostics.format_timedelta(min_date - start_dt)} at the "
+                        f"start and {import_diagnostics.format_timedelta(stop_dt - max_date)} "
+                        f"at the end; {file_range}."
+                    )
+                    hint = None
+                elif starts_early:
+                    short_by = min_date - start_dt
+                    reason = import_diagnostics.REASON_WINDOW_STARTS_EARLY
+                    detail = (
+                        f"metadata start_datetime {start_dt} is "
+                        f"{import_diagnostics.format_timedelta(short_by)} before the "
+                        f"file's first reading ({min_date}); {file_range}."
+                    )
+                    if short_by < timedelta(days=1):
+                        # A small overhang is almost always a truncated export.
+                        # The fix is NOT to snap start_datetime to the file's
+                        # first reading: start_datetime defines ZT0, so moving it
+                        # by a few minutes re-bases every ZT bin in the analysis.
+                        hint = (
+                            f"The file is missing only the first "
+                            f"{import_diagnostics.format_timedelta(short_by)} of the "
+                            f"requested window — a truncated export usually explains a "
+                            f"gap this small. Either re-export Monitor{monitor_id}.txt so "
+                            f"it reaches back to {start_dt}, or move start_datetime "
+                            f"forward. Do NOT simply set it to {min_date}: "
+                            f"start_datetime is ZT0 (lights-on) and shifting it by "
+                            f"minutes re-bases every ZT bin — move it a whole day, to "
+                            f"{start_dt + timedelta(days=1)}."
+                        )
+                    else:
+                        hint = (
+                            f"The requested start is {import_diagnostics.format_timedelta(short_by)} "
+                            f"before anything in this file — too far to be a truncated "
+                            f"export. Check the year and month in start_datetime, and "
+                            f"that Monitor {monitor_id} is the intended file for this "
+                            f"experiment."
+                        )
+                else:
+                    over_by = stop_dt - max_date
+                    reason = import_diagnostics.REASON_WINDOW_ENDS_LATE
+                    detail = (
+                        f"metadata stop_datetime {stop_dt} is "
+                        f"{import_diagnostics.format_timedelta(over_by)} after the file's "
+                        f"last reading ({max_date}); {file_range}."
+                    )
+                    hint = (
+                        f"The recording ends {import_diagnostics.format_timedelta(over_by)} "
+                        f"short of the requested window. Set stop_datetime to {max_date} "
+                        f"or earlier, or re-export the file so it runs to {stop_dt}."
+                    )
+                _fail(reason, combo_meta, monitor_id, start_dt, detail, hint=hint)
                 continue
 
             # Slice to the relevant time window
             monitor_data = monitor_data[
                 (monitor_data["datetime"] >= start_dt) & (monitor_data["datetime"] <= stop_dt)
             ]
+
+            # The window is inside the file's overall span but holds no rows —
+            # the file jumps straight across it. Caught here so it cannot reach
+            # the integrity scan as an all-NaN frame.
+            if monitor_data.empty:
+                print(f"\nWARNING: {combo_label}: no readings inside the requested window.")
+                _fail(
+                    import_diagnostics.REASON_NO_ROWS_IN_WINDOW,
+                    combo_meta,
+                    monitor_id,
+                    start_dt,
+                    f"the file covers {min_date} -> {max_date} but contains no rows at "
+                    f"all between {start_dt} and {stop_dt}.",
+                )
+                continue
 
             # --- Data-quality handling (dam_integrity, §2a) ---------------------
             # Capture the real-data (status==1) timestamps BEFORE resolution so the
@@ -426,6 +658,7 @@ class MetadataProcessor:
 
             # --- Extract columns for the regions of interest, named by fly ID ---
             selected_columns = []
+            missing_regions = []
             for region in regions_of_interest:
                 source_col = f"channel_{region}"
                 # Use the metadata 'id' as the column name for uniqueness
@@ -436,12 +669,60 @@ class MetadataProcessor:
                     selected_columns.append(row_id)
                 else:
                     print(f"\nWARNING: {combo_label}: Region {region} not found in data file.")
+                    missing_regions.append(region)
+                    # Drop the metadata row too. Left in, it made the metadata one
+                    # row longer than the activity matrix, and the xarray build
+                    # then failed with a 'conflicting sizes for dimension id'
+                    # message that named neither the monitor nor the tube.
+                    dropped_ids.append(row_id)
+
+            if missing_regions:
+                shown = ", ".join(map(str, missing_regions[:16]))
+                self.import_issues.append(
+                    ImportIssue(
+                        reason=import_diagnostics.REASON_REGION_NOT_IN_FILE,
+                        detail=(
+                            f"region_id {shown}"
+                            f"{' ...' if len(missing_regions) > 16 else ''} requested, but "
+                            f"'Monitor{monitor_id}.txt' has only {num_channels} channels."
+                        ),
+                        monitor=monitor_id,
+                        start_datetime=start_dt,
+                        n_flies=len(missing_regions),
+                        excluded=True,
+                    )
+                )
 
             monitor_data = monitor_data[["datetime"] + selected_columns].copy()
             monitor_data.set_index("datetime", inplace=True)
             print(
                 f"  {combo_label}: Selected {len(selected_columns)} channels out of {num_channels} total"
             )
+
+            # A channel that is entirely NaN across the window carries no data at
+            # all (every read failed, or the tube was never populated). The flies
+            # are still imported — that is the existing behaviour and curation
+            # handles them — but the import must say so, because otherwise the
+            # symptom is an import that "worked" and analyses that come out empty.
+            if selected_columns:
+                empty_cols = [c for c in selected_columns if monitor_data[c].isna().all()]
+                if empty_cols:
+                    self.import_issues.append(
+                        ImportIssue(
+                            reason=import_diagnostics.REASON_NO_USABLE_DATA,
+                            detail=(
+                                f"{len(empty_cols)} of {len(selected_columns)} selected "
+                                f"channels are entirely NaN over {start_dt} -> {stop_dt} "
+                                f"(no valid reading at any minute): "
+                                f"{', '.join(map(str, empty_cols[:8]))}"
+                                f"{' ...' if len(empty_cols) > 8 else ''}."
+                            ),
+                            monitor=monitor_id,
+                            start_datetime=start_dt,
+                            n_flies=len(empty_cols),
+                            excluded=False,
+                        )
+                    )
 
             if all_monitor_data.empty:
                 all_monitor_data = monitor_data
@@ -466,12 +747,15 @@ class MetadataProcessor:
                 return merged[merged["_fail"].isna()].drop(columns="_fail")
 
             if self.strict:
-                # Hard failure for tests/CI: never silently drop data.
+                # Hard failure for tests/CI: never silently drop data. The reasons
+                # travel with the exception so a strict caller gets the same
+                # diagnosis the UI does, not just a list of combo tuples.
                 raise ValueError(
                     "Validation failed for combos: "
                     f"{sorted(set(failed_combos))}. "
                     "Construct MetadataProcessor(strict=False) to auto-exclude "
-                    "them, or interactive=True to be prompted."
+                    "them, or interactive=True to be prompted.\n"
+                    + import_diagnostics.format_report(self.import_issues)
                 )
             elif self.interactive:
                 # Legacy CLI behavior: prompt on stdin. Only reachable when a
@@ -498,16 +782,57 @@ class MetadataProcessor:
                 )
                 metadata_df = _exclude_failed(metadata_df)
 
+        # Tubes that the file does not have. Dropped from the metadata as well as
+        # from the data so the two stay the same length (see the note at the
+        # missing-region branch above).
+        if dropped_ids:
+            metadata_df = metadata_df[~metadata_df["id"].isin(dropped_ids)]
+
         required_columns = ["start_datetime", "stop_datetime", "Monitor", "region_id"]
         for col in required_columns:
             if col not in metadata_df.columns:
                 raise ValueError(f"Missing required column in metadata: {col}")
 
-        print("\nValidation successful. Files are present and date ranges are valid.")
+        if self.import_issues:
+            print("\nValidation finished with issues — see the import report below.")
+        else:
+            print("\nValidation successful. Files are present and date ranges are valid.")
         print(f"Total channels selected: {len(all_monitor_data.columns)}")
         self._print_integrity_summary()
+        self._print_import_report(n_imported=len(all_monitor_data.columns))
 
         return metadata_df, all_monitor_data
+
+    def import_report_lines(self, n_imported=None):
+        """Return why flies were dropped, as ``(severity, text)`` tuples.
+
+        Same shape as ``integrity_summary_lines`` so the UI renders both with one
+        loop. The two reports answer different questions and are deliberately
+        separate: integrity is about holes INSIDE data that loaded, this is about
+        flies that never loaded at all.
+
+        Parameters
+        ----------
+        n_imported : int, optional
+            Channels actually imported. Supplied by the caller (the loader knows
+            it, the processor does not keep the frame around) so the report can
+            open with "imported N of M".
+        """
+        return import_diagnostics.summary_lines(
+            self.import_issues,
+            n_requested=self.n_flies_requested,
+            n_imported=n_imported,
+        )
+
+    def _print_import_report(self, n_imported=None):
+        """Print the import report to the console."""
+        text = import_diagnostics.format_report(
+            self.import_issues,
+            n_requested=self.n_flies_requested,
+            n_imported=n_imported,
+        )
+        if text:
+            print("\n" + text)
 
     def integrity_summary_lines(self):
         """Return the aggregate data-integrity summary as ``(severity, text)``
