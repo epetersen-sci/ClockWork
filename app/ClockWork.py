@@ -71,14 +71,14 @@ its results to one shared dataset that you can save and reload at any point.
 - **Data Loading** — Import raw Trikinetics `MonitorXXX.txt` files with a metadata
   table, or reload a saved `.nc` dataset. You pick which metadata columns define
   your comparison groups here.
-- **Preprocessing** — Curate dead flies, split the recording into light–dark (LD)
-  and constant-darkness (DD) phases, and run the 5-minute-rule sleep analysis.
+- **Preprocessing** — Curate dead flies and split the recording into light–dark (LD)
+  and constant-darkness (DD) phases.
 - **Period Analysis** — Per-fly free-running circadian period with rhythmicity
   classification: autocorrelation, Lomb–Scargle, CWT, and MESA.
 - **Periodograms** — Group-averaged period views — power spectra, autocorrelograms,
   and CWT scalograms — across the methods above.
-- **Sleep & Activity** — Daily activity and sleep profiles (ZT-binned) with group
-  comparisons and CSV export.
+- **Sleep & Activity** — Run the 5-minute-rule sleep analysis, then daily activity
+  and sleep profiles (ZT-binned) with group comparisons and CSV export.
 - **HMM Analysis** — Hidden Markov Model sleep/wake state classification (Wiggin,
   Harbison, and improved presets; Gaussian / Poisson / ZIP emissions).
 - **HMM Model Selection** — Cross-validate the number of states and emission model

@@ -119,12 +119,14 @@ taken, append `--server.port 8502`.
 3. **Data Loading** → *Fresh Start* → point at both → **Load & Validate Data** →
    **Create Dataset**. Choose which metadata columns define your comparison
    groups.
-4. **Preprocessing** → curate dead flies → apply the LD/DD split → run sleep
-   analysis.
-5. Then whichever analysis you need: **Period Analysis** for circadian period,
+4. **Preprocessing** → curate dead flies → apply the LD/DD split.
+5. **Sleep and Activity** → run sleep analysis at the top of the page. Every
+   sleep-dependent page downstream (**HMM Analysis**, **Sleep Deprivation**,
+   **Export**) reads the result from here.
+6. Then whichever analysis you need: **Period Analysis** for circadian period,
    **Sleep and Activity** for sleep/activity profiles, **HMM Analysis** for
    sleep-state structure, **Phase Shift** for light-pulse experiments.
-6. **Export** → save the dataset as `.nc` so you never have to recompute.
+7. **Export** → save the dataset as `.nc` so you never have to recompute.
 
 > **Watch the terminal on first load.** Some validation problems — most
 > importantly a monitor being dropped because its dates fall outside the data

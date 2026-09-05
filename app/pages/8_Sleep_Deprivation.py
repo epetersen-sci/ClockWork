@@ -1,7 +1,7 @@
 """
 Sleep Deprivation Analysis — compare baseline sleep to post-SD recovery sleep.
 
-Requires sleep analysis to be completed first (Preprocessing page, Step 3).
+Requires sleep analysis to be completed first (Sleep and Activity page).
 """
 
 import os
@@ -38,7 +38,7 @@ analyses = detect_analyses(ds)
 
 if not analyses.get("sleep", False):
     st.warning(
-        "Sleep analysis has not been run. Go to **Preprocessing** and complete Step 3 first."
+        "Sleep analysis has not been run. Go to **Sleep and Activity** and run it first."
     )
     st.stop()
 
