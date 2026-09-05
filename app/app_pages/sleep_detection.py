@@ -243,4 +243,4 @@ if st.button("Run Sleep Analysis", key="run_sleep"):
     # rides across in session_state because the rerun discards what was drawn.
     if _run_msg:
         st.session_state["_sleep_run_message"] = _run_msg
-        st.rerun(scope="app")
+        st.rerun()
