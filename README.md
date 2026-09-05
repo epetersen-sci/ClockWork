@@ -51,6 +51,7 @@ any point and reload without recomputing.
 - [Thresholds and defaults](#thresholds-and-defaults)
 - [Data model](#data-model)
 - [References](#references)
+- [Backlog](BACKLOG.md) — known issues deferred from the page reorganization
 
 ---
 
