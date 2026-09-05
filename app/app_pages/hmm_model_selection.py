@@ -45,8 +45,14 @@ with col1:
         min_value=2,
         max_value=min(10, n_flies),
         value=min(5, n_flies),
-        help=f"Dataset has {n_flies} flies. Each fold holds out ~{n_flies // min(5, n_flies)} flies.",
         key="cv_n_folds",
+    )
+    # The hold-out size depends on the fold count the user actually picked, so it
+    # cannot be computed inside help= — that string is built before the widget
+    # returns and would be stuck describing the default (min(5, n_flies)) forever.
+    # Rendering it as a caption after the widget lets it track the slider.
+    st.caption(
+        f"Dataset has {n_flies} flies. Each fold holds out ~{n_flies // n_folds} flies."
     )
 
     states_min = st.number_input(
