@@ -1,0 +1,19 @@
+# ClockWork Streamlit configuration.
+#
+# Read automatically when the app is launched from the repository root
+# (`streamlit run app/ClockWork.py`), which is what the README instructs.
+
+[theme]
+# Pin the app to the light theme.
+#
+# Without this, Streamlit follows each viewer's OS/browser dark-mode preference,
+# and several plots are built for a light canvas: the phase-shift actogram
+# hardcodes `plot_bgcolor="white"` (core/plotting.py), and the heatmaps and
+# scalograms use transparent backgrounds with colorscales chosen against white.
+# On a dark canvas those render as white panels with washed-out text, or lose
+# contrast entirely.
+#
+# Fixing the plots individually would mean auditing every figure in
+# core/plotting.py for both themes; pinning the canvas is the honest fix until
+# someone wants to do that audit.
+base = "light"

@@ -371,3 +371,312 @@ def sleep_analysis(
     merged_ds.attrs["sleep_phase"] = phase_used
 
     return merged_ds
+
+
+def _filter_ds_by_group(ds, selected_genotypes=None, selected_temperatures=None):
+    """Shared genotype/temperature filter used by the bout-duration helpers below.
+
+    Mirrors the filter block duplicated across plotting.py's group-aware
+    functions (e.g. daily_pattern_line). Returns the filtered dataset, or
+    None if the filter leaves no flies.
+    """
+    if selected_genotypes is None and selected_temperatures is None:
+        return ds
+    filter_mask = True
+    if "genotype" in ds.coords and selected_genotypes:
+        filter_mask = filter_mask & ds["genotype"].isin(selected_genotypes)
+    if "temperature" in ds.coords and selected_temperatures:
+        filter_mask = filter_mask & ds["temperature"].isin(selected_temperatures)
+    if not hasattr(filter_mask, "any"):
+        return ds
+    filtered_ids = ds["id"].where(filter_mask, drop=True)
+    if len(filtered_ids) == 0:
+        return None
+    return ds.sel(id=filtered_ids)
+
+
+def raw_bout_dataframe(ds, selected_genotypes=None, selected_temperatures=None):
+    """
+    Tidy per-bout table: one row per detected sleep bout, across all flies.
+
+    Columns: ``id``, ``sleep_bout_number``, ``group``, ``duration`` (minutes),
+    plus ``sleep_state``/``start_time``/``end_time`` when present. This is the
+    single source of truth behind the bout-duration CSV export and every
+    bout-duration curve/summary calculation below, so the export and the
+    plots can never drift apart.
+
+    Requires that sleep_analysis() has already been run (adds 'duration').
+    Returns an empty DataFrame (not an error) if 'duration' is absent, no
+    fly survives the group filter, or every bout is NaN (ragged padding for
+    flies with fewer bouts than the max — §2a: padding is never a real bout).
+    """
+    empty = pd.DataFrame(columns=["id", "sleep_bout_number", "group", "duration"])
+    if ds is None or "duration" not in ds.data_vars:
+        return empty
+
+    ds = _filter_ds_by_group(ds, selected_genotypes, selected_temperatures)
+    if ds is None:
+        return empty
+
+    bout_vars = [
+        v for v in ("duration", "sleep_state", "start_time", "end_time") if v in ds.data_vars
+    ]
+    df = ds[bout_vars].to_dataframe().reset_index().dropna(subset=["duration"])
+    if df.empty:
+        return empty
+
+    if "group" in ds.coords:
+        group_dict = {
+            id_val: ds["group"].sel(id=id_val).values.item() for id_val in df["id"].unique()
+        }
+        df["group"] = df["id"].map(group_dict)
+    elif "genotype" in ds.coords and "temperature" in ds.coords:
+        df["group"] = df["id"].apply(
+            lambda x: f"{ds['genotype'].sel(id=x).values.item()}-{ds['temperature'].sel(id=x).values.item()}"
+        )
+    else:
+        df["group"] = "All Flies"
+
+    return df.reset_index(drop=True)
+
+
+def per_fly_bout_duration_curves(
+    ds,
+    method="kde",
+    selected_genotypes=None,
+    selected_temperatures=None,
+    n_grid=200,
+    min_bouts=2,
+    kde_bandwidth=0.3,
+):
+    """
+    Per-fly sleep-bout-duration curve, one row per (fly, grid point).
+
+    Computing ONE curve per fly (rather than pooling every bout across flies
+    into a single distribution) means a fly with many bouts doesn't outweigh
+    a fly with few — every fly counts once. All flies in the filtered set
+    share the same x-grid, so their curves are directly comparable and can be
+    pivoted straight into plotting.group_spectrum_plot's ``per_group_curves``
+    (group -> (n_flies, n_grid) matrix).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+    method : {'kde', 'survival'}
+        'kde': Gaussian KDE of log10(bout duration), evaluated on a
+            log-spaced grid — a smooth density estimate. Right-skewed
+            duration data is much better behaved log-transformed than raw.
+        'survival': empirical P(bout duration > t), evaluated on a linear
+            grid — the complementary CDF. No bandwidth or bin-width
+            parameter at all; every bout contributes directly.
+    n_grid : int
+        Number of grid points spanning the pooled [min, max] bout duration.
+    min_bouts : int
+        Flies with fewer valid bouts than this are skipped (dropped, not
+        fabricated) — a KDE/survival curve from 1 bout is not informative.
+    kde_bandwidth : float
+        Passed to ``scipy.stats.gaussian_kde`` as ``bw_method`` (method='kde' only).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``id``, ``group``, ``x``, ``y``.
+    """
+    if method not in ("kde", "survival"):
+        raise ValueError(f"Unknown method {method!r}; use 'kde' or 'survival'.")
+
+    empty = pd.DataFrame(columns=["id", "group", "x", "y"])
+    bout_df = raw_bout_dataframe(ds, selected_genotypes, selected_temperatures)
+    if bout_df.empty:
+        return empty
+
+    lo = max(float(bout_df["duration"].min()), 1e-6)
+    hi = float(bout_df["duration"].max())
+    if hi <= lo:
+        hi = lo * 1.5
+
+    grid = (
+        np.logspace(np.log10(lo), np.log10(hi), n_grid)
+        if method == "kde"
+        else np.linspace(lo, hi, n_grid)
+    )
+
+    rows = []
+    for fly_id, fly_df in bout_df.groupby("id"):
+        durations = fly_df["duration"].to_numpy(dtype=float)
+        if len(durations) < min_bouts:
+            continue
+        group = fly_df["group"].iloc[0]
+
+        if method == "kde":
+            from scipy.stats import gaussian_kde
+
+            try:
+                kde = gaussian_kde(np.log10(durations), bw_method=kde_bandwidth)
+                y = kde(np.log10(grid))
+            except np.linalg.LinAlgError:
+                # All bouts the same duration -> zero-variance input, KDE undefined.
+                continue
+        else:
+            y = np.array([(durations > t).mean() for t in grid])
+
+        rows.append(pd.DataFrame({"id": fly_id, "group": group, "x": grid, "y": y}))
+
+    return pd.concat(rows, ignore_index=True) if rows else empty
+
+
+def bout_duration_summary(ds, selected_genotypes=None, selected_temperatures=None):
+    """
+    Per-fly bout-duration summary — ONE row per fly.
+
+    Columns: ``id``, ``group``, ``n_bouts``, ``median_duration_min``,
+    ``log_mean_duration_min`` (geometric mean — the arithmetic mean in
+    log10-duration space, back-transformed to minutes; more robust than the
+    arithmetic mean for a strongly right-skewed bout-duration distribution).
+    This is the per-fly table behind the group-comparison stats in
+    :func:`bout_duration_group_stats` and the per-fly-summary CSV export —
+    one computation, so the displayed stat and the export can't drift.
+
+    Empty DataFrame if no fly survives the group filter.
+    """
+    cols = ["id", "group", "n_bouts", "median_duration_min", "log_mean_duration_min"]
+    bout_df = raw_bout_dataframe(ds, selected_genotypes, selected_temperatures)
+    if bout_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    rows = []
+    for fly_id, fly_df in bout_df.groupby("id"):
+        durations = fly_df["duration"].to_numpy(dtype=float)
+        rows.append(
+            {
+                "id": fly_id,
+                "group": fly_df["group"].iloc[0],
+                "n_bouts": len(durations),
+                "median_duration_min": float(np.median(durations)),
+                "log_mean_duration_min": float(10 ** np.mean(np.log10(durations))),
+            }
+        )
+    return pd.DataFrame(rows, columns=cols).sort_values(["group", "id"]).reset_index(drop=True)
+
+
+def bout_duration_group_stats(summary_df, value_col="log_mean_duration_min", alpha=0.05):
+    """
+    Omnibus + pairwise group comparison of a per-fly bout-duration summary
+    statistic (from :func:`bout_duration_summary`).
+
+    The comparison runs on log10(value_col) — bout-duration summaries are
+    themselves right-skewed across flies, and testing in log space is what
+    makes ``log_mean_duration_min`` (a geometric mean) the natural pairing:
+    an arithmetic-mean/normality-based test on log10 values is exactly a
+    test on that geometric mean.
+
+    Groups with fewer than 2 flies are dropped from the comparison (a mean
+    of one fly is a data point, not a distribution).
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Output of :func:`bout_duration_summary`; must have ``group`` and
+        ``value_col`` columns.
+    value_col : str
+    alpha : float
+        Significance threshold for the normality/variance pre-checks that
+        decide ANOVA vs. Kruskal-Wallis, and for pairwise significance.
+
+    Returns
+    -------
+    dict
+        ``test`` ('anova'/'kruskal'/'none'), ``statistic``, ``pvalue``,
+        ``pairwise`` (list of {group_a, group_b, pvalue, pvalue_adj,
+        significant, stars}), ``n_per_group``, ``normality_passed``,
+        ``equal_variance_passed``, ``notes``.
+    """
+    from scipy import stats as _stats
+
+    result = {
+        "test": "none",
+        "statistic": float("nan"),
+        "pvalue": float("nan"),
+        "pairwise": [],
+        "n_per_group": {},
+        "normality_passed": False,
+        "equal_variance_passed": False,
+        "notes": "",
+    }
+
+    if summary_df is None or summary_df.empty or value_col not in summary_df.columns:
+        result["notes"] = "No per-fly summary data available."
+        return result
+
+    df = summary_df.dropna(subset=[value_col])
+    df = df[df[value_col] > 0]  # log10 requires positive values
+    n_per_group = df.groupby("group")[value_col].size().to_dict()
+    result["n_per_group"] = n_per_group
+
+    valid_groups = sorted(g for g, n in n_per_group.items() if n >= 2)
+    if len(valid_groups) < 2:
+        result["notes"] = "Fewer than 2 groups with >=2 flies; no test run."
+        return result
+
+    values_by_group = {
+        g: np.log10(df.loc[df["group"] == g, value_col].to_numpy()) for g in valid_groups
+    }
+    samples = [values_by_group[g] for g in valid_groups]
+
+    normal = all(len(s) < 3 or _stats.shapiro(s)[1] > alpha for s in samples)
+    equal_var = _stats.levene(*samples)[1] > alpha
+    result["normality_passed"] = bool(normal)
+    result["equal_variance_passed"] = bool(equal_var)
+
+    if normal and equal_var:
+        stat, p = _stats.f_oneway(*samples)
+        test_name = "anova"
+    else:
+        stat, p = _stats.kruskal(*samples)
+        test_name = "kruskal"
+    result["test"] = test_name
+    result["statistic"] = float(stat)
+    result["pvalue"] = float(p)
+
+    pair_keys, pair_pvals = [], []
+    for i in range(len(valid_groups)):
+        for j in range(i + 1, len(valid_groups)):
+            ga, gb = valid_groups[i], valid_groups[j]
+            if normal:
+                _, p_pair = _stats.ttest_ind(
+                    values_by_group[ga], values_by_group[gb], equal_var=equal_var
+                )
+            else:
+                _, p_pair = _stats.mannwhitneyu(
+                    values_by_group[ga], values_by_group[gb], alternative="two-sided"
+                )
+            pair_keys.append((ga, gb))
+            pair_pvals.append(float(p_pair))
+
+    if pair_pvals:
+        if len(pair_pvals) > 1:
+            from statsmodels.stats.multitest import multipletests
+
+            _, p_adj, _, _ = multipletests(pair_pvals, alpha=alpha, method="holm")
+        else:
+            p_adj = pair_pvals
+        for (ga, gb), p_raw, p_corr in zip(pair_keys, pair_pvals, p_adj):
+            if p_corr < 0.001:
+                stars = "***"
+            elif p_corr < 0.01:
+                stars = "**"
+            elif p_corr < alpha:
+                stars = "*"
+            else:
+                stars = "ns"
+            result["pairwise"].append(
+                {
+                    "group_a": ga,
+                    "group_b": gb,
+                    "pvalue": float(p_raw),
+                    "pvalue_adj": float(p_corr),
+                    "significant": bool(p_corr < alpha),
+                    "stars": stars,
+                }
+            )
+    return result

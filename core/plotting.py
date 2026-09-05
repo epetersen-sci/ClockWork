@@ -10,7 +10,8 @@ Functions
 ---------
 dataset_to_heatmap()              — Activity/sleep heatmap (all flies × time)
 daily_pattern_line()              — ZT-binned mean ± SEM line plot per group
-sleep_bout_histogram()            — Sleep bout duration histogram by group
+sleep_bout_duration_lines()       — Per-fly sleep bout duration curves (KDE/survival) by group
+group_spectrum_plot()             — Generic mean±SEM curve overlay per group on a shared x-axis
 summary_bars()                    — Grouped bar chart: total activity/sleep by day/night/all-day
 single_fly_scalogram_plotly()        — Interactive Plotly scalogram for one fly
 group_ridge_density_plotly()         — Plotly ridge density of CWT periods per group
@@ -492,140 +493,141 @@ def sleep_state_totals_bars(
     return fig, stat
 
 
-def sleep_bout_histogram(
-    ds: xr.Dataset, selected_genotypes=None, selected_temperatures=None, bin_size_minutes=5
-) -> go.Figure:
+def sleep_bout_duration_lines(
+    ds: xr.Dataset,
+    method: str = "kde",
+    selected_genotypes=None,
+    selected_temperatures=None,
+    show_individual: bool = True,
+    stat_col: str = "log_mean_duration_min",
+) -> tuple:
     """
-    Create a sleep bout duration histogram grouped by condition.
+    Per-fly sleep-bout-duration curve, overlaid as one line per genotype
+    (mean ± SEM across flies, with faint per-fly lines underneath).
 
-    Requires that sleep_analysis() has been run (adds 'duration' variable).
+    Replaces the old pooled-bout histogram: pooling every bout across flies
+    let flies with more bouts dominate the shape and made 3+ genotypes
+    unreadable as overlapping bars. Here every fly contributes exactly one
+    curve first (via sleep_analysis.per_fly_bout_duration_curves), so
+    genotypes overlay cleanly as lines regardless of how fragmented any one
+    fly's sleep is. All the actual number-crunching — curve computation,
+    per-fly summary stats, the group-comparison test — lives in
+    core/sleep_analysis.py; this function only pivots that output into
+    plotly traces via the shared group_spectrum_plot renderer.
 
     Parameters
     ----------
     ds : xr.Dataset
-    selected_genotypes : list, optional
-    selected_temperatures : list, optional
-    bin_size_minutes : int
-        Histogram bin width in minutes (default 5).
+        Must have 'duration' (from sleep_analysis.sleep_analysis()).
+    method : {'kde', 'survival'}
+        'kde' (default): smooth density of log10(bout duration) per fly, log-x.
+        'survival': empirical P(bout duration > t) per fly, log-y — no
+            bandwidth/binning parameter, makes tail differences most visible.
+    selected_genotypes, selected_temperatures : list, optional
+    show_individual : bool
+        Draw faint per-fly lines under each genotype's bold mean.
+    stat_col : {'log_mean_duration_min', 'median_duration_min'}
+        Per-fly summary statistic the significance annotation is based on.
 
     Returns
     -------
-    go.Figure
+    (go.Figure, curves_df, summary_df, stats_result)
+        curves_df : tidy (id, group, x, y) — the plotted per-fly curves.
+        summary_df : per-fly (id, group, n_bouts, median_duration_min,
+            log_mean_duration_min) — the CSV-export payload.
+        stats_result : dict from sleep_analysis.bout_duration_group_stats
+            (pvalue is NaN when there wasn't enough data to test — see
+            its 'notes' field).
     """
-    if ds is None:
-        return go.Figure()
-
-    if "duration" not in ds.data_vars:
-        return go.Figure().add_annotation(
-            text="No sleep bout duration data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
-
-    if "sleep_bout_number" not in ds.coords:
-        return go.Figure().add_annotation(
-            text="No sleep bout data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
-
-    # Apply group filters
-    if selected_genotypes is not None or selected_temperatures is not None:
-        filter_mask = True
-        if "genotype" in ds.coords and selected_genotypes:
-            filter_mask = filter_mask & ds["genotype"].isin(selected_genotypes)
-        if "temperature" in ds.coords and selected_temperatures:
-            filter_mask = filter_mask & ds["temperature"].isin(selected_temperatures)
-
-        if hasattr(filter_mask, "any"):
-            filtered_ids = ds["id"].where(filter_mask, drop=True)
-            if len(filtered_ids) == 0:
-                return go.Figure().add_annotation(
-                    text="No data available for selected groups.",
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                    showarrow=False,
-                )
-            ds = ds.sel(id=filtered_ids)
-
-    df = ds["duration"].to_dataframe(name="duration").reset_index().dropna(subset=["duration"])
-    if df.empty:
-        return go.Figure().add_annotation(
-            text="No sleep bout duration data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
-
-    # Build group labels
-    if "group" in ds.coords:
-        group_dict = {
-            id_val: ds["group"].sel(id=id_val).values.item() for id_val in df["id"].unique()
-        }
-        df["group"] = df["id"].map(group_dict)
-    elif "genotype" in ds.coords and "temperature" in ds.coords:
-        df["group"] = df["id"].apply(
-            lambda x: f"{ds['genotype'].sel(id=x).values.item()}-{ds['temperature'].sel(id=x).values.item()}"
-        )
-    else:
-        df["group"] = "All Flies"
-
-    unique_groups = sorted(df["group"].unique())
-    fig = go.Figure()
-
-    for group in unique_groups:
-        group_data = df[df["group"] == group]["duration"]
-        if len(group_data) == 0:
-            continue
-
-        mean_duration = group_data.mean()
-        median_duration = group_data.median()
-        n_bouts = len(group_data)
-        n_flies = df[df["group"] == group]["id"].nunique()
-
-        fig.add_trace(
-            go.Histogram(
-                x=group_data,
-                name=f"{group} (n={n_flies} flies, {n_bouts} bouts)",
-                xbins=dict(size=bin_size_minutes),
-                opacity=0.7,
-                histnorm="probability density" if len(unique_groups) > 1 else "",
-            )
-        )
-        # Mark mean and median
-        fig.add_vline(
-            x=mean_duration,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"Mean: {mean_duration:.2f} min",
-            annotation_position="top",
-        )
-        fig.add_vline(
-            x=median_duration,
-            line_dash="dash",
-            line_color="blue",
-            annotation_text=f"Median: {median_duration:.2f} min",
-            annotation_position="top",
-        )
-
-    fig.update_layout(
-        title=f"Sleep Bout Duration Distribution (n={len(unique_groups)} groups)",
-        xaxis_title="Sleep Bout Duration (minutes)",
-        yaxis_title="Frequency" if len(unique_groups) == 1 else "Probability Density",
-        barmode="overlay",
-        hovermode="x unified",
+    from sleep_analysis import (
+        bout_duration_group_stats,
+        bout_duration_summary,
+        per_fly_bout_duration_curves,
     )
-    return fig
+
+    empty_curves = pd.DataFrame(columns=["id", "group", "x", "y"])
+    empty_summary = pd.DataFrame(
+        columns=["id", "group", "n_bouts", "median_duration_min", "log_mean_duration_min"]
+    )
+
+    if ds is None or "duration" not in ds.data_vars:
+        fig = go.Figure().add_annotation(
+            text="No sleep bout duration data available.",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig, empty_curves, empty_summary, None
+
+    curves_df = per_fly_bout_duration_curves(
+        ds,
+        method=method,
+        selected_genotypes=selected_genotypes,
+        selected_temperatures=selected_temperatures,
+    )
+    summary_df = bout_duration_summary(
+        ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
+    )
+
+    if curves_df.empty:
+        fig = go.Figure().add_annotation(
+            text="No sleep bout duration data available for the selected groups.",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig, curves_df, summary_df, None
+
+    pivot = curves_df.pivot_table(index=["group", "id"], columns="x", values="y")
+    x_axis = pivot.columns.to_numpy(dtype=float)
+    per_group_curves = {
+        str(g): sub.to_numpy(dtype=float) for g, sub in pivot.groupby(level="group")
+    }
+
+    if method == "kde":
+        xlabel, ylabel = "Bout duration (min, log scale)", "Density (log10-duration space)"
+        title = "Sleep Bout Duration — per-fly log-duration KDE"
+        x_log, y_log = True, False
+    else:
+        xlabel, ylabel = "t (min)", "P(bout duration > t)"
+        title = "Sleep Bout Duration — per-fly survival curve (CCDF)"
+        x_log, y_log = False, True
+
+    fig = group_spectrum_plot(
+        per_group_curves,
+        x_axis,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        title=title,
+        x_log=x_log,
+        y_log=y_log,
+        ref_period=None,
+        zero_line=False,
+        show_individual=show_individual,
+    )
+
+    stats_result = bout_duration_group_stats(summary_df, value_col=stat_col)
+    p_val = stats_result.get("pvalue", float("nan"))
+    if np.isfinite(p_val):
+        p_str = "p<0.001" if p_val < 0.001 else f"p={p_val:.3f}"
+        label = "ANOVA" if stats_result["test"] == "anova" else "Kruskal-Wallis"
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.99,
+            y=1.06,
+            xanchor="right",
+            yanchor="bottom",
+            text=f"{label} on {stat_col}: {p_str}",
+            showarrow=False,
+            font=dict(size=11, color="gray"),
+        )
+
+    return fig, curves_df, summary_df, stats_result
 
 
 def per_fly_summary_table(
@@ -1379,9 +1381,11 @@ def group_spectrum_plot(
     ylabel="Normalised power",
     title="",
     x_log=True,
+    y_log=False,
     ref_period=24.0,
     zero_line=False,
     group_order=None,
+    show_individual=False,
     return_data=False,
 ):
     """Overlay one group-averaged curve (mean ± SEM band) per group on a shared x-axis.
@@ -1404,12 +1408,20 @@ def group_spectrum_plot(
     xlabel, ylabel, title : str
     x_log : bool
         Log-scale x (period methods) vs linear (AC lag).
+    y_log : bool
+        Log-scale y. When True, the SEM band's lower edge is floored at a small
+        positive epsilon (log of zero/negative is undefined) instead of going
+        negative — cosmetic only, does not affect the plotted mean.
     ref_period : float or None
         Draw a vertical dashed reference line at this x (e.g. 24 h) when in range.
     zero_line : bool
         Draw a horizontal dashed line at y=0 (AC correlogram).
     group_order : list or None
         Explicit group ordering / colour assignment; defaults to sorted keys.
+    show_individual : bool
+        If True, draw each fly's own curve as a faint line under the group
+        mean (same colour/legendgroup as its group, so a legend click hides
+        the individual lines along with the mean and its band).
 
     Returns
     -------
@@ -1460,6 +1472,27 @@ def group_spectrum_plot(
         n_flies = mat.shape[0]
 
         lg = str(gname)
+
+        # Individual fly lines, faint, drawn first so the bold mean sits on top.
+        # Same legendgroup + showlegend=False: a legend click hides these together
+        # with the mean and its band, not as a separately-toggleable item.
+        if show_individual:
+            for fly_row in mat:
+                fly_valid = np.isfinite(fly_row)
+                if not np.any(fly_valid):
+                    continue
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_axis[fly_valid],
+                        y=fly_row[fly_valid],
+                        mode="lines",
+                        line=dict(color=f"rgba({r},{g_c},{b_c},0.25)", width=1),
+                        legendgroup=lg,
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
+                )
+
         fig.add_trace(
             go.Scatter(
                 x=x_axis,
@@ -1477,6 +1510,8 @@ def group_spectrum_plot(
             xv = x_axis[valid]
             hi = (mean + sem)[valid]
             lo = (mean - sem)[valid]
+            if y_log:
+                lo = np.maximum(lo, 1e-6)
             fig.add_trace(
                 go.Scatter(
                     x=np.concatenate([xv, xv[::-1]]),
@@ -1517,7 +1552,11 @@ def group_spectrum_plot(
     _BLACK = "black"
     fig.update_xaxes(title_font=dict(color=_BLACK), tickfont=dict(color=_BLACK), linecolor=_BLACK)
     fig.update_yaxes(
-        title=ylabel, title_font=dict(color=_BLACK), tickfont=dict(color=_BLACK), linecolor=_BLACK
+        title=ylabel,
+        title_font=dict(color=_BLACK),
+        tickfont=dict(color=_BLACK),
+        linecolor=_BLACK,
+        type="log" if y_log else "linear",
     )
     fig.update_layout(
         title=title,

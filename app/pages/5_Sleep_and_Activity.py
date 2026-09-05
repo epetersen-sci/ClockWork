@@ -1,12 +1,14 @@
 """
-Sleep and Activity Page - LD activity & sleep patterns, bout histogram,
-per-group activity/sleep summaries, and sleep-state (short/intermediate/long)
-totals (interactive Plotly plots + save-to-working-folder CSV export).
+Sleep and Activity Page - sleep analysis, LD activity & sleep patterns, per-fly sleep bout
+duration curves, per-group activity/sleep summaries, and sleep-state
+(short/intermediate/long) totals (interactive Plotly plots +
+save-to-working-folder CSV export).
 """
 
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -21,8 +23,15 @@ for p in [CORE_DIR, APP_DIR]:
 import dam_utilities
 import export_helpers as ex
 import plotting
+import sleep_analysis
 from analysis_detection import detect_analyses
-from dataset_meta import PHASE_DD, PHASE_LD, dataset_fingerprint, dataset_phase
+from dataset_meta import (
+    PHASE_DD,
+    PHASE_LD,
+    dataset_fingerprint,
+    dataset_phase,
+    is_split_applied,
+)
 
 st.header("Sleep and Activity")
 
@@ -106,6 +115,22 @@ def _cached_summary_table(
     )
 
 
+@st.cache_data(show_spinner=False)
+def _cached_bout_duration_lines(
+    _fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
+):
+    """Cache the per-fly bout-duration curve computation (KDE/survival curves
+    + per-fly summary stats + the group-comparison test) — the same numbers
+    drive the plot and both CSV exports below, so they can't drift apart."""
+    return plotting.sleep_bout_duration_lines(
+        _ds,
+        method=method,
+        selected_genotypes=list(selected_genotypes) if selected_genotypes else None,
+        selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
+        show_individual=show_individual,
+    )
+
+
 def _summary_csv(tbl):
     """Friendly-header CSV of the per-group summary table (mean + SEM per period)."""
     return tbl.rename(
@@ -121,6 +146,253 @@ def _summary_csv(tbl):
         }
     ).to_csv(index=False)
 
+
+# ============================================================
+# Sleep Analysis
+# ============================================================
+# Computes the sleep variables every sleep plot below depends on, and that the
+# downstream Sleep Deprivation / HMM / Export pages read off the master dataset.
+#
+# This deliberately sits ABOVE the sidebar group filter. That filter narrows the
+# local ``ds`` for plotting only, while this block writes its result back to
+# ``session_state.dataset`` — run from below the filter, deselecting a group and
+# hitting Run would silently drop those flies from the master dataset.
+
+
+@st.fragment
+def _sleep_analysis_fragment():
+    st.subheader("Sleep Analysis")
+
+    # Outcome of the last successful run, stashed just before the app-scoped rerun
+    # below — that rerun discards whatever this fragment had already drawn, so a
+    # plain st.success() at the call site would never be seen.
+    _last_msg = st.session_state.pop("_sleep_run_message", None)
+    if _last_msg:
+        st.success(_last_msg)
+
+    ds = st.session_state.dataset
+    analyses = detect_analyses(ds)
+
+    if "moving" not in ds.data_vars:
+        st.warning(
+            "Curate dead animals on the **Preprocessing** page first — curation "
+            "computes the movement data that sleep analysis needs."
+        )
+        return
+
+    # Phase selection for sleep analysis. Read canonical phase metadata
+    # from the dataset itself (core/dataset_meta.py) so a DD-only or
+    # LD-only NetCDF doesn't trigger the "split not applied" prompt.
+    _ds_phase = dataset_phase(ds)
+    _has_split_datasets = (
+        st.session_state.get("dataset_DD") is not None
+        and st.session_state.get("dataset_LD") is not None
+    )
+    _has_dd_coord = "first_DD_day" in ds.coords
+
+    # Phase API (Stage-2): feed the WHOLE dataset and pass an explicit phase to
+    # core sleep_analysis (dam_utilities.select_phase derives the epoch per fly).
+    # NEVER feed a pre-sliced/re-zeroed object — the selector would re-mask it.
+    # `_sleep_ds` is the dataset handed to sleep_analysis; `_sleep_phase_arg` is
+    # the phase argument ("LD"/"DD"/"both"); `_sleep_phase` is the display label.
+    if _ds_phase in (PHASE_LD, PHASE_DD):
+        # The loaded file is itself a single-phase partition; analyse it as-is
+        # (no further masking — the file already IS the phase).
+        _sleep_ds = ds
+        _sleep_phase = _ds_phase
+        _sleep_phase_arg = "both"
+        st.info(
+            f"Using the loaded **{_sleep_phase}** dataset for sleep analysis "
+            f"({len(_sleep_ds['id'])} flies, {len(_sleep_ds['time'])} timepoints)."
+        )
+    elif _has_split_datasets:
+        sleep_phase = st.radio(
+            "Data phase for sleep analysis",
+            ["LD (recommended)", "DD"],
+            index=0,
+            horizontal=True,
+            help="Sleep analysis is typically performed on LD data where "
+            "the light-dark cycle drives consolidated sleep/wake patterns. "
+            "DD is an explicit request for constant-darkness sleep.",
+            key="sleep_phase_radio",
+        )
+        _sleep_phase = "LD" if "LD" in sleep_phase else "DD"
+        # Feed the whole (unsplit) master + explicit phase — not dataset_LD/DD.
+        _sleep_ds = ds
+        _sleep_phase_arg = _sleep_phase
+        st.info(
+            f"Computing **{_sleep_phase}** sleep from the full dataset "
+            f"({len(ds['id'])} flies, {len(ds['time'])} timepoints)."
+        )
+    elif _has_dd_coord and not is_split_applied(ds):
+        st.warning(
+            "LD/DD split has not been applied yet — it lives on the **Preprocessing** "
+            "page. Sleep analysis will run on the **full unsplit dataset** (LD+DD). "
+            "For best results, apply the split first so sleep analysis can use LD "
+            "data only."
+        )
+        _sleep_ds = ds
+        _sleep_phase = "unsplit"
+        _sleep_phase_arg = "both"
+    else:
+        _sleep_ds = ds
+        _sleep_phase = "full"
+        _sleep_phase_arg = "both"
+
+    # Check if sleep analysis was already done (on the target dataset)
+    if "sleep" in _sleep_ds.data_vars:
+        _sleep_sec = _sleep_ds.attrs.get("sleep_threshold_seconds")
+        _short_max = _sleep_ds.attrs.get("sleep_short_max_min")
+        _inter_max = _sleep_ds.attrs.get("sleep_inter_max_min")
+        if _sleep_sec is not None:
+            _state_info = ""
+            if _short_max is not None and _inter_max is not None:
+                _state_info = (
+                    f", state thresholds: short <{int(_short_max)} min, "
+                    f"intermediate <{int(_inter_max)} min"
+                )
+            st.info(
+                f"Sleep analysis already completed on this dataset — "
+                f"**{int(_sleep_sec)}s** threshold ({int(_sleep_sec) // 60} min)"
+                f"{_state_info}"
+            )
+        else:
+            st.info("Sleep analysis already completed (parameters not recorded).")
+        rerun_sleep = st.checkbox("Re-run sleep analysis with different parameters", value=False)
+        if not rerun_sleep:
+            return
+    elif analyses["sleep"]:
+        # Sleep exists on master but not on the phase dataset
+        st.info(
+            "Sleep analysis was previously run but not on this phase dataset. "
+            "Run it below to compute sleep for the selected phase."
+        )
+
+    sleep_threshold = st.number_input(
+        "Sleep threshold (seconds) - minimum immobility duration to classify as sleep",
+        min_value=60,
+        max_value=1800,
+        value=300,
+        step=60,
+    )
+
+    with st.expander("Sleep State Thresholds (Abhilash et al. 2026)"):
+        short_max_min = st.number_input(
+            "Short sleep upper bound (minutes)",
+            min_value=5,
+            max_value=120,
+            value=30,
+            step=5,
+            help="Bouts 5–N min = short sleep (paper default: 30 min, DAM system).",
+            key="short_max_min_input",
+        )
+        inter_max_min = st.number_input(
+            "Intermediate sleep upper bound (minutes)",
+            min_value=short_max_min + 1,
+            max_value=360,
+            value=max(60, short_max_min + 1),
+            step=5,
+            help="Bouts N–M min = intermediate sleep; >M min = long sleep (paper default: 60 min).",
+            key="inter_max_min_input",
+        )
+        st.caption(
+            "These thresholds are provisional and DAM-system specific. "
+            "Adjust based on your experimental context and the paper's supplemental methods."
+        )
+
+    if st.button("Run Sleep Analysis", key="run_sleep"):
+        _run_msg = None
+        with st.spinner(f"Running sleep analysis on {_sleep_phase} data..."):
+            try:
+                _sleep_ds = sleep_analysis.sleep_analysis(
+                    _sleep_ds,
+                    sleep_threshold_sec=sleep_threshold,
+                    short_max_min=short_max_min,
+                    inter_max_min=inter_max_min,
+                    phase=_sleep_phase_arg,
+                )
+                # _sleep_ds is now the WHOLE dataset with phase-masked sleep
+                # (out-of-phase minutes are -1). The master always carries it.
+                st.session_state.dataset = _sleep_ds
+                # TRANSITIONAL (retires with the dataset_LD/DD sweep): unmigrated
+                # downstream pages still read the pre-sliced dataset_LD/DD, so
+                # regenerate the one for the phase just computed from the new sleep
+                # result. Same slice params as the Preprocessing split, so
+                # activity/moving are identical and now carry the correct per-phase
+                # sleep.
+                if _has_split_datasets and _sleep_phase in ("LD", "DD"):
+                    _gap = int(_sleep_ds.attrs.get("gap_threshold_minutes", 60))
+                    if _sleep_phase == "LD":
+                        _sliced = dam_utilities.split_xarray_dataset(
+                            _sleep_ds, phase="LD", gap_threshold_minutes=_gap
+                        )
+                    else:
+                        _disc = bool(_sleep_ds.attrs.get("split_discard_first_dd_day", 0))
+                        _sliced = dam_utilities.split_xarray_dataset(
+                            _sleep_ds,
+                            phase="DD",
+                            discard_first_dd_day=_disc,
+                            gap_threshold_minutes=_gap,
+                        )
+                    # §2b: slicing upcasts the int8 sleep masks to float (NaN trim
+                    # padding). Restore int8 (padding/missing → -1) so the sliced
+                    # object keeps the efficient dtype the masks had on the master.
+                    for _sv in ("sleep", "sleep_short", "sleep_intermediate", "sleep_long"):
+                        if _sv in _sliced.data_vars:
+                            _sliced[_sv] = _sliced[_sv].fillna(-1).astype("int8")
+                    if _sleep_phase == "LD":
+                        st.session_state.dataset_LD = _sliced
+                    else:
+                        st.session_state.dataset_DD = _sliced
+                st.session_state.analyses = detect_analyses(_sleep_ds)
+                ds = _sleep_ds
+
+                if "duration" in ds.data_vars:
+                    bout_df = (
+                        ds["duration"].to_dataframe().reset_index().dropna(subset=["duration"])
+                    )
+                    n_bouts = len(bout_df)
+                    mean_dur = bout_df["duration"].mean()
+
+                    # Build per-state counts if sleep_state variable is present
+                    _state_msg = ""
+                    if "sleep_state" in ds.data_vars:
+                        try:
+                            state_counts = (
+                                ds["sleep_state"]
+                                .to_dataframe()
+                                .reset_index()
+                                .dropna()["sleep_state"]
+                                .value_counts()
+                            )
+                            _state_parts = [f"{k}: {v}" for k, v in state_counts.items()]
+                            _state_msg = f" | States — {', '.join(_state_parts)}"
+                        except Exception:
+                            pass
+
+                    _run_msg = (
+                        f"Sleep analysis complete. "
+                        f"Detected {n_bouts} sleep bouts (mean duration: {mean_dur:.1f} min)."
+                        f"{_state_msg}"
+                    )
+                else:
+                    _run_msg = "Sleep analysis complete."
+            except Exception as e:
+                st.error(f"Error during sleep analysis: {e}")
+
+        # Outside the try on purpose: st.rerun raises RerunException, an Exception
+        # subclass the handler above would swallow and report as a failure. The
+        # rerun is app-scoped rather than fragment-scoped because a fragment rerun
+        # re-runs only this function, leaving every plot below still rendering the
+        # pre-sleep dataset. The message rides across in session_state.
+        if _run_msg:
+            st.session_state["_sleep_run_message"] = _run_msg
+            st.rerun(scope="app")
+
+
+_sleep_analysis_fragment()
+
+st.divider()
 
 ds = st.session_state.dataset
 analyses = detect_analyses(ds)
@@ -320,19 +592,65 @@ if analyses["sleep"]:
 
     st.divider()
 
-    # Sleep Bout Histogram
-    st.subheader("Sleep Bout Duration Histogram")
+    # Sleep Bout Duration
+    st.subheader("Sleep Bout Duration")
     if "duration" in ds.data_vars:
-        fig = plotting.sleep_bout_histogram(
-            ds,
-            selected_genotypes=selected_genotypes,
-            selected_temperatures=selected_temperatures,
+        st.caption(
+            "One curve per fly (not one pooled histogram) — a fly with many bouts no "
+            "longer outweighs a fly with few, so genotypes overlay cleanly as lines."
         )
-        st.plotly_chart(fig, width="stretch")
+        _bd_col1, _bd_col2 = st.columns([2, 1])
+        with _bd_col1:
+            _bd_method_label = st.radio(
+                "Curve type",
+                ["KDE (log-duration)", "Survival curve (CCDF)"],
+                index=0,
+                horizontal=True,
+                key="bout_curve_method",
+            )
+        with _bd_col2:
+            bout_show_individual = st.checkbox(
+                "Show individual flies", value=True, key="bout_show_individual"
+            )
+        bout_method = "kde" if _bd_method_label.startswith("KDE") else "survival"
 
-        bout_df = ds["duration"].to_dataframe().reset_index().dropna(subset=["duration"])
+        _ds_fp_bout = dataset_fingerprint(ds)
+        bout_fig, bout_curves_df, bout_summary_df, bout_stats = _cached_bout_duration_lines(
+            _ds_fp_bout,
+            ds,
+            bout_method,
+            tuple(selected_genotypes) if selected_genotypes else None,
+            tuple(selected_temperatures) if selected_temperatures else None,
+            bout_show_individual,
+        )
+        st.plotly_chart(bout_fig, width="stretch", theme=None)
+
+        if bout_stats and np.isfinite(bout_stats.get("pvalue", float("nan"))):
+            st.caption(
+                f"{bout_stats['test'].upper()} across groups on per-fly "
+                f"log-mean bout duration: p={bout_stats['pvalue']:.4f} "
+                f"(normality {'passed' if bout_stats['normality_passed'] else 'failed'}, "
+                f"equal variance {'passed' if bout_stats['equal_variance_passed'] else 'failed'})."
+            )
+            if bout_stats["pairwise"]:
+                st.dataframe(pd.DataFrame(bout_stats["pairwise"]), width="stretch")
+
+        raw_bout_df = sleep_analysis.raw_bout_dataframe(
+            ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
+        )
         ex.save_df_button(
-            "Save Sleep Bout Data to working folder", bout_df, ds, "sleep_bouts.csv", key="dl_bouts"
+            "Save Sleep Bout Data to working folder",
+            raw_bout_df,
+            ds,
+            "sleep_bouts.csv",
+            key="dl_bouts",
+        )
+        ex.save_df_button(
+            "Save per-fly Bout Duration Summary (for stats) to working folder",
+            bout_summary_df,
+            ds,
+            "sleep_bout_duration_summary_per_fly.csv",
+            key="dl_bouts_summary",
         )
 
     st.divider()
@@ -345,7 +663,7 @@ if analyses["sleep"]:
         st.caption(
             "Total time in each sleep state — **short / intermediate / long** bouts "
             "(Abhilash et al. 2026) — per genotype, from the **Sleep State Thresholds** "
-            "step on the Preprocessing page. Group mean per fly ± SEM."
+            "set in Sleep Analysis above. Group mean per fly ± SEM."
         )
         ss_pct = st.checkbox(
             "Show as % of each fly's classified sleep", value=False, key="ss_state_pct"
