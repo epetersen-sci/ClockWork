@@ -9,6 +9,7 @@ import streamlit as st
 
 import dam_utilities
 import export_helpers
+import sleep_analysis
 from analysis_detection import detect_analyses
 from load_and_save_datasets import save_dataset_to_netcdf
 from ui.guards import require_dataset
@@ -300,18 +301,20 @@ with tab_results:
     if analyses["sleep"] and "duration" in ds.data_vars:
         st.subheader("Export Sleep Bout Data (CSV)")
 
-        bout_vars = ["duration"]
-        if "start_time" in ds.data_vars:
-            bout_vars.append("start_time")
-        if "end_time" in ds.data_vars:
-            bout_vars.append("end_time")
-        bout_df = ds[bout_vars].to_dataframe().reset_index().dropna(subset=["duration"])
+        # sleep_analysis.raw_bout_dataframe is the single source of truth its own
+        # docstring claims to be, so use it here rather than re-deriving the table
+        # from ds[bout_vars]. The hand-rolled version was a strict subset — same
+        # rows, but missing `group` and `sleep_state` — which meant the two pages
+        # wrote a differently-shaped sleep_bouts.csv. No group filter is passed:
+        # this export is deliberately every fly (Sleep & activity writes the
+        # filtered one, under its own name).
+        bout_df = sleep_analysis.raw_bout_dataframe(ds)
 
         st.write(f"{len(bout_df)} sleep bouts across {bout_df['id'].nunique()} flies")
 
         csv_bouts = bout_df.to_csv(index=False)
         st.download_button(
-            "Download Sleep Bout CSV",
+            "Download Sleep Bout CSV (all flies)",
             csv_bouts,
             "sleep_bouts.csv",
             "text/csv",

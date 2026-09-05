@@ -344,11 +344,15 @@ with tab_bouts:
             raw_bout_df = sleep_analysis.raw_bout_dataframe(
                 ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
             )
+            # Named apart from the Export page's sleep_bouts.csv on purpose. Both
+            # come from raw_bout_dataframe, but this one is filtered to the group
+            # selection in the sidebar while that one is every fly — under one
+            # filename, whichever the user opened last silently won.
             ex.save_df_button(
-                "Save Sleep Bout Data to working folder",
+                "Save Sleep Bout Data (current group selection) to working folder",
                 raw_bout_df,
                 ds,
-                "sleep_bouts.csv",
+                "sleep_bouts_filtered.csv",
                 key="dl_bouts",
             )
             ex.save_df_button(
