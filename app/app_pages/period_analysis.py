@@ -3,17 +3,8 @@ Period Analysis Page - CWT, Lomb-Scargle, and Autocorrelation analyses.
 """
 
 import os
-import sys
 
 import streamlit as st
-
-# Add core/ (analysis modules) and app/ to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_utilities
 import export_helpers as ex
@@ -33,14 +24,9 @@ from rhythmicity_classification import (
     per_fly_classification_df,
     summarize_rhythmicity,
 )
+from ui.guards import require_dataset
 
-st.header("Period Analysis")
-
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 analyses = detect_analyses(ds)
 
 # ------------------------------------------------------------------ #
@@ -281,7 +267,6 @@ max_bridge_gap = st.number_input(
     key="max_bridge_gap",
 )
 
-
 # B1 (2026-06-30): the floor is now a FILTER, not a flag. It is passed to the period
 # kernels as min_num_days=min_days_floor (below), so a fly whose longest analysable DD
 # block is under the floor returns NO period and is therefore absent from the downstream
@@ -303,7 +288,6 @@ def _dd_record_days(ds):
             _span = 0.0
         out[str(_fid)] = float(_span)
     return out
-
 
 _fly_record_days = _dd_record_days(period_ds)
 _floor_fids = (
@@ -348,7 +332,6 @@ if _retained_days:
 preprocess_configs = render_preprocess_expander("page3", expanded=False)
 
 st.divider()
-
 
 # ============================================================
 # Helper: store analysis results on phase dataset and master
@@ -398,7 +381,6 @@ def _merge_analysis_outputs(master, result_ds):
             master.attrs[k] = v
     return master
 
-
 def _store_period_results(result_ds):
     """Store analysis results on the phase-specific dataset and merge
     per-fly outputs onto the master dataset.
@@ -423,7 +405,6 @@ def _store_period_results(result_ds):
     master = _merge_analysis_outputs(master, result_ds)
     st.session_state.dataset = master
     st.session_state.analyses = detect_analyses(master)
-
 
 # ============================================================
 # CWT Analysis
@@ -891,7 +872,6 @@ if _has_split_datasets:
 else:
     period_ds = st.session_state.dataset
 
-
 @st.cache_data(show_spinner=False)
 def _build_period_summary_df(_fp, _ds):
     """Build the per-fly Period Analysis summary table. Cached so a page
@@ -937,7 +917,6 @@ def _build_period_summary_df(_fp, _ds):
     # Alphabetical (Group then ID) for a predictable, GraphPad-friendly export.
     _sort_keys = [c for c in ("Group", "ID") if c in _df.columns]
     return _df.sort_values(_sort_keys).reset_index(drop=True) if _sort_keys else _df
-
 
 from dataset_meta import dataset_fingerprint as _ds_fingerprint
 

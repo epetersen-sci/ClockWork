@@ -5,38 +5,25 @@ Run this page BEFORE 6_HMM_Analysis to decide how many states to use and
 which emission model best fits your data.
 """
 
-import os
-import sys
 
 import matplotlib
 import numpy as np
 import streamlit as st
 
+from ui.guards import require_dataset
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# Add core/ (analysis modules) and app/ to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 from hmm_models import HMMConfig, compare_n_states
 
-st.header("HMM Model Selection")
 st.markdown(
     "Use k-fold cross-validation to select the optimal **number of states** and "
     "**emission model** before committing to a full HMM run. "
     "Results guide parameter choices on the **HMM Analysis** page."
 )
 
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 
 # Prefer LD dataset for HMM model selection
 if st.session_state.get("dataset_LD") is not None:

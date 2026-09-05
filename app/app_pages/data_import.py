@@ -3,20 +3,10 @@ Data Loading Page - Raw DAM import, NetCDF loading, dataset combining.
 """
 
 import os
-import sys
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 import xarray as xr
-
-# Add core/ and app/ directories to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_processor
 import dam_utilities
@@ -31,119 +21,13 @@ from dataset_meta import (
     stamp_phase,
 )
 from load_and_save_datasets import load_dataset_from_netcdf
-
-st.header("Data Loading")
-
-
-def _invalidate_derived_caches():
-    """Drop every session-state key whose contents are derived from the
-    *current* set of flies in ``st.session_state.dataset``.
-
-    Called both when a fresh dataset is loaded (via ``_clear_dataset_state``)
-    and when the user applies/resets a group-subset filter — in either case
-    every cached analysis below is keyed off fly id and would be stale.
-    """
-    keys_to_clear = [
-        # Phase splits
-        "dataset_DD",
-        "dataset_LD",
-        # Sleep / waveform / rebound
-        "wf_df",
-        "ip_df",
-        "rb_df",
-        "bout_timing_df",
-        "activity_zt",
-        # Period / rhythmicity caches
-        "sleep_cwt_ds",
-        "ultra_ls_ds",
-        "circ_df",
-        "rhythmicity_df",
-        "rhythmicity_summary",
-        "rhythmicity_per_fly_df",
-        "rhythmicity_summary_df",
-        # HMM
-        "hmm_results",
-        "hmm_config",
-        "_last_hmm_preset",
-        "cv_fold_df",
-        "cv_summary_df",
-        # Sleep deprivation
-        "sd_results",
-        "sd_config",
-        # Parameter sweep page
-        "param_sweep_results",
-        # Preprocessing UI bits
-        "show_preprocessing_heatmap",
-        "_heatmap_var_last",
-        "curated_dead_data",
-    ]
-    for k in keys_to_clear:
-        if k in st.session_state:
-            del st.session_state[k]
-    # Per-group ultra_ls_ds_<group> entries are dynamically named — sweep them
-    # by prefix so renaming/removing groups doesn't leave stragglers behind.
-    for k in [
-        k
-        for k in list(st.session_state.keys())
-        if isinstance(k, str) and k.startswith("ultra_ls_ds_")
-    ]:
-        del st.session_state[k]
-
-
-def _clear_dataset_state():
-    """Reset all dataset-related session state to defaults."""
-    _invalidate_derived_caches()
-    # Plus the keys that only get cleared on a fresh load, not on a filter:
-    for k in ("dataset", "dataset_full", "dataset_path", "analyses", "_raw_metadata", "_raw_data"):
-        if k in st.session_state:
-            del st.session_state[k]
-    # Re-initialize required defaults
-    st.session_state.dataset = None
-    st.session_state.dataset_full = None
-    st.session_state.dataset_path = None
-    st.session_state.dataset_DD = None
-    st.session_state.dataset_LD = None
-    st.session_state.analyses = {}
-    st.session_state.working_dir = None
+from ui.state import clear_dataset_state
 
 
 def _stash_full(ds):
-    """Store the unfiltered dataset alongside the working ``dataset`` so a
-    Reset button can restore the full set without re-reading from disk."""
+    """Store the unfiltered dataset alongside the working ``dataset`` so the
+    Groups & subsets page can restore the full set without re-reading disk."""
     st.session_state.dataset_full = dam_utilities.ensure_numpy_backed(ds)
-
-
-def _apply_group_filter(selected_groups):
-    """Subset ``dataset_full`` by group and replace ``dataset`` with the
-    result. Clears every derived cache so downstream pages re-derive from
-    the filtered dataset."""
-    ds_full = st.session_state.dataset_full
-    if ds_full is None or "group" not in ds_full.coords:
-        return
-    # Sanitize in case this session still holds a Dataset built before
-    # ArrowStringArray coords were coerced to numpy (breaks .sel/.isel).
-    ds_full = dam_utilities.ensure_numpy_backed(ds_full)
-    st.session_state.dataset_full = ds_full
-    selected = {str(g) for g in selected_groups}
-    mask = np.array([str(g) in selected for g in ds_full["group"].values])
-    filtered = ds_full.isel(id=np.flatnonzero(mask))
-    _invalidate_derived_caches()
-    st.session_state.dataset = filtered
-    st.session_state.dataset_DD = None
-    st.session_state.dataset_LD = None
-    st.session_state.analyses = detect_analyses(filtered)
-
-
-def _reset_group_filter():
-    """Restore the unfiltered dataset and clear derived caches."""
-    ds_full = st.session_state.get("dataset_full")
-    if ds_full is None:
-        return
-    _invalidate_derived_caches()
-    st.session_state.dataset = ds_full.copy()
-    st.session_state.dataset_DD = None
-    st.session_state.dataset_LD = None
-    st.session_state.analyses = detect_analyses(st.session_state.dataset)
 
 
 _REPLACE_WARNING = (
@@ -152,7 +36,6 @@ _REPLACE_WARNING = (
     "results**. To analyse a second dataset in parallel, open another "
     "browser tab."
 )
-
 
 tab_fresh, tab_netcdf, tab_combine = st.tabs(
     [
@@ -334,13 +217,13 @@ with tab_fresh:
         if st.session_state.get("_pending_create_dataset") == "confirmed":
             st.session_state.pop("_pending_create_dataset", None)
             # Preserve raw data + the working folder across the clear since we need
-            # them immediately. _clear_dataset_state() nulls working_dir, so without
+            # them immediately. clear_dataset_state() nulls working_dir, so without
             # restoring it here source_data_dir below is stamped '' and every export
             # falls back to the app's launch directory (the bug this fixes).
             _raw_meta = st.session_state._raw_metadata
             _raw_data = st.session_state._raw_data
             _meta_dir = st.session_state.get("_metadata_dir")
-            _clear_dataset_state()
+            clear_dataset_state()
             st.session_state._raw_metadata = _raw_meta
             st.session_state._raw_data = _raw_data
             st.session_state.working_dir = _meta_dir
@@ -381,7 +264,6 @@ with tab_fresh:
                         st.rerun()
                 except Exception as e:
                     st.error(f"Error creating dataset: {e}")
-
 
 # ============================================================
 # PATH B: Load NetCDF
@@ -434,7 +316,7 @@ with tab_netcdf:
     if st.session_state.get("_nc_confirmed") and st.session_state.get("_pending_nc_path"):
         _nc_path = st.session_state.pop("_pending_nc_path")
         st.session_state.pop("_nc_confirmed", None)
-        _clear_dataset_state()
+        clear_dataset_state()
         with st.spinner("Loading NetCDF..."):
             try:
                 ds = load_dataset_from_netcdf(_nc_path)
@@ -523,7 +405,6 @@ with tab_netcdf:
             st.success(f"Loaded: {len(ds['id'])} flies (phase={_amb_phase})")
             st.rerun()
 
-
 # ============================================================
 # COMBINE DATASETS
 # ============================================================
@@ -583,7 +464,7 @@ with tab_combine:
     if st.session_state.get("_pending_combine") == "confirmed":
         st.session_state.pop("_pending_combine", None)
         paths = [p.strip() for p in nc_paths_text.strip().split("\n") if p.strip()]
-        _clear_dataset_state()
+        clear_dataset_state()
         combine_progress = st.progress(0, text="Loading files...")
         with st.spinner("Loading and combining datasets..."):
             try:
@@ -653,124 +534,3 @@ with tab_combine:
                 st.error(f"Error combining datasets: {e}")
             finally:
                 combine_progress.empty()
-
-
-# ============================================================
-# Current dataset summary (always shown at bottom)
-# ============================================================
-if st.session_state.dataset is not None:
-    st.divider()
-    st.subheader("Current Dataset Summary")
-    ds = st.session_state.dataset
-    ds_full = st.session_state.get("dataset_full")
-
-    # ---- Active-filter status badge ----------------------------------
-    if ds_full is not None and len(ds["id"]) < len(ds_full["id"]) and "group" in ds_full.coords:
-        full_groups = {str(g) for g in ds_full["group"].values}
-        cur_groups = {str(g) for g in ds["group"].values} if "group" in ds.coords else set()
-        st.warning(
-            f"**Group filter active** — using **{len(ds['id'])} of "
-            f"{len(ds_full['id'])} flies**, "
-            f"**{len(cur_groups)} of {len(full_groups)} groups**. "
-            "Use *Reset to all groups* below to restore the full set."
-        )
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Flies", len(ds["id"]))
-    col2.metric("Timepoints", len(ds["time"]))
-    if "group" in ds.coords:
-        col3.metric("Groups", len(set(ds["group"].values)))
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "ID": ds["id"].values,
-                "Group": ds["group"].values if "group" in ds.coords else "N/A",
-            }
-        ),
-        width="stretch",
-        height=200,
-    )
-
-    # ============================================================
-    # Group selection — subset the dataset before any downstream
-    # page sees it. Reversible via the Reset button below; the
-    # unfiltered dataset is preserved in `dataset_full`.
-    # ============================================================
-    if ds_full is not None and "group" in ds_full.coords:
-        with st.expander("Group selection (subset for downstream analyses)"):
-            st.markdown(
-                "Pick which groups to keep. Applying a selection **drops the "
-                "other flies from the working dataset** and clears every "
-                "cached analysis result, so downstream pages re-compute on "
-                "the subset only. Click *Reset* to restore the full set."
-            )
-
-            # Per-group fly counts from the unfiltered dataset.
-            full_groups_arr = np.asarray([str(g) for g in ds_full["group"].values])
-            group_counts = (
-                pd.Series(full_groups_arr)
-                .value_counts()
-                .sort_index()
-                .rename_axis("group")
-                .reset_index(name="n_flies")
-            )
-            cur_groups_set = {str(g) for g in ds["group"].values} if "group" in ds.coords else set()
-            group_counts["currently_kept"] = group_counts["group"].isin(cur_groups_set)
-            st.dataframe(group_counts, width="stretch", height=180)
-
-            all_group_options = group_counts["group"].tolist()
-            # Default the picker to whatever is currently kept; first-time
-            # users see all groups selected.
-            default_selection = sorted(cur_groups_set) if cur_groups_set else all_group_options
-            selected = st.multiselect(
-                "Groups to keep",
-                options=all_group_options,
-                default=default_selection,
-                key="group_filter_select",
-            )
-
-            # Live preview of the selection's effect.
-            preview_n = (
-                int(group_counts.loc[group_counts["group"].isin(selected), "n_flies"].sum())
-                if selected
-                else 0
-            )
-            st.caption(
-                f"Will keep **{preview_n} / {len(ds_full['id'])} flies** "
-                f"({len(selected)} / {len(all_group_options)} groups)."
-            )
-
-            col_apply, col_reset = st.columns(2)
-            with col_apply:
-                apply_disabled = len(selected) == 0
-                if st.button(
-                    "Apply selection",
-                    key="apply_group_filter",
-                    disabled=apply_disabled,
-                    help=(
-                        "Pick at least one group"
-                        if apply_disabled
-                        else "Subset the dataset and clear cached analyses."
-                    ),
-                ):
-                    _apply_group_filter(selected)
-                    st.success(
-                        f"Filter applied — {preview_n} flies across "
-                        f"{len(selected)} groups. Cached analyses were cleared."
-                    )
-                    st.rerun()
-            with col_reset:
-                reset_disabled = len(ds["id"]) == len(ds_full["id"])
-                if st.button(
-                    "Reset to all groups",
-                    key="reset_group_filter",
-                    disabled=reset_disabled,
-                    help=(
-                        "No filter active"
-                        if reset_disabled
-                        else "Restore the full unfiltered dataset."
-                    ),
-                ):
-                    _reset_group_filter()
-                    st.success("Restored full dataset. Cached analyses were cleared.")
-                    st.rerun()

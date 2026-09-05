@@ -3,30 +3,16 @@ Export Page - Bulk CSV summaries, NetCDF save with compression, download buttons
 """
 
 import os
-import sys
 
 import pandas as pd
 import streamlit as st
 
-# Add core/ (analysis modules) and app/ to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 import dam_utilities
 from analysis_detection import detect_analyses
 from load_and_save_datasets import save_dataset_to_netcdf
+from ui.guards import require_dataset
 
-st.header("Export")
-
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 analyses = detect_analyses(ds)
 
 # ============================================================
@@ -322,7 +308,6 @@ if any(analyses[k] for k in ["cwt", "lomb_scargle", "autocorrelation"]):
             "text/csv",
             key="dl_period_summary_rhythmic",
         )
-
 
 st.divider()
 

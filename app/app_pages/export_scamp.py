@@ -10,22 +10,12 @@ Preprocessing pages produce ``session_state.dataset_LD`` and
 """
 
 import os
-import sys
 
 import streamlit as st
-
-# Wire ``core/`` and ``app/`` into sys.path, mirroring 11_Export.py.
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR, PROJECT_ROOT]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_utilities  # noqa: E402
 from scamp_export.scamp_exporter import export_dataset_to_scamp  # noqa: E402
 
-st.header("SCAMP Export")
 st.caption(
     "Write curated, LD/DD-split data into legacy SCAMP files so the lab's "
     "existing MATLAB sleep/circadian analyses can ingest the cleaned data."

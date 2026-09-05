@@ -3,22 +3,14 @@ HMM Sleep State Analysis Page - Configure and run Hidden Markov Model analysis.
 """
 
 import copy
-import os
-import sys
 
 import matplotlib
 import streamlit as st
 
+from ui.guards import require_dataset
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
-# Add core/ (analysis modules) and app/ to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_utilities
 import export_helpers as ex
@@ -35,13 +27,7 @@ from hmm_models import (
     run_genotype_workflow,
 )
 
-st.header("HMM Sleep State Analysis")
-
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-master = st.session_state.dataset
+master = require_dataset()
 
 # Active DISPLAY dataset. "Both (separate)" stores an independent HMM result per phase
 # (st.session_state['hmm_by_phase'] = {'LD': {...}, 'DD': {...}}); a "View phase" radio
@@ -53,7 +39,6 @@ if _by_phase:
     ds = _by_phase.get(_view, {}).get("ds", master)
 else:
     ds = master
-
 
 def _merge_hmm(master_ds, res_ds):
     """Merge ONLY the HMM result vars (+ hmm_ attrs) from ``res_ds`` onto the clean
@@ -68,7 +53,6 @@ def _merge_hmm(master_ds, res_ds):
         if str(k).startswith("hmm_"):
             out.attrs[k] = v
     return out
-
 
 analyses = detect_analyses(ds)
 

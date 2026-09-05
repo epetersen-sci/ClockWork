@@ -9,31 +9,16 @@ BY GROUP (not per-fly), mean ± SEM, from the per-fly arrays the Period Analysis
 page already stored on the dataset. Run Period Analysis first to populate them.
 """
 
-import os
-import sys
 
 import numpy as np
 import streamlit as st
 
-# Add core/ (analysis modules) and app/ to the import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 import export_helpers as ex
 import plotting
 from dataset_meta import dataset_fingerprint
+from ui.guards import require_dataset
 
-st.header("Periodograms")
-
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 
 # ------------------------------------------------------------------ #
 # Group coordinate: prefer the experimental 'group', fall back to
@@ -69,7 +54,6 @@ st.caption(
     "period-in-hours x-axis; autocorrelation is shown vs lag. Plain-language "
     "explanations of each method are on the **Period Analysis** page."
 )
-
 
 @st.cache_data(show_spinner=False)
 def _curves_by_group(_fp, _ds, var, axis_name, selected, normalize, freq_to_period):
@@ -108,7 +92,6 @@ def _curves_by_group(_fp, _ds, var, axis_name, selected, normalize, freq_to_peri
             rows = rows / peaks
         out[g] = rows
     return out, x
-
 
 # (blurb-key, spectrum var, axis coord, section title, plot kwargs, normalize, freq->period)
 SECTIONS = [

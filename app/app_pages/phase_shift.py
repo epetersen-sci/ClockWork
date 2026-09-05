@@ -5,21 +5,11 @@ Requires a ``pulse_time`` column in the metadata (a ZT hour such as ZT15) plus
 ``first_DD_day``, which anchors that ZT to the last entrained day before DD release.
 """
 
-import os
-import sys
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-
-# Add core/ and app/ to import path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CORE_DIR = os.path.join(PROJECT_ROOT, "core")
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in [CORE_DIR, APP_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import dam_utilities
 import phase_shift as ps_module
@@ -35,8 +25,8 @@ from calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
+from ui.guards import require_dataset
 
-st.header("Phase Shift Analysis")
 st.caption(
     "Measures how far each fly's rhythm shifted after its light pulse, by comparing "
     "the rhythm's daily phase before and after the pulse."
@@ -45,11 +35,7 @@ st.caption(
 # ============================================================
 # Section 1: Prerequisites
 # ============================================================
-if st.session_state.get("dataset") is None:
-    st.warning("No dataset loaded. Go to **Data Loading** first.")
-    st.stop()
-
-ds = st.session_state.dataset
+ds = require_dataset()
 
 if "pulse_zt_hour" not in ds.coords:
     st.error(
