@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 import dam_utilities
+import export_helpers
 from analysis_detection import detect_analyses
 from load_and_save_datasets import save_dataset_to_netcdf
 from ui.guards import require_dataset
@@ -169,37 +170,12 @@ with tab_tables:
 
                     binned_df["group"] = binned_df["id"].map(id_to_group)
 
-                    agg_df = (
-                        binned_df.groupby(["zt_bin_minute", "group"])[export_var]
-                        .agg(
-                            Mean="mean",
-                            SD=lambda x: x.std(ddof=1),
-                            N=lambda x: x.notna().sum(),
-                        )
-                        .reset_index()
+                    # Wide (group, stat) MultiIndex: groups alphabetical, stats in
+                    # GraphPad's grouped-table order. Built by the shared helper so
+                    # the Sleep & activity ZT export cannot drift from this one.
+                    result_df = export_helpers.zt_group_summary_table(
+                        binned_df, export_var, export_bin_size
                     )
-
-                    # Pivot to a wide (group, stat) MultiIndex. Groups are ordered
-                    # ALPHABETICALLY and the stats are ordered Mean, SD, N (GraphPad's
-                    # grouped-table order) so the CSV pastes straight into Prism — not
-                    # the alphabetical Mean/N/SD a plain sort would give.
-                    pivot_df = agg_df.pivot_table(
-                        index="zt_bin_minute", columns="group", values=["Mean", "SD", "N"]
-                    )
-                    pivot_df.columns = pd.MultiIndex.from_tuples(
-                        [(grp, stat) for stat, grp in pivot_df.columns], names=["group", "stat"]
-                    )
-                    _ordered_cols = pd.MultiIndex.from_tuples(
-                        [(g, s) for g in sorted(agg_df["group"].unique()) for s in ("Mean", "SD", "N")],
-                        names=["group", "stat"],
-                    )
-                    pivot_df = pivot_df.reindex(columns=_ordered_cols)
-                    pivot_df.insert(
-                        0,
-                        ("zt_hours", ""),
-                        dam_utilities.zt_bin_to_hours(pivot_df.index, export_bin_size),
-                    )
-                    result_df = pivot_df
 
                     csv_data = result_df.to_csv()
                     st.download_button(
@@ -229,7 +205,7 @@ with tab_tables:
                         "text/csv",
                         key="dl_perfly_csv",
                     )
-                    n_groups = len(agg_df["group"].unique())
+                    n_groups = binned_df["group"].nunique()
                     st.success(
                         f"Ready: {len(result_df)} bins x {n_groups} groups "
                         f"(+ per-fly: {len(per_fly_df)} rows)"

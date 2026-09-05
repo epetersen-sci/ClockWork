@@ -199,23 +199,11 @@ with tab_profiles:
                 except Exception:
                     _id_to_group[_fid] = "All"
             binned_df["group"] = binned_df["id"].map(_id_to_group)
-            _agg = (
-                binned_df.groupby(["zt_bin_minute", "group"])["activity"]
-                .agg(
-                    mean="mean",
-                    sd=lambda x: x.std(ddof=1),
-                    n=lambda x: x.notna().sum(),
-                )
-                .reset_index()
-            )
-            _pivot = _agg.pivot_table(
-                index="zt_bin_minute", columns="group", values=["mean", "sd", "n"]
-            )
-            _pivot.columns = pd.MultiIndex.from_tuples(
-                [(grp, stat) for stat, grp in _pivot.columns], names=["group", "stat"]
-            )
-            _pivot = _pivot.sort_index(axis=1, level=0)
-            _pivot.insert(0, ("zt_hours", ""), dam_utilities.zt_bin_to_hours(_pivot.index, bin_size))
+            # Same builder as the Export page's ZT table: Mean/SD/N per group, in
+            # GraphPad's grouped-table order. This used to sort_index the columns
+            # instead, which gave the alphabetical Mean/N/SD — a different header
+            # row for the same quantity.
+            _pivot = ex.zt_group_summary_table(binned_df, "activity", bin_size)
             csv_act = _pivot.to_csv()
             ex.save_csv_button(
                 "Save Binned Activity (group mean±SD±N) to working folder",
@@ -278,25 +266,8 @@ with tab_profiles:
                 except Exception:
                     _id_to_group_sl[_fid] = "All"
             binned_sleep["group"] = binned_sleep["id"].map(_id_to_group_sl)
-            _agg_sl = (
-                binned_sleep.groupby(["zt_bin_minute", "group"])["sleep"]
-                .agg(
-                    mean="mean",
-                    sd=lambda x: x.std(ddof=1),
-                    n=lambda x: x.notna().sum(),
-                )
-                .reset_index()
-            )
-            _pivot_sl = _agg_sl.pivot_table(
-                index="zt_bin_minute", columns="group", values=["mean", "sd", "n"]
-            )
-            _pivot_sl.columns = pd.MultiIndex.from_tuples(
-                [(grp, stat) for stat, grp in _pivot_sl.columns], names=["group", "stat"]
-            )
-            _pivot_sl = _pivot_sl.sort_index(axis=1, level=0)
-            _pivot_sl.insert(
-                0, ("zt_hours", ""), dam_utilities.zt_bin_to_hours(_pivot_sl.index, bin_size)
-            )
+            # Shared builder — see the activity block above.
+            _pivot_sl = ex.zt_group_summary_table(binned_sleep, "sleep", bin_size)
             csv_sleep = _pivot_sl.to_csv()
             ex.save_csv_button(
                 "Save Binned Sleep (group mean±SD±N) to working folder",
