@@ -166,7 +166,7 @@ if reference == "control":
     method = "peak"
     st.caption("Peak matching, as in `peakphaseplot.m`.")
 
-    _labels, _cols = ps_module._group_labels(ds_pulse, ("genotype", "condition"))
+    _labels, _cols = ps_module.group_labels(ds_pulse, ("genotype", "condition"))
     _groups = sorted(set(_labels))
     # Default to whatever looks like the unpulsed arm, so the common case is one click.
     _guess = next(
