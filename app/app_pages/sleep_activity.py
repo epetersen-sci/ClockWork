@@ -25,7 +25,7 @@ from dataset_meta import (
     dataset_fingerprint,
     dataset_phase,
 )
-from ui.filters import bin_size_sidebar, group_filter_sidebar
+from ui.filters import DISPLAY_GROUPS_KEY, bin_size_sidebar, group_filter_sidebar
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -143,7 +143,7 @@ analyses = detect_analyses(ds)
 _grp_cols = dam_utilities.get_group_columns(ds)
 _group_vals, _all_groups, selected_groups, ds = group_filter_sidebar(
     ds,
-    key="viz_groups",
+    key=DISPLAY_GROUPS_KEY,
     label="Groups",
     subset=True,
     help=(

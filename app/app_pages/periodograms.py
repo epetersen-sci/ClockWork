@@ -16,7 +16,7 @@ import streamlit as st
 import export_helpers as ex
 import plotting
 from dataset_meta import dataset_fingerprint
-from ui.filters import group_filter_sidebar, resolve_group_coord
+from ui.filters import DISPLAY_GROUPS_KEY, group_filter_sidebar, resolve_group_coord
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -24,7 +24,11 @@ ds = require_dataset()
 # Group coordinate: prefer the experimental `group`, fall back to `genotype`,
 # else a single pooled group. The overlays are BY GROUP.
 group_coord = resolve_group_coord(ds)
-group_vals, all_groups, selected_groups, _ = group_filter_sidebar(ds, key="pgram_groups")
+# DISPLAY_GROUPS_KEY, not a page-local key: the display group selection is
+# app-wide, so a subset chosen here is still chosen on Sleep & activity.
+group_vals, all_groups, selected_groups, _ = group_filter_sidebar(
+    ds, key=DISPLAY_GROUPS_KEY
+)
 
 st.caption(
     "Group-averaged spectra (mean ± SEM across flies). Each method has its own "
