@@ -42,12 +42,18 @@ MINUTES_PER_DAY = 1440
 def _build(n_per_group=3, groups=("ctrl", "mut"), with_sleep=True, seed=0):
     """A small master dataset spanning an LD epoch and a DD epoch."""
     rng = np.random.default_rng(seed)
-    ids, group_labels, genotypes = [], [], []
+    # TWO temperatures, so genotype+temperature and genotype alone give a
+    # DIFFERENT number of groups. With one temperature, narrowing the grouping
+    # changes nothing and a regroup test proves nothing.
+    temps = ("25C", "29C")
+    ids, group_labels, genotypes, temperatures = [], [], [], []
     for g in groups:
         for i in range(n_per_group):
+            t = temps[i % len(temps)]
             ids.append(f"20250115_1_{g}{i}")
-            group_labels.append(f"{g}-25C")
+            group_labels.append(f"{g}-{t}")
             genotypes.append(g)
+            temperatures.append(t)
 
     n_id = len(ids)
     n_time = N_DAYS * MINUTES_PER_DAY
@@ -93,7 +99,7 @@ def _build(n_per_group=3, groups=("ctrl", "mut"), with_sleep=True, seed=0):
             "time": time,
             "group": ("id", np.array(group_labels)),
             "genotype": ("id", np.array(genotypes)),
-            "temperature": ("id", np.array(["25C"] * n_id)),
+            "temperature": ("id", np.array(temperatures)),
             "start_datetime": ("id", np.array([start] * n_id)),
             # get_zt_binned_dataframe requires BOTH datetimes and raises without
             # stop_datetime; every ZT-binned plot and export goes through it.
@@ -114,6 +120,16 @@ def _build(n_per_group=3, groups=("ctrl", "mut"), with_sleep=True, seed=0):
             "split_discard_first_dd_day": 0,
             "group_columns": "genotype,temperature",
             "sleep_threshold_seconds": 300,
+            # create_xarray_dataset writes ONE ATTR PER METADATA COLUMN (its
+            # unique values). That is how a built dataset records which of its
+            # per-id coords came from the metadata, and it is what
+            # group_defining_coords uses to tell them from coords a later
+            # analysis added. Without these the regroup UI offers nothing.
+            "genotype": sorted(set(genotypes)),
+            "temperature": sorted(set(temperatures)),
+            "start_datetime": [str(start)],
+            "stop_datetime": [str(start)],
+            "first_DD_day": [str(start)],
         },
     )
     return ds

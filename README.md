@@ -186,7 +186,10 @@ Do **not** add an `id` column — ClockWork computes it as
 Columns excluded from grouping: `file`, `region_id`, `Monitor`, `id`,
 `start_datetime`, `stop_datetime`, `first_DD_day`, and any datetime-typed
 column. Everything else is offered in the **"Group-defining metadata columns"**
-selector at import, and can be re-grouped later without re-importing.
+selector at import, and can be re-grouped later on **Data → Groups & subsets**
+("Redefine groups") without re-importing — including on a dataset reloaded from
+`.nc`, where the raw monitor files may no longer be to hand. Regrouping clears
+every cached analysis result, because `group` feeds all of them.
 
 ### Which columns each analysis needs
 

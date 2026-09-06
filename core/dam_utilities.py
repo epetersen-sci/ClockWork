@@ -449,6 +449,39 @@ def get_group_columns(ds):
     return [str(v) for v in np.atleast_1d(val)]
 
 
+def group_defining_coords(ds):
+    """The :func:`group_defining_columns` question, asked of a BUILT dataset.
+
+    Needed because re-grouping happens long after import, when the metadata frame
+    is gone and only the dataset remains — a reloaded ``.nc`` never had one.
+
+    A candidate is a per-``id`` coord that ``create_xarray_dataset`` stored FROM
+    THE METADATA. That provenance is recoverable because that function also
+    writes one attr per metadata property column, so "is a per-id coord AND an
+    attr key" identifies exactly those, and excludes both the ids
+    (``id``/``group``, which are outputs rather than inputs) and every coord a
+    later analysis added (``split_minute``, ``pulse_minute``, the rhythmic
+    flags), none of which is an attr.
+
+    The same two filters as the metadata version then apply:
+    :data:`GROUP_EXCLUDE_COLUMNS` and datetime dtype, so the timing columns do
+    not offer themselves as grouping factors.
+    """
+    out = []
+    for name, coord in ds.coords.items():
+        col = str(name)
+        if coord.dims != ("id",):
+            continue
+        if col in GROUP_EXCLUDE_COLUMNS or col == "group":
+            continue
+        if col not in ds.attrs:
+            continue
+        if np.issubdtype(coord.dtype, np.datetime64):
+            continue
+        out.append(col)
+    return out
+
+
 def regroup_dataset(ds, group_columns):
     """Re-derive the ``group`` coord on an ALREADY-built dataset from the chosen
     metadata columns (each is stored as a per-id coord). Returns a new dataset with
