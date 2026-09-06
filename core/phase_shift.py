@@ -736,7 +736,7 @@ def compute_phase_shift_analysis(
 # ---------------------------------------------------------------------------
 
 
-def _group_labels(ds, group_by):
+def group_labels(ds, group_by):
     """Per-fly group label built from one or more coords, joined with '_'."""
     cols = [c for c in group_by if c in ds.coords]
     if not cols:
@@ -823,7 +823,7 @@ def compute_group_phase_difference(
             "convert with dam_utilities.convert_to_relative_time first."
         )
 
-    labels, cols = _group_labels(ds, group_by)
+    labels, cols = group_labels(ds, group_by)
     groups = sorted(set(labels))
     if control_group not in groups:
         raise ValueError(

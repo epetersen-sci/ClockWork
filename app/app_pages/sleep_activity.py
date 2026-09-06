@@ -25,7 +25,7 @@ from dataset_meta import (
     dataset_fingerprint,
     dataset_phase,
 )
-from ui.filters import bin_size_sidebar, group_filter_sidebar
+from ui.filters import DISPLAY_GROUPS_KEY, bin_size_sidebar, group_filter_sidebar
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -37,16 +37,25 @@ ds = require_dataset()
 # tuple while the leading-underscore ``_ds`` arg is NOT hashed (per
 # Streamlit's caching convention). Returning plotly figures from a
 # cached function is supported — figures pickle cleanly.
+#
+# The fingerprint parameter is named ``fp``, NOT ``_fp``. Streamlit's
+# rule is purely syntactic — ANY leading-underscore parameter is left
+# out of the cache key, not just the dataset one — so naming it ``_fp``
+# excluded the very thing it exists to key on, and every one of these
+# caches then ignored which flies were in ``ds``. The visible symptom
+# was the sidebar group filter appearing to do nothing: narrow the
+# groups and the plots kept their old traces until some other cache
+# input (e.g. bin size) happened to change.
 # ----------------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
-def _cached_zt_binned(_fp, _ds, value_col, bin_size_minutes):
+def _cached_zt_binned(fp, _ds, value_col, bin_size_minutes):
     """Wrap dam_utilities.get_zt_binned_dataframe with a fingerprint key."""
     return dam_utilities.get_zt_binned_dataframe(_ds, value_col, bin_size_minutes)
 
 @st.cache_data(show_spinner=False)
 def _cached_summary_bars(
-    _fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
 ):
     """Cache the per-fly summary computation that feeds the bars figure.
     ``phase_label`` is included in the cache key so DD vs LD relabeling
@@ -62,7 +71,7 @@ def _cached_summary_bars(
 
 @st.cache_data(show_spinner=False)
 def _cached_daily_pattern(
-    _fp,
+    fp,
     _ds,
     variable,
     title,
@@ -86,7 +95,7 @@ def _cached_daily_pattern(
 
 @st.cache_data(show_spinner=False)
 def _cached_summary_table(
-    _fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
 ):
     """Per-group summary table (mean + SEM per period) for CSV export — the
     SAME numbers plotting.summary_bars draws (one computation, no drift)."""
@@ -101,7 +110,7 @@ def _cached_summary_table(
 
 @st.cache_data(show_spinner=False)
 def _cached_bout_duration_lines(
-    _fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
+    fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
 ):
     """Cache the per-fly bout-duration curve computation (KDE/survival curves
     + per-fly summary stats + the group-comparison test) — the same numbers
@@ -143,7 +152,7 @@ analyses = detect_analyses(ds)
 _grp_cols = dam_utilities.get_group_columns(ds)
 _group_vals, _all_groups, selected_groups, ds = group_filter_sidebar(
     ds,
-    key="viz_groups",
+    key=DISPLAY_GROUPS_KEY,
     label="Groups",
     subset=True,
     help=(
@@ -199,23 +208,11 @@ with tab_profiles:
                 except Exception:
                     _id_to_group[_fid] = "All"
             binned_df["group"] = binned_df["id"].map(_id_to_group)
-            _agg = (
-                binned_df.groupby(["zt_bin_minute", "group"])["activity"]
-                .agg(
-                    mean="mean",
-                    sd=lambda x: x.std(ddof=1),
-                    n=lambda x: x.notna().sum(),
-                )
-                .reset_index()
-            )
-            _pivot = _agg.pivot_table(
-                index="zt_bin_minute", columns="group", values=["mean", "sd", "n"]
-            )
-            _pivot.columns = pd.MultiIndex.from_tuples(
-                [(grp, stat) for stat, grp in _pivot.columns], names=["group", "stat"]
-            )
-            _pivot = _pivot.sort_index(axis=1, level=0)
-            _pivot.insert(0, ("zt_hours", ""), dam_utilities.zt_bin_to_hours(_pivot.index, bin_size))
+            # Same builder as the Export page's ZT table: Mean/SD/N per group, in
+            # GraphPad's grouped-table order. This used to sort_index the columns
+            # instead, which gave the alphabetical Mean/N/SD — a different header
+            # row for the same quantity.
+            _pivot = ex.zt_group_summary_table(binned_df, "activity", bin_size)
             csv_act = _pivot.to_csv()
             ex.save_csv_button(
                 "Save Binned Activity (group mean±SD±N) to working folder",
@@ -278,25 +275,8 @@ with tab_profiles:
                 except Exception:
                     _id_to_group_sl[_fid] = "All"
             binned_sleep["group"] = binned_sleep["id"].map(_id_to_group_sl)
-            _agg_sl = (
-                binned_sleep.groupby(["zt_bin_minute", "group"])["sleep"]
-                .agg(
-                    mean="mean",
-                    sd=lambda x: x.std(ddof=1),
-                    n=lambda x: x.notna().sum(),
-                )
-                .reset_index()
-            )
-            _pivot_sl = _agg_sl.pivot_table(
-                index="zt_bin_minute", columns="group", values=["mean", "sd", "n"]
-            )
-            _pivot_sl.columns = pd.MultiIndex.from_tuples(
-                [(grp, stat) for stat, grp in _pivot_sl.columns], names=["group", "stat"]
-            )
-            _pivot_sl = _pivot_sl.sort_index(axis=1, level=0)
-            _pivot_sl.insert(
-                0, ("zt_hours", ""), dam_utilities.zt_bin_to_hours(_pivot_sl.index, bin_size)
-            )
+            # Shared builder — see the activity block above.
+            _pivot_sl = ex.zt_group_summary_table(binned_sleep, "sleep", bin_size)
             csv_sleep = _pivot_sl.to_csv()
             ex.save_csv_button(
                 "Save Binned Sleep (group mean±SD±N) to working folder",
@@ -373,11 +353,15 @@ with tab_bouts:
             raw_bout_df = sleep_analysis.raw_bout_dataframe(
                 ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
             )
+            # Named apart from the Export page's sleep_bouts.csv on purpose. Both
+            # come from raw_bout_dataframe, but this one is filtered to the group
+            # selection in the sidebar while that one is every fly — under one
+            # filename, whichever the user opened last silently won.
             ex.save_df_button(
-                "Save Sleep Bout Data to working folder",
+                "Save Sleep Bout Data (current group selection) to working folder",
                 raw_bout_df,
                 ds,
-                "sleep_bouts.csv",
+                "sleep_bouts_filtered.csv",
                 key="dl_bouts",
             )
             ex.save_df_button(

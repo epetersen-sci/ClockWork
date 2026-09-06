@@ -6,11 +6,16 @@ pooled group, while Sleep & activity handles only ``group`` and actually
 ``.sel()``s the dataset down. Sharing the implementation stops them drifting
 further apart.
 
-**The session keys stay separate on purpose.** ``pgram_groups`` and
-``viz_groups`` are distinct today, so a selection on one page has no effect on
-the other. Merging them into one app-wide selection is a real improvement and a
-one-line change here — but it is a behaviour change, so it is BACKLOG item 11
-rather than something to slip into a reorganization.
+**Both pages share one session key**, :data:`DISPLAY_GROUPS_KEY`. They used to
+carry a key each (``pgram_groups`` and ``viz_groups``), so narrowing to two
+genotypes on Periodograms and then switching to Sleep & activity silently put
+all six back — which surprised people, since the sidebar looks like one control
+that follows you between pages. It now is one.
+
+The two call sites still differ in what they do with the selection —
+Sleep & activity passes ``subset=True`` and gets a ``.sel()``ed dataset back,
+Periodograms filters by hand — and that asymmetry is fine. Only the key is
+shared.
 
 Note these are *display* filters: they subset a page-local view for plotting. The
 filter on Groups & subsets is a different thing entirely — it replaces the master
@@ -19,6 +24,11 @@ dataset and invalidates every downstream cache.
 
 import numpy as np
 import streamlit as st
+
+#: The one app-wide session key behind every display group filter. Passed
+#: explicitly by each call site rather than defaulted, so a page that genuinely
+#: wants its own private selection has to say so.
+DISPLAY_GROUPS_KEY = "display_groups"
 
 
 def resolve_group_coord(ds):
@@ -47,14 +57,39 @@ def group_filter_sidebar(ds, key, *, label=None, subset=False, help=None):
     group_values = np.asarray([str(v) for v in ds[coord].values])
     all_groups = sorted(set(group_values.tolist()))
 
+    # Sharing `key` between the two pages is NOT enough on its own. Streamlit
+    # garbage-collects widget state for widgets that were not rendered on the
+    # previous run, and a page switch is exactly that — so the selection made on
+    # Periodograms is gone by the time Sleep & activity instantiates its own
+    # multiselect, which then falls back to `default` (all groups). Mirroring the
+    # value under a plain, non-widget key survives the switch; re-seeding
+    # session_state[key] from the mirror BEFORE the widget is created is the
+    # supported way to restore it (assigning after instantiation raises).
+    mirror = f"_{key}_persisted"
+    if key not in st.session_state:
+        remembered = st.session_state.get(mirror)
+        # Intersect with the groups that actually exist: the dataset may have
+        # been reloaded or regrouped since the selection was made, and a stale
+        # label that is not in `options` would raise.
+        st.session_state[key] = (
+            [g for g in remembered if g in all_groups]
+            if remembered is not None
+            else list(all_groups)
+        )
+
     st.sidebar.subheader("Filter groups")
+    # No `default=` on purpose. session_state[key] is always seeded just above,
+    # and passing both makes Streamlit warn ("created with a default value but
+    # also had its value set via the Session State API") *and* return the
+    # default on the run that registers the widget — so the restored selection
+    # would only reach the plots one rerun late.
     selected = st.sidebar.multiselect(
         label or f"Groups ({coord})",
         all_groups,
-        default=all_groups,
         key=key,
         help=help,
     )
+    st.session_state[mirror] = list(selected) if selected else []
     # multiselect returns a list in the app; guard the None the headless test
     # stub returns (and default to all groups if the widget hasn't populated).
     if not selected:

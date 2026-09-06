@@ -1,4 +1,5 @@
-"""Shared 'Save to working folder' export for graph data.
+"""Shared export helpers: the 'Save to working folder' buttons, and the one
+canonical layout for the wide ZT summary table.
 
 Every line/bar graph's underlying data (the numbers actually plotted) is written
 as a CSV into the working folder — ``dam_utilities.resolve_export_dir`` (the
@@ -12,9 +13,65 @@ export mechanism is defined ONCE (no per-page drift). ``streamlit`` and
 ``dam_utilities`` are imported INSIDE the functions so this module always uses the
 page's active streamlit (the real one, or the headless stub the page-smoke tests
 swap in — under which ``st.button`` is False, so no file is ever written in a test).
+
+:func:`zt_group_summary_table` lives here for the same reason: Export data and
+Sleep & activity both ship a group Mean/SD/N-per-ZT-bin CSV, and they had drifted
+apart on both the casing and the column order of that header (see below). One
+builder means they cannot drift again.
 """
 
 import os
+
+# Stat order inside each group's column block. GraphPad's grouped-table layout is
+# Mean, SD, N — NOT the alphabetical Mean, N, SD that sorting the pivot's columns
+# would give — so the CSV pastes straight into a Prism grouped table.
+ZT_STAT_ORDER = ("Mean", "SD", "N")
+
+
+def zt_group_summary_table(binned_df, value_col, bin_size, *, group_col="group"):
+    """Group Mean/SD/N per ZT bin, as the wide ``(group, stat)`` table the ZT
+    exports ship.
+
+    ``binned_df`` is the long per-fly frame from the ZT binner: one row per fly
+    per bin, carrying ``zt_bin_minute``, ``group_col`` and ``value_col``. The
+    result is indexed by ``zt_bin_minute``, has a leading ``('zt_hours', '')``
+    column, and orders the rest by group ALPHABETICALLY, then by
+    :data:`ZT_STAT_ORDER` within each group.
+
+    Both the casing and that ordering are load-bearing: a downstream GraphPad
+    template reads columns positionally, so a header row that says ``mean, n,
+    sd`` where the last one said ``Mean, SD, N`` silently pastes the wrong
+    numbers into the wrong columns.
+    """
+    import pandas as pd
+
+    import dam_utilities
+
+    agg = (
+        binned_df.groupby(["zt_bin_minute", group_col])[value_col]
+        .agg(
+            Mean="mean",
+            SD=lambda x: x.std(ddof=1),
+            N=lambda x: x.notna().sum(),
+        )
+        .reset_index()
+    )
+    pivot = agg.pivot_table(
+        index="zt_bin_minute", columns=group_col, values=list(ZT_STAT_ORDER)
+    )
+    # pivot_table nests (stat, group); the export wants (group, stat), so flip the
+    # tuples before reindexing onto the explicit order.
+    pivot.columns = pd.MultiIndex.from_tuples(
+        [(grp, stat) for stat, grp in pivot.columns], names=["group", "stat"]
+    )
+    pivot = pivot.reindex(
+        columns=pd.MultiIndex.from_tuples(
+            [(g, s) for g in sorted(agg[group_col].unique()) for s in ZT_STAT_ORDER],
+            names=["group", "stat"],
+        )
+    )
+    pivot.insert(0, ("zt_hours", ""), dam_utilities.zt_bin_to_hours(pivot.index, bin_size))
+    return pivot
 
 
 def _export_dir(ds):

@@ -1,24 +1,32 @@
 # ClockWork backlog
 
 Thirteen issues found while mapping the codebase for the sidebar/page reorganization
-(branch `page-reorganization`). None is a regression introduced by that work — they all
-predate it. They were left alone there because fixing them changes analysis behaviour or
-touches `core/`, both of which were out of scope for a re-cut of `app/`.
+(branch `page-reorganization`), plus one (item 14) found later while closing them. None is
+a regression introduced by the reorganization — they all predate it. They were left alone
+there because fixing them changes analysis behaviour or touches `core/`, both of which were
+out of scope for a re-cut of `app/`.
 
-They have since been triaged into three sections:
+**Six are closed** (9, 8, 2, 1, 11, 14 — see [D. Done](#d-done)); six remain in
+[A. Ready to fix](#a-ready-to-fix), one is [held](#b-held), one is an [audit](#c-audit).
+
+They have since been triaged into four sections:
 
 - **[A. Ready to fix](#a-ready-to-fix)** — the decision is made and written down. Pick one
   up and implement it as described; no further judgement needed.
 - **[B. Held](#b-held)** — a real decision that has not been made yet.
 - **[C. Audit](#c-audit)** — no code change; something to go and check.
+- **[D. Done](#d-done)** — closed, with the commit that closed it.
 
 **Item numbers are original and stable.** They are referenced from code
 (`app/app_pages/data_groups.py:15-17`) and from the reorganization PR, so they are not
-renumbered when items move between sections or get closed.
+renumbered when items move between sections or get closed. A new issue takes the next
+free number (item 14 was added this way), it never reuses a closed one.
 
-**Line references are pinned to `d0a477c`** (post-reorganization). The pre-reorganization
-references in the original version of this file pointed at `app/pages/3_Period_Analysis.py`
-and friends, which no longer exist.
+**Line references were pinned to `d0a477c`** (post-reorganization) and have since been
+re-checked against `486330d`. Only item 5's references moved — the section-A sweep edited
+two of the files it names — and they have been updated in place. Everything else still
+resolves. Re-check the remaining items' references against `main` before trusting them,
+and update them when you close an item.
 
 ---
 
@@ -26,51 +34,23 @@ and friends, which no longer exist.
 
 Dependencies are light but real: **3 before 5** (item 3 removes the last analysis-side
 reader of the LD/DD caches, which item 5 then deletes), and **4 before 5** (both edit
-`data_curate_split.py`). Items 1 and 2 both touch `export_data.py` and `sleep_activity.py`,
-so they are easiest done together.
+`data_curate_split.py`).
 
 | Order | Items | Why here |
 |---|---|---|
-| 1 | **9, 8** | Isolated one-liners. Good first commits. |
-| 2 | **3** | Unblocks 5. Also gates the eventual HMM page merge. |
-| 3 | **4**, then **5** | Both edit `data_curate_split.py`; 5 is the largest item in A. |
-| 4 | **2, 1** | Both edit the same two export paths. |
-| 5 | **11, 12, 10** | Independent, small to medium. |
-| 6 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
+| 1 | **3** | Unblocks 5. Also gates the eventual HMM page merge. |
+| 2 | **4**, then **5** | Both edit `data_curate_split.py`; 5 is the largest item in A. |
+| 3 | **12, 10** | Independent, small to medium. |
+| 4 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
+
+**Before starting item 5, capture a SCAMP baseline from `main`.** Its Verify step is
+"the same file count and contents as before", which needs a *before* — generate the
+export on `main` and keep it, then diff after the change. Doing this afterwards is
+guesswork.
 
 ---
 
 # A. Ready to fix
-
-## 9. CV fold help text is wrong for any non-default fold count
-
-`app/app_pages/hmm_model_selection.py:44-49`. The slider's `max_value` is
-`min(10, n_flies)` but the help string hard-codes the hold-out size as
-`n_flies // min(5, n_flies)` — the *default* fold count, not the selected one. Move the
-slider to 7 folds and the hint still describes 5.
-
-**Fix.** Render the caption from the widget's own value after the widget, rather than
-computing it inside `help=`:
-
-```python
-n_folds = st.slider("Number of folds", min_value=2, max_value=min(10, n_flies),
-                    value=min(5, n_flies), key="cv_n_folds")
-st.caption(f"Dataset has {n_flies} flies. Each fold holds out ~{n_flies // n_folds} flies.")
-```
-
-**Verify.** Change the fold count and confirm the hold-out figure tracks it.
-
-## 8. Private function called across a module boundary
-
-`app/app_pages/phase_shift.py:169` calls `ps_module._group_labels(...)`, defined at
-`core/phase_shift.py:739` and used internally at `:826`.
-
-**Fix.** Promote it to `group_labels` and update both call sites, leaving no alias — one
-internal caller and one page caller is a small enough blast radius that a deprecation
-shim is not worth it.
-
-**Verify.** Load a dataset with a `pulse_time` column and open Phase shift; the group
-breakdown still renders.
 
 ## 3. HMM model selection and analysis run on different data
 
@@ -151,12 +131,12 @@ Consumers today:
 
 | Site | Purpose |
 |---|---|
-| `app/app_pages/export_data.py:42, 68-79` | per-phase `.nc` save |
+| `app/app_pages/export_data.py:43, 69-85` | per-phase `.nc` save |
 | `app/app_pages/export_scamp.py:24-25` | the legacy luc files |
 | `app/app_pages/data_curate_split.py:126-130` | its own post-split UI state |
 
 Item 3 removes the last analysis-side reader. What remains is the maintenance cost:
-`app/app_pages/sleep_detection.py:174-195`, labelled `TRANSITIONAL`, must **regenerate both
+`app/app_pages/sleep_detection.py:186-209`, labelled `TRANSITIONAL`, must **regenerate both
 caches every time sleep is computed**, because they are a copy that otherwise goes stale.
 
 **Decision.** Delete the caches. They are a staleness-prone copy of something derivable;
@@ -167,8 +147,8 @@ the two export pages can slice on demand when the user clicks export.
 1. `export_scamp.py` and `export_data.py`: call
    `dam_utilities.split_xarray_dataset(master, phase=…, gap_threshold_minutes=…,
    discard_first_dd_day=…)` at export time, reading the split parameters from
-   `master.attrs` exactly as `sleep_detection.py:180, 187` does today.
-2. Delete the regeneration block at `sleep_detection.py:174-195` — including the int8
+   `master.attrs` exactly as `sleep_detection.py:193, 199` does today.
+2. Delete the regeneration block at `sleep_detection.py:186-209` — including the int8
    restoration that only exists because slicing upcasts the sleep masks.
 3. Delete the writes at `data_curate_split.py:203-204` and the clears at
    `data_groups.py:46-47, 58-59`. Replace the reads at `data_curate_split.py:126-130` with
@@ -182,83 +162,6 @@ files have to keep in sync.
 **Verify.** Full path: import → curate → split → sleep analysis → SCAMP export produces the
 same file count and contents as before (189 LD files across 6 boards on `example_data`),
 and the per-phase `.nc` save still writes both files.
-
-## 2. ZT export column-order and casing drift
-
-Two exports of the same quantity disagree on column order *and* casing, which downstream
-GraphPad templates will care about.
-
-- `app/app_pages/export_data.py:187, 193` deliberately builds
-  `values=["Mean", "SD", "N"]` and reindexes to
-  `[(g, s) for g in sorted(groups) for s in ("Mean", "SD", "N")]`, with a comment warning
-  that a plain sort gives the wrong order.
-- `app/app_pages/sleep_activity.py:212, 217` and `:291, 296` do exactly what that comment
-  warns against — lowercase `values=["mean", "sd", "n"]` followed by
-  `sort_index(axis=1, level=0)`, which orders the stats alphabetically as
-  **mean, n, sd**.
-
-**Decision.** `export_data.py` is correct; make `sleep_activity.py` match it.
-
-**Fix.** In both `sleep_activity.py` blocks, rename the aggregation outputs to
-`Mean`/`SD`/`N` and replace the `sort_index` call with the same explicit reindex
-`export_data.py:193` uses. Factor the ordering into one helper both pages import — the
-whole point is that they cannot drift again. `app/export_helpers.py` is the natural home.
-
-**Note.** This changes the header row of an existing export. Worth a line in the release
-notes.
-
-**Verify.** Export the same ZT table from both pages and diff the headers.
-
-## 1. `sleep_bouts.csv` written by two pages with different contents
-
-Two pages write a file with the same name and different contents; whichever the user
-opens last silently wins.
-
-| | `app/app_pages/sleep_activity.py:373-381` | `app/app_pages/export_data.py:325-343` |
-|---|---|---|
-| Source | `sleep_analysis.raw_bout_dataframe(ds, …)` | `ds[bout_vars].to_dataframe()` |
-| Columns | id, sleep_bout_number, **group**, duration, **sleep_state**, start/end_time | id, bout index, duration, start/end_time |
-| Flies | **filtered** by the page's group selection | all flies |
-| Destination | working folder | browser download |
-
-The export version is a strict subset — the same rows, minus `group` and `sleep_state`.
-
-**Decision.** One source of truth, and disambiguate the two files by name.
-
-**Fix.**
-
-1. `export_data.py`: replace the ad-hoc `ds[bout_vars].to_dataframe()` with
-   `sleep_analysis.raw_bout_dataframe(ds)` (no group filter). The export gains `group` and
-   `sleep_state`, and `raw_bout_dataframe` becomes the single source of truth its own
-   docstring already claims it is (`core/sleep_analysis.py:~470`).
-2. Rename so the two are distinguishable: `export_data.py` keeps `sleep_bouts.csv` (all
-   flies); `sleep_activity.py` writes `sleep_bouts_filtered.csv`.
-3. Say which is which in the button labels — "all flies" vs "current group selection".
-
-**Verify.** With a group filter active, confirm the two files differ only in row count and
-that the unfiltered one matches the fly total.
-
-## 11. Unify the two display group filters
-
-`app/ui/filters.py` shares the implementation but deliberately keeps separate session keys
-per page: `pgram_groups` (`app/app_pages/periodograms.py:27`) and `viz_groups`
-(`app/app_pages/sleep_activity.py:144`). Selecting groups on one page therefore has no
-effect on the other, which surprises people.
-
-Both are *display* filters over a page-local view. The filter on Groups & subsets is a
-different thing entirely — it replaces the master dataset and invalidates every downstream
-cache.
-
-**Decision.** Share one app-wide key.
-
-**Fix.** Pass the same key from both call sites and update the module docstring at
-`app/ui/filters.py:9-13`, which currently explains why they are separate. Note the two
-calls differ in one respect — `sleep_activity.py:144` passes `subset=True`, so it actually
-`.sel()`s its local view while Periodograms filters by hand. That asymmetry is fine and
-should stay; only the key is shared.
-
-**Verify.** Select a subset on Periodograms, switch to Sleep & activity, and confirm the
-same subset is selected and the plots honour it.
 
 ## 12. Wire up `regroup_dataset` so groups can be redefined after import
 
@@ -434,3 +337,65 @@ monitors are all the same digit count is safe. Mixed digit counts listed in nume
 are affected.
 
 Work out which saved datasets and published figures came from an affected metadata file.
+
+**Note on `example_data`.** It cannot exercise this bug: its monitors are 17–22, all two
+digits, so numeric and string order agree. The audit needs the lab's real metadata files.
+
+---
+
+# D. Done
+
+Closed items, newest first. The full description of each lives in the commit that closed
+it — `git show <sha>` — rather than being kept here, so this section stays an index.
+
+## 14. Dataset fingerprints excluded from every `@st.cache_data` key
+
+`8e1f6ce`, `486330d`. Found while verifying item 11. Every cached helper on
+`sleep_activity.py`, `periodograms.py` and `rhythmicity.py` took its fingerprint as
+`_fp`, and Streamlit's underscore rule is **syntactic** — it drops *any*
+leading-underscore parameter from the cache key, not just the unhashable dataset. So the
+one argument that exists to encode which flies are in `ds` never reached the key.
+
+`rhythmicity._build_period_summary_df(_fp, _ds)` was the worst: those were its only two
+parameters, so the key was **empty** and the exported per-fly period summary was computed
+once per session and then returned unchanged for every later dataset. The reference
+example in `core/dataset_meta.dataset_fingerprint` that all three sites were copied from
+was itself half wrong (`fp` right, `ds` missing its underscore) and has been corrected.
+
+Renaming `_fp` → `fp` is the whole fix; call sites already pass positionally. **If you
+add a cached helper, the fingerprint parameter takes no leading underscore and the
+dataset parameter does.**
+
+## 11. Unify the two display group filters
+
+`72e15b7`. Both call sites now pass `ui.filters.DISPLAY_GROUPS_KEY`.
+
+**This entry was wrong**, and the correction is worth keeping: it called the change "a
+one-line change here". Sharing the key is necessary but not sufficient. Streamlit
+garbage-collects widget state for widgets not rendered on the previous run, and a page
+switch is exactly that, so the selection was gone before the other page's multiselect was
+instantiated. The value is now mirrored under a plain non-widget key and re-seeds
+`session_state[key]` before the widget is created; `default=` had to go at the same time,
+because passing both makes Streamlit log a warning. Treat effort estimates in this file
+as guesses, not findings.
+
+## 1. `sleep_bouts.csv` written by two pages with different contents
+
+`e6c0802`. `export_data.py` keeps `sleep_bouts.csv` (all flies) and now sources it from
+`sleep_analysis.raw_bout_dataframe`; `sleep_activity.py` writes `sleep_bouts_filtered.csv`
+(current group selection). Both button labels say which is which.
+
+## 2. ZT export column-order and casing drift
+
+`ecbfb52`. Both pages now build the table with `export_helpers.zt_group_summary_table`.
+
+**Release notes:** this changes the header row of the Sleep & activity
+`activity_binned.csv` / `sleep_binned.csv` exports, from `mean,n,sd` to `Mean,SD,N`.
+
+## 8. Private function called across a module boundary
+
+`96b0e8a`. `phase_shift._group_labels` → `group_labels`, both call sites, no alias.
+
+## 9. CV fold help text is wrong for any non-default fold count
+
+`4839d45`. Rendered as a caption from the widget's own return value.

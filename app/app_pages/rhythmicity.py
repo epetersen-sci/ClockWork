@@ -61,11 +61,20 @@ else:
     period_ds = st.session_state.dataset
 
 @st.cache_data(show_spinner=False)
-def _build_period_summary_df(_fp, _ds):
+def _build_period_summary_df(fp, _ds):
     """Build the per-fly Period Analysis summary table. Cached so a page
     rerun (no analysis-state change) doesn't redo the per-fly `.sel()`
     loop. The fingerprint key is invalidated whenever the analysis attrs
-    or rhythmic flags change."""
+    or rhythmic flags change.
+
+    ``fp`` carries no leading underscore, and must not grow one. Streamlit's
+    underscore rule is syntactic — it drops ANY leading-underscore parameter
+    from the cache key — and these are the only two parameters, so as ``_fp``
+    the key was EMPTY: the table was built once per session and then returned
+    unchanged for every later dataset, which is exactly the invalidation this
+    docstring promises. ``_ds`` keeps its underscore because a Dataset is what
+    the fingerprint exists to stand in for.
+    """
     rows = []
     for fly_id in _ds["id"].values:
         row = {"ID": fly_id}

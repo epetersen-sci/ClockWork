@@ -16,7 +16,7 @@ import streamlit as st
 import export_helpers as ex
 import plotting
 from dataset_meta import dataset_fingerprint
-from ui.filters import group_filter_sidebar, resolve_group_coord
+from ui.filters import DISPLAY_GROUPS_KEY, group_filter_sidebar, resolve_group_coord
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -24,7 +24,11 @@ ds = require_dataset()
 # Group coordinate: prefer the experimental `group`, fall back to `genotype`,
 # else a single pooled group. The overlays are BY GROUP.
 group_coord = resolve_group_coord(ds)
-group_vals, all_groups, selected_groups, _ = group_filter_sidebar(ds, key="pgram_groups")
+# DISPLAY_GROUPS_KEY, not a page-local key: the display group selection is
+# app-wide, so a subset chosen here is still chosen on Sleep & activity.
+group_vals, all_groups, selected_groups, _ = group_filter_sidebar(
+    ds, key=DISPLAY_GROUPS_KEY
+)
 
 st.caption(
     "Group-averaged spectra (mean ± SEM across flies). Each method has its own "
@@ -35,7 +39,13 @@ st.caption(
 )
 
 @st.cache_data(show_spinner=False)
-def _curves_by_group(_fp, _ds, var, axis_name, selected, normalize, freq_to_period):
+# `fp`, NOT `_fp`: Streamlit's underscore rule is syntactic and drops ANY
+# leading-underscore parameter from the cache key, not just the unhashable
+# dataset. Named `_fp` it was the one argument that could not reach the key —
+# so a reloaded or re-analysed dataset kept serving the previous run's curves.
+# The remaining args (var, selected, normalize, ...) hid it: changing method or
+# group selection did invalidate, so only a dataset swap went stale.
+def _curves_by_group(fp, _ds, var, axis_name, selected, normalize, freq_to_period):
     """Build {group: (n_flies, n_points)} for a stored (id, axis) spectrum var.
 
     Averages BY GROUP. Per-fly max-normalisation (for the power methods) makes the
