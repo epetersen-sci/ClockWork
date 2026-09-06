@@ -1777,7 +1777,7 @@ def wavelet_analysis(
     group_coord: str = "group",
     filter_nonrhythmic_for_average: bool = True,
     phase_label: str | None = None,
-) -> xr.Dataset:
+) -> tuple[xr.Dataset, list[dict]]:
     """
     CWT periodogram analysis. The default reduction method is resolved from
     ``calibrations.DEFAULT_CWT_METHOD`` (``'global_rednoise'``) when
@@ -2033,7 +2033,13 @@ def wavelet_analysis(
 
     if not results:
         print("Warning: CWT analysis failed for all individuals.")
-        return ds
+        # Same 2-tuple shape as the success path below. Returning a bare Dataset
+        # here was a real trap rather than just an inconsistency: a caller doing
+        # `ds, averages = wavelet_analysis(...)` unpacks an xr.Dataset over its
+        # DATA_VARS, so with exactly two of them the unpack SUCCEEDS and silently
+        # binds two variable-name strings. Any other count raises. Both are worse
+        # than the empty list.
+        return ds, []
     print("CWT analysis done.")
     combined_results = xr.concat(results, dim=id_var)
 

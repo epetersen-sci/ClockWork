@@ -152,6 +152,77 @@ class TestWaveletAnalysisReturnsAverages:
         doc = inspect.getdoc(periodograms.wavelet_analysis)
         assert "group_averages" in doc
 
+    def test_annotation_matches_the_actual_return(self):
+        """The annotation still said `-> xr.Dataset` after the return became a
+        2-tuple, which is how the early-return bug below went unnoticed."""
+        import inspect
+
+        import periodograms
+
+        ann = inspect.signature(periodograms.wavelet_analysis).return_annotation
+        assert "tuple" in str(ann), f"annotation is {ann!r}, but the function returns a 2-tuple"
+
+    def test_all_flies_failed_still_returns_a_2_tuple(self, master_ds):
+        """The `if not results` path returned a BARE Dataset while the success
+        path returned a tuple. That is not a clean crash: unpacking an
+        xr.Dataset iterates its data_vars, so a dataset with exactly two of them
+        silently binds two variable-NAME strings, and any other count raises.
+
+        Triggered by demanding more days than the record holds, so every fly is
+        filtered out and no result survives.
+        """
+        import periodograms
+
+        ds = master_ds.drop_vars(
+            [v for v in ("sleep", "sleep_short", "sleep_intermediate", "sleep_long")
+             if v in master_ds.data_vars]
+        )
+        out = periodograms.wavelet_analysis(ds, min_num_days=999, compute_group_averages=True)
+        assert isinstance(out, tuple) and len(out) == 2, (
+            f"expected a 2-tuple from the all-failed path, got {type(out).__name__}"
+        )
+        returned_ds, averages = out
+        assert averages == []
+        assert hasattr(returned_ds, "data_vars"), "first element should be the Dataset"
+
+
+class TestMonitorReportOrdering:
+    """Monitors are scanned by eye, so they must be listed in numeric order.
+
+    `key=str` put monitor 10 before monitor 2 — the same string-vs-numeric trap
+    behind the metadata mispairing in tests/test_monitor_label_pairing.py.
+    """
+
+    @staticmethod
+    def _processor(report):
+        from dam_processor import MetadataProcessor
+
+        obj = MetadataProcessor.__new__(MetadataProcessor)
+        obj.integrity_report = report
+        return obj
+
+    @staticmethod
+    def _monitor():
+        return {
+            "status": {"n_status_bad": 2, "n_rows_dropped": 2, "bad_status_counts": {51: 2}},
+            "scan": {"spans": []},
+            "classification": {"n_cosmetic_slots": 2, "n_dataloss_slots": 0},
+        }
+
+    def test_integer_ids_sort_numerically(self):
+        p = self._processor({m: self._monitor() for m in (2, 10, 3, 11)})
+        assert [m for m, _, _ in p.integrity_monitor_reports()] == [2, 3, 10, 11]
+
+    def test_numeric_string_ids_sort_numerically(self):
+        p = self._processor({m: self._monitor() for m in ("2", "10", "3")})
+        assert [m for m, _, _ in p.integrity_monitor_reports()] == ["2", "3", "10"]
+
+    def test_non_numeric_ids_do_not_raise(self):
+        """Comparing an int against a str would raise; the sort key must keep the
+        two kinds apart rather than assuming every monitor id is a number."""
+        p = self._processor({2: self._monitor(), "A12": self._monitor(), 10: self._monitor()})
+        assert [m for m, _, _ in p.integrity_monitor_reports()] == [2, 10, "A12"]
+
 
 class TestRidgeDensityTakesAFilteredDataset:
     def test_no_longer_filters_internally(self):

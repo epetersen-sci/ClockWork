@@ -887,7 +887,20 @@ class MetadataProcessor:
         :meth:`integrity_summary_lines` draws in aggregate.
         """
         out = []
-        for monitor_id in sorted(self.integrity_report, key=str):
+        # NUMERIC where possible, falling back to string. `key=str` would order
+        # monitors 2 and 10 as "10" < "2" — cosmetic here, but it is the same
+        # string-vs-numeric trap that caused the metadata mispairing this
+        # codebase already had (see tests/test_monitor_label_pairing.py), and a
+        # report the user scans monitor-by-monitor should not reintroduce it.
+        # The (kind, value) tuple keeps ints and non-numeric ids from comparing
+        # against each other, which would raise.
+        def _monitor_sort_key(monitor_id):
+            try:
+                return (0, int(monitor_id), "")
+            except (TypeError, ValueError):
+                return (1, 0, str(monitor_id))
+
+        for monitor_id in sorted(self.integrity_report, key=_monitor_sort_key):
             r = self.integrity_report[monitor_id]
             text = dam_integrity.format_monitor_report(
                 monitor_id, r["status"], r["scan"], r["classification"]
