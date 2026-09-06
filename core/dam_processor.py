@@ -846,6 +846,60 @@ class MetadataProcessor:
         if text:
             print("\n" + text)
 
+    def integrity_scalars(self):
+        """The aggregate integrity counters as plain ints, for stamping onto
+        ``ds.attrs`` so a reloaded ``.nc`` can still report its own quality.
+
+        Deliberately only scalars. The per-monitor structure is nested and its
+        spans are only actionable at import time, while the raw files are still
+        in hand; NetCDF attributes handle plain numbers cleanly and nested blobs
+        (a JSON string, say) badly. Follows the precedent set by
+        ``time_regularized`` / ``gaps_filled`` in ``dam_utilities``.
+
+        Returns ``{}`` when no integrity report exists, so a caller can
+        ``attrs.update(...)`` unconditionally.
+        """
+        if not self.integrity_report:
+            return {}
+        rows = self.integrity_report.values()
+        return {
+            "integrity_n_status_bad": int(sum(r["status"]["n_status_bad"] for r in rows)),
+            "integrity_n_cosmetic_slots": int(
+                sum(r["classification"]["n_cosmetic_slots"] for r in rows)
+            ),
+            "integrity_n_dataloss_slots": int(
+                sum(r["classification"]["n_dataloss_slots"] for r in rows)
+            ),
+            "integrity_n_monitors": int(len(self.integrity_report)),
+        }
+
+    def integrity_monitor_reports(self):
+        """Per-monitor detail as ``(monitor_id, severity, text)``, sorted by monitor.
+
+        ``dam_integrity.format_monitor_report`` already builds this text; until
+        now it was printed to the console and nowhere else, so anyone not running
+        the app from a terminal never saw which monitor a gap was in. Monitors
+        with nothing to report are omitted rather than listed as clean, so the
+        expander shows only what needs attention.
+
+        severity is ``"warning"`` when the monitor lost real data and ``"info"``
+        when its irregularities were cosmetic — the same distinction
+        :meth:`integrity_summary_lines` draws in aggregate.
+        """
+        out = []
+        for monitor_id in sorted(self.integrity_report, key=str):
+            r = self.integrity_report[monitor_id]
+            text = dam_integrity.format_monitor_report(
+                monitor_id, r["status"], r["scan"], r["classification"]
+            )
+            if not text:
+                continue
+            severity = (
+                "warning" if r["classification"].get("n_dataloss_slots", 0) else "info"
+            )
+            out.append((monitor_id, severity, text))
+        return out
+
     def integrity_summary_lines(self):
         """Return the aggregate data-integrity summary as ``(severity, text)``
         tuples for both console and UI consumption (the FileScan role).

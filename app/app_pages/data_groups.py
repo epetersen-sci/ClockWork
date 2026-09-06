@@ -24,6 +24,7 @@ import streamlit as st
 
 import dam_utilities
 from analysis_detection import detect_analyses
+from ui import status
 from ui.guards import require_dataset
 from ui.state import invalidate_derived_caches
 
@@ -117,6 +118,11 @@ st.dataframe(
     width="stretch",
     height=200,
 )
+
+# Import-time data-quality counters, if this dataset carries them. This page is
+# "what is currently loaded", and for a reloaded .nc it is the only place that
+# can say anything about the quality of the recording behind it.
+status.render_integrity_counters(ds)
 
 # ============================================================
 # Redefine groups — re-derive the `group` coord from the per-fly
