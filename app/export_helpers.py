@@ -10,9 +10,15 @@ per graph; a confirmation shows the written path.
 
 Used by the Periodograms, Period Analysis, Sleep and Activity, and HMM pages so the
 export mechanism is defined ONCE (no per-page drift). ``streamlit`` and
-``dam_utilities`` are imported INSIDE the functions so this module always uses the
-page's active streamlit (the real one, or the headless stub the page-smoke tests
-swap in — under which ``st.button`` is False, so no file is ever written in a test).
+``dam_utilities`` are imported INSIDE the functions so this module always uses
+whichever streamlit the calling page is running under, rather than binding one at
+import time.
+
+(This paragraph used to describe "the headless stub the page-smoke tests swap in".
+There was no such stub and no such tests — the suite it referred to had been gone
+long enough that only the comment remained. ``tests/`` now drives the real
+streamlit through ``st.testing.v1.AppTest``, which needs no stub: under AppTest a
+button is False until a test clicks it, so no file is written by accident.)
 
 :func:`zt_group_summary_table` lives here for the same reason: Export data and
 Sleep & activity both ship a group Mean/SD/N-per-ZT-bin CSV, and they had drifted

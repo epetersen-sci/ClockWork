@@ -316,10 +316,32 @@ def sleep_analysis(
         all_long_masks.append(long_da.expand_dims({"id": [group_id]}))
         all_sleep_bouts_dfs.append(sleep_bouts_df)
 
-    combined_sleep_mask_da = xr.concat(all_sleep_masks, dim="id").rename("sleep")
-    combined_short_da = xr.concat(all_short_masks, dim="id").rename("sleep_short")
-    combined_inter_da = xr.concat(all_inter_masks, dim="id").rename("sleep_intermediate")
-    combined_long_da = xr.concat(all_long_masks, dim="id").rename("sleep_long")
+    def _in_dataset_order(masks, name):
+        """Concatenate the per-fly masks back into ``data``'s own ``id`` order.
+
+        ``groupby("id")`` iterates in SORTED id order, and ``expand_dims`` builds
+        each mask's id index from a Python list (object dtype). So the stacked
+        masks disagree with ``data`` on both order and dtype whenever the
+        dataset's ids are not already string-sorted — and ``xr.merge``'s current
+        default, ``join="outer"``, reconciles that difference by silently
+        re-sorting the merged dataset's fly dimension. Sleep analysis reordering
+        the master's ids is a side effect nobody asked for, and it is what makes
+        a later export list its flies in a different order.
+
+        ``.sel`` (not ``.reindex``) on purpose: if a fly is genuinely missing it
+        raises, where reindex would fill the row with NaN and hide it. It is also
+        given plain label VALUES rather than ``data["id"]`` itself — passing the
+        DataArray would carry every other id-dim coord (group, genotype,
+        start_datetime, …) along with it and pull them into the merge's
+        alignment, which is not what this is for.
+        """
+        stacked = xr.concat(masks, dim="id").rename(name)
+        return stacked.sel(id=data["id"].values)
+
+    combined_sleep_mask_da = _in_dataset_order(all_sleep_masks, "sleep")
+    combined_short_da = _in_dataset_order(all_short_masks, "sleep_short")
+    combined_inter_da = _in_dataset_order(all_inter_masks, "sleep_intermediate")
+    combined_long_da = _in_dataset_order(all_long_masks, "sleep_long")
     combined_sleep_bouts_df = pd.concat(all_sleep_bouts_dfs, ignore_index=True)
 
     # Store bout data as a multi-indexed Dataset: dims (id, sleep_bout_number)
@@ -354,8 +376,19 @@ def sleep_analysis(
     # Step 1: Merge time-series variables (all share id × time dims with data).
     # bout_ds has dims (id × sleep_bout_number) — merging it in the same call
     # causes xarray to broadcast across all four dims, allocating a massive array.
+    # join="outer" is stated explicitly rather than left to the default, which
+    # xarray is changing to "exact". It has to stay "outer", and only on TIME:
+    # under a phase selection each per-fly mask is built over that fly's IN-PHASE
+    # minutes only, so the masks carry a shorter time axis than `data` and the
+    # union is what pads the out-of-phase minutes back to NaN. Switching to
+    # "exact" raises there.
+    #
+    # The id dimension is a different story and is handled above: the masks are
+    # put back into `data`'s own id order first, because an outer join over
+    # mismatched ids silently RE-SORTS the merged dataset's flies.
     merged_ds = xr.merge(
-        [data, combined_sleep_mask_da, combined_short_da, combined_inter_da, combined_long_da]
+        [data, combined_sleep_mask_da, combined_short_da, combined_inter_da, combined_long_da],
+        join="outer",
     )
 
     # Step 2: Add bout-level variables individually so their (id, sleep_bout_number)

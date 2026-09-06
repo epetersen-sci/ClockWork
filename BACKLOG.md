@@ -6,7 +6,7 @@ a regression introduced by the reorganization — they all predate it. They were
 there because fixing them changes analysis behaviour or touches `core/`, both of which were
 out of scope for a re-cut of `app/`.
 
-**Nine are closed** (9, 8, 2, 1, 11, 14, 3, 4, 5 — see [D. Done](#d-done)); three remain
+**Nine are closed** (9, 8, 2, 1, 11, 14, 3, 4, 5 — see [D. Done](#d-done)); four remain
 in [A. Ready to fix](#a-ready-to-fix), one is [held](#b-held), one is an [audit](#c-audit).
 
 They have since been triaged into four sections:
@@ -36,8 +36,9 @@ No dependencies remain between the open items.
 
 | Order | Items | Why here |
 |---|---|---|
-| 1 | **12, 10** | Independent, small to medium. |
-| 2 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
+| 1 | **15** | A crash on a real path, and the smallest fix in the list. |
+| 2 | **12, 10** | Independent, small to medium. |
+| 3 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
 
 **Capture a baseline before any item whose Verify step says "same as before".** Item 5
 needed one and it paid for itself — 721 of 724 SCAMP files matched byte-for-byte, so
@@ -48,6 +49,42 @@ recipe: run the export on `main`, `sha256sum` the tree, keep a copy, then re-run
 ---
 
 # A. Ready to fix
+
+## 15. Re-running sleep analysis on a reloaded `.nc` crashes
+
+Load an analysed dataset through **Path B**, tick **"Re-run sleep analysis with
+different parameters"**, and the run dies with:
+
+```
+ValueError: cannot reindex or align along dimension 'time'
+            because the (pandas) index has duplicate values
+```
+
+Reproducer (no UI needed):
+
+```python
+ds = xr.load_dataset("analyzed_dataset.nc")   # has sleep + the bout dim
+sleep_analysis.sleep_analysis(ds, phase="LD") # raises
+```
+
+**Cause.** `core/sleep_analysis.py` drops the previous run's variables so they
+cannot collide — but it does so too late. `analysis_ds` is built at `:180` and
+the per-fly loop runs at `:309`, while the drop of `_sleep_vars` and of the vars
+carrying the `sleep_bout_number` dim happens at `:368`. So the loop still sees
+`duration` / `start_time` / `end_time` / `sleep_state`, which are
+`(id, sleep_bout_number)`. Converting a fly's slice to a dataframe then takes the
+cartesian product of `time` × `sleep_bout_number`, so `df[t_column]` repeats each
+timestamp once per bout — the duplicate index the merge then chokes on.
+
+It only bites on a RELOADED dataset because a freshly analysed one still has its
+bout variables in memory on the master, not on the object handed to the loop.
+
+**Fix.** Do the drop before `analysis_ds` is derived, not after — one block moved
+from `:368` to above `:180`, so both the loop and the merge see a clean dataset.
+
+**Verify.** The reproducer above returns a dataset; and on the Sleep analysis
+page, a `.nc` loaded via Path B can be re-run with a different threshold.
+
 
 ## 12. Wire up `regroup_dataset` so groups can be redefined after import
 
