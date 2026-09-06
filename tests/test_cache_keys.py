@@ -99,3 +99,39 @@ def test_fingerprint_distinguishes_fly_subsets(master_ds):
     full = dataset_fingerprint(master_ds)
     subset = dataset_fingerprint(master_ds.isel(id=slice(0, 2)))
     assert full != subset
+
+
+def test_fingerprint_notices_a_regroup(master_ds):
+    """Regrouping rewrites ONLY the `group` coord — same flies, same time axis,
+    same phase. Without the group labels in the key, every cached group-level
+    figure keeps being served against labels that no longer exist."""
+    import dam_utilities
+    from dataset_meta import dataset_fingerprint
+
+    before = dataset_fingerprint(master_ds)
+    after = dataset_fingerprint(dam_utilities.regroup_dataset(master_ds, ["genotype"]))
+    assert before != after
+
+
+def test_fingerprint_notices_new_sleep_parameters(master_ds):
+    """Re-running sleep detection with a different threshold changes every
+    sleep-derived figure and moves nothing else in the key."""
+    from dataset_meta import dataset_fingerprint
+
+    changed = master_ds.copy()
+    changed.attrs["sleep_threshold_seconds"] = 600
+    assert dataset_fingerprint(master_ds) != dataset_fingerprint(changed)
+
+
+def test_invalidate_clears_the_streamlit_memo_too(monkeypatch):
+    """Session-state keys are the obvious half. The other is @st.cache_data,
+    which the pages use for the expensive plot calls — popping one and not the
+    other is how a stale figure survives a regroup."""
+    import streamlit as st
+
+    from ui import state
+
+    called = []
+    monkeypatch.setattr(st.cache_data, "clear", lambda: called.append(True))
+    state.invalidate_derived_caches()
+    assert called, "invalidate_derived_caches should clear st.cache_data"

@@ -6,10 +6,7 @@ a regression introduced by the reorganization — they all predate it. They were
 there because fixing them changes analysis behaviour or touches `core/`, both of which were
 out of scope for a re-cut of `app/`.
 
-**Ten are closed** (9, 8, 2, 1, 11, 14, 3, 4, 5, 15 — see [D. Done](#d-done)); three remain
-in [A. Ready to fix](#a-ready-to-fix), one is [held](#b-held), one is an [audit](#c-audit).
-
-They have since been triaged into four sections:
+They were triaged into four sections:
 
 - **[A. Ready to fix](#a-ready-to-fix)** — the decision is made and written down. Pick one
   up and implement it as described; no further judgement needed.
@@ -17,140 +14,109 @@ They have since been triaged into four sections:
 - **[C. Audit](#c-audit)** — no code change; something to go and check.
 - **[D. Done](#d-done)** — closed, with the commit that closed it.
 
-**Item numbers are original and stable.** They are referenced from code
-(`app/app_pages/data_groups.py:15-17`) and from the reorganization PR, so they are not
-renumbered when items move between sections or get closed. A new issue takes the next
-free number (item 14 was added this way), it never reuses a closed one.
+**All thirteen triaged issues, plus two found while fixing them, are closed**
+(9, 8, 2, 1, 11, 14, 3, 4, 5, 15, 12, 10, 7). One new issue is open — item 16,
+found by an xarray review of the last branch — plus one held decision (item 6)
+and one data audit (item 13).
 
-**Line references were pinned to `d0a477c`** (post-reorganization) and have since been
-re-checked against `1868ba6`. Every reference in the three open items resolves as
-written, with one exception now fixed: item 12's `ui/state.py:96` moved to `:95`.
-Re-check an item's references against `main` before trusting them, and update them
-when you close one.
+**Item numbers are original and stable.** They are referenced from the
+reorganization PR and from the commits that closed them, so they are not renumbered
+when items move between sections or get closed. A new issue takes the next free
+number (14 and 15 were added this way), and never reuses a closed one.
+
+(`app/app_pages/data_groups.py` used to carry a pointer to item 12 in its module
+docstring. Item 12 is closed and that pointer is gone, so no code references this
+file any more.)
+
+**Line references** in the two remaining items have been re-checked against
+`d998b53`. One had moved and is fixed: item 6's phase-registry
+reference, `core/dam_utilities.py`, is now at line 1413 (was 1380). Item 13 cites
+no line numbers. Re-check any reference against `main` before trusting it — several
+drifted over the course of closing section A, and a wrong line number costs more
+than no line number.
 
 ---
 
-## Suggested order
+## What this file is for now
 
-No dependencies remain between the open items.
+Section A holds one item (16). Two habits from clearing the rest are worth
+keeping:
 
-| Order | Items | Why here |
-|---|---|---|
-| 1 | **12, 10** | Independent, small to medium. |
-| 2 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
+**Capture a baseline before any item whose Verify step says "same as before".**
+Item 5 needed one and it paid for itself — 721 of 724 SCAMP files matched
+byte-for-byte, so the three that differed could be examined individually instead
+of argued about. The recipe: run the export on `main`, `sha256sum` the tree, keep
+a copy, then re-run and `sha256sum -c` after the change.
 
-**Capture a baseline before any item whose Verify step says "same as before".** Item 5
-needed one and it paid for itself — 721 of 724 SCAMP files matched byte-for-byte, so
-the three that differed could be examined individually instead of argued about. The
-recipe: run the export on `main`, `sha256sum` the tree, keep a copy, then re-run and
-`sha256sum -c` after the change.
+**Grep for call sites; do not trust a list in this file.** Item 5's consumer
+table was missing two of five, and item 3's Verify step asked for a difference
+the code could not produce. Both are recorded in their Done entries.
+
+There is now a test suite (`tests/`, run by CI on every PR), so a Verify step can
+usually become a test rather than a one-off check done by hand. `tests/README.md`
+covers what the fixtures do and do not imitate.
 
 ---
 
 # A. Ready to fix
 
-## 12. Wire up `regroup_dataset` so groups can be redefined after import
+## 16. The gap trim masks `(id, time)` variables on the wrong axis
 
-`core/dam_utilities.py:452-468` is complete and correct — it re-derives the `group` coord
-from the per-id metadata coords stored at import and updates `attrs['group_columns']`.
-Nothing calls it. The `group` coord is only ever set at import, inside Create Dataset
-(`data_import.py` → `derive_group_labels` → `create_xarray_dataset`).
+`core/dam_utilities.py:1076-1079`, inside `_select_longest_segments`. The loop
+that blanks each fly's out-of-segment minutes indexes `[time, fly]`:
 
-`README.md:189` claims the opposite: that group columns "can be re-grouped later without
-re-importing".
+```python
+for fly_idx, info in enumerate(segment_info):
+    arr[: info["segment_start_idx"], fly_idx] = np.nan
+    if info["segment_end_idx"] + 1 < arr.shape[0]:
+        arr[info["segment_end_idx"] + 1 :, fly_idx] = np.nan
+```
 
-**Decision.** Wire it up and make the README true. The capability matters most for a
-reloaded `.nc`, where the alternative is re-reading raw DAM files.
+**Dimension order is not uniform in this codebase.** `activity` and `moving` are
+`(time, id)`; the four sleep masks are `(id, time)`. `activity` has its own
+correctly-shaped block above, so the sleep masks are the casualties, and they
+are hit twice over:
 
-**Fix.**
+- The **trimmed fly keeps** its out-of-segment sleep — the data the trim exists
+  to discard survives into the export.
+- **Every other fly** gets a spurious `-1` at low time indices.
+- The tail branch tests `end_idx + 1 < arr.shape[0]`, but `shape[0]` is `n_id`
+  for these vars, so it is essentially never true and the post-gap tail is never
+  masked at all.
 
-1. On Groups & subsets, add a multiselect of the available group-defining coords —
-   the candidates are the per-id coords that `create_xarray_dataset` stored, filtered by
-   `dam_utilities.GROUP_EXCLUDE_COLUMNS`.
-2. On apply, call `regroup_dataset(ds, chosen)` and write the result back to
-   `st.session_state.dataset` **and** `dataset_full`, so the subset filter's restore point
-   is regrouped too.
-3. Call `ui.state.invalidate_derived_caches()` (`app/ui/state.py:95`) — `group` feeds every
-   group-level comparison, plot and export, so every cached result is invalid after a
-   regroup.
-4. Delete the "cannot yet be redefined here" note at `app/app_pages/data_groups.py:15-17`.
+Reproduced on the test fixture (6 flies × 8640 min, one 1200-min gap in fly 0,
+sliced to DD):
 
-**Verify.** Load a `.nc` grouped by genotype+temperature, regroup by genotype alone,
-confirm the group count drops and that a previously computed period analysis is cleared
-rather than shown against the new labels.
+```
+moving (time,id) masked per fly: [2321, 0, 0, 0, 0, 0]   <- correct
+sleep  (id,time)     -1 per fly: [   1, 1, 1, 1, 1, 1]   <- wrong on both counts
+```
 
-## 10. Surface the rest of the data-integrity report
+This reaches real output: `export_helpers.phase_slice` →
+`split_xarray_dataset` → the per-phase `.nc` written by `export_data.py` and the
+SCAMP files written by `export_scamp.py`.
 
-`core/dam_integrity.py` is 492 lines of load-time data-quality analysis — status
-resolution, duplicate handling, gap scanning, and a cosmetic-vs-data-loss classification.
+**Fix.** Mask in xarray so it broadcasts by dim NAME rather than by position:
+build one `(id, time)` boolean `keep` DataArray from `segment_info` and apply
+`xr.where(keep, da, sentinel)` per variable. The repo already has the pattern —
+`select_phase` restores dim order with `masked[var] = m.transpose(*da.dims)`
+(`core/dam_utilities.py:1384`), and every other numpy drop-out in `core/` calls
+`.transpose("time", "id")` first. Doing it in xarray also removes the explicit
+`astype(float)` above, so the int8 sleep masks would never need restoring
+afterwards — which would let `export_helpers.phase_slice` drop its int8 repair
+block entirely.
 
-Partly resolved: the **aggregate** summary is now rendered at
-`app/app_pages/data_import.py:173` via `MetadataProcessor.integrity_summary_lines`.
+**Verify.** A fly with a ≥60-minute gap must lose the same minutes from `sleep`
+as from `moving`, and a fly without a gap must lose none. `tests/conftest.py`
+already builds the mixed dim order deliberately, so the fixture is one punched
+gap away from covering it. Then re-run the SCAMP baseline diff from item 5 —
+this changes exported values, so the 721-of-724 byte match will move, and the
+files that change should be exactly the trimmed flies.
 
-Still missing:
+**Found by** an xarray-skill review of the item 12/10/7 branch, and verified
+before filing. Not fixed there because it is pre-existing, changes exported
+numbers, and wants its own baseline diff.
 
-1. The **per-monitor** detail from `dam_integrity.format_monitor_report`, which
-   `core/dam_processor.py:652-656` prints to the console and nowhere else.
-2. Anything at all after a `.nc` reload — the report only exists during a raw import.
-
-**Decision.** Surface the per-monitor detail at import, and persist scalar counters into
-`attrs` so a reloaded dataset can still report its own quality.
-
-**Fix.**
-
-1. Add a per-monitor expander to the import page, alongside the import report added in
-   `f942522`. `MetadataProcessor.integrity_report` already holds the per-monitor dicts
-   (`status`, `scan`, `classification`) keyed by monitor id.
-2. Aggregate scalars into `attrs` when the dataset is built: `integrity_n_status_bad`,
-   `integrity_n_cosmetic_slots`, `integrity_n_dataloss_slots`. Follow the existing
-   precedent at `core/dam_utilities.py:591-597` (`time_regularized`, `gaps_filled`,
-   `gap_fill_value`) — plain scalars, which NetCDF serializes cleanly.
-3. Show those counters wherever a reloaded dataset is summarized.
-
-**Do not** serialize the full per-monitor structure as a JSON string in `attrs`. Nested
-blobs in NetCDF attributes are fragile and the spans are only actionable at import time,
-when the raw files are still in hand.
-
-**Verify.** Import a monitor with a known gap, confirm the per-monitor detail appears;
-save, reload, and confirm the counters survive.
-
-## 7. Inverted dependencies in `core/plotting.py`
-
-`plotting.py` defer-imports analysis code specifically to dodge circular imports:
-
-- `core/plotting.py:542` — `sleep_analysis.bout_duration_summary`,
-  `per_fly_bout_duration_curves`, `bout_duration_group_stats`, inside
-  `sleep_bout_duration_lines`
-- `core/plotting.py:1939` — `rhythmicity_classification.apply_rhythmic_filter`
-
-Those three `sleep_analysis` functions are called from *nowhere else*, so the
-compute/render seam is in the wrong place: the plotting module is running the analysis.
-
-Related: `core/periodograms.py:2058` reaches into `plotting` to write PNGs to disk — an
-analysis function with a filesystem side effect.
-
-**Decision.** Move the computation to the caller and let the plot function take a
-dataframe; invert `periodograms.py:2058` so the caller writes the file.
-
-**Fix.**
-
-1. Change `sleep_bout_duration_lines` to accept the already-computed frames, and compute
-   them in `app/app_pages/sleep_activity.py` before the call.
-2. Same shape for the rhythmic filter at `:1939` — the caller applies the filter and
-   passes the filtered dataset in.
-3. Have `periodograms.wavelet_analysis` return the figure (or the array behind it) and let
-   its caller write the PNG, rather than importing `plotting` at `:2058`.
-4. Delete the deferred imports. If a circular import remains after the move, the seam is
-   still in the wrong place — that is the test.
-
-**Sequenced last:** the largest refactor in this section, and it touches the most call
-sites.
-
-**Verify.** Bout-duration curves and the rhythmic-filter path render identically on
-`example_data`, and `core/plotting.py` imports cleanly at module scope with no deferred
-analysis imports left.
-
----
 
 # B. Held
 
@@ -167,7 +133,7 @@ inside one section — `# Sleep State Analysis Plots (Abhilash et al. 2026)`:
 They pair exactly with two orphaned analysis functions in `core/periodograms.py` —
 `sleep_cwt_analysis` and `ultradian_rhythmicity_ls` — plus `compute_single_fly_scalogram`.
 There is even a phase-requirement registry entry for `sleep_cwt_analysis` at
-`core/dam_utilities.py:1380`, so some wiring was anticipated.
+`core/dam_utilities.py:1413`, so some wiring was anticipated.
 
 **Re-verified at `d0a477c`: all of these still have zero real callers.** The only textual
 hits are docstrings, module-header lists and print strings.
@@ -233,6 +199,36 @@ digits, so numeric and string order agree. The audit needs the lab's real metada
 
 Closed items, newest first. The full description of each lives in the commit that closed
 it — `git show <sha>` — rather than being kept here, so this section stays an index.
+
+## 7. Inverted dependencies in `core/plotting.py`
+
+`d998b53`. `sleep_bout_duration_lines` takes the computed frames;
+`group_ridge_density_plotly` takes an already-filtered dataset;
+`wavelet_analysis` returns the group averages instead of writing PNGs, which
+`export_helpers.save_group_average_scalograms` now does. No deferred analysis
+imports remain in `plotting.py`, and it imports first in a clean interpreter.
+
+Note for whoever settles item 6: the rhythmic-filter inversion was inside
+`group_ridge_density_plotly`, which has no callers and is on item 6's unwired
+list. If that section is deleted, this part goes with it.
+
+## 10. Surface the rest of the data-integrity report
+
+`5386621`. Per-monitor detail now renders in an expander at import instead of
+going only to the console, and the aggregate counters are stamped onto `attrs`
+as plain ints so a reloaded `.nc` can still report its own quality. The renderer
+is silent on files that predate the counters — absence means "not recorded",
+which is not "clean".
+
+## 12. Wire up `regroup_dataset` so groups can be redefined after import
+
+`e1e6841`. "Redefine groups" on Groups & subsets, writing back to `dataset` and
+`dataset_full` and clearing every derived cache. `README.md:189` was already
+claiming this worked; it does now.
+
+Needed a new `dam_utilities.group_defining_coords`, because
+`group_defining_columns` asks its question of a metadata DataFrame and a
+reloaded `.nc` never had one.
 
 ## 15. Re-running sleep analysis on a reloaded `.nc` crashes
 

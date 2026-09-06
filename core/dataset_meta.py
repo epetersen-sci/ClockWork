@@ -202,10 +202,24 @@ def dataset_fingerprint(ds: xr.Dataset) -> tuple:
         "ac_use_dynamic_ci",
         "ls_power_threshold",
         "cwt_rhythmicity_threshold",
+        # Sleep detection parameters: re-running with a different threshold
+        # changes every sleep-derived figure, and nothing else in this tuple
+        # moves when it does.
+        "sleep_threshold_seconds",
+        "sleep_short_max_min",
+        "sleep_inter_max_min",
+        "sleep_phase",
+        "group_columns",
     )
     attr_tuple = tuple((k, str(attrs.get(k))) for k in attr_keys if k in attrs)
     flag_coords = tuple(c for c in ("ac_rhythmic", "ls_rhythmic", "cwt_rhythmic") if c in ds.coords)
-    return (ids, n_time, phase, bool(split), flag_coords, attr_tuple)
+    # The per-fly GROUP LABELS, not just the group_columns attr. Regrouping
+    # rewrites this coord while leaving the id list, the time axis and the phase
+    # untouched, so without it a regroup is invisible here — and every cached
+    # group-level figure keeps being served against labels that no longer exist.
+    # O(n_id), the same order as the id tuple above.
+    groups = tuple(str(g) for g in ds["group"].values) if "group" in ds.coords else ()
+    return (ids, n_time, phase, bool(split), flag_coords, attr_tuple, groups)
 
 
 def stamp_phase(ds: xr.Dataset, phase: str, split_applied: bool | None = None) -> xr.Dataset:
