@@ -1,0 +1,9 @@
+# Development-only dependencies. The app itself needs requirements.txt.
+#
+#   python -m pip install -r requirements-dev.txt
+#   python -m pytest
+#
+# The test suite uses streamlit's own AppTest (streamlit.testing.v1), which ships
+# with streamlit — no browser, no server, no webdriver.
+pytest>=8
+ruff>=0.6

@@ -8,6 +8,7 @@ import streamlit as st
 import dam_utilities
 import plotting
 from analysis_detection import detect_analyses
+from dataset_meta import PHASE_FULL, dataset_phase, is_split_applied
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -117,24 +118,22 @@ st.divider()
 # ============================================================
 st.subheader("2. Apply the LD/DD split")
 
-_already_split = ds.attrs.get("split_phase") is not None
+_already_split = is_split_applied(ds)
 _has_dd_coord = "first_DD_day" in ds.coords
 
 if _already_split:
     _prev_discard = bool(ds.attrs.get("split_discard_first_dd_day", 0))
-    # Show info about existing split
-    _has_dd_ds = st.session_state.get("dataset_DD") is not None
-    _has_ld_ds = st.session_state.get("dataset_LD") is not None
-    if _has_dd_ds and _has_ld_ds:
-        _dd_ds = st.session_state.dataset_DD
-        _ld_ds = st.session_state.dataset_LD
-        st.info(
-            f"LD/DD split applied — discard first DD day: **{_prev_discard}**\n\n"
-            f"- **DD dataset:** {len(_dd_ds['id'])} flies, {len(_dd_ds['time'])} timepoints\n"
-            f"- **LD dataset:** {len(_ld_ds['id'])} flies, {len(_ld_ds['time'])} timepoints"
-        )
-    else:
-        st.info(f"LD/DD split already applied — discard first DD day: **{_prev_discard}**")
+    # Split state comes from the master's own canonical attrs, not from pre-sliced
+    # session copies. There are no per-phase fly/timepoint counts to show here any
+    # more, because there is no stored per-phase dataset to count — consumers slice
+    # on demand. What persists is the split PARAMETERS, and they live on the master,
+    # so they survive a .nc round-trip in a way the session caches never did.
+    st.info(
+        f"LD/DD split applied — discard first DD day: **{_prev_discard}**, "
+        f"gap threshold: **{int(ds.attrs.get('gap_threshold_minutes', 60))}** min.\n\n"
+        "LD and DD views are derived when needed: analysis pages use "
+        "`select_phase`, the export pages re-slice at export time."
+    )
     _resplit = st.checkbox(
         "Re-run split with different settings", value=False, key="resplit_checkbox"
     )
@@ -199,17 +198,19 @@ else:
                     gap_threshold_minutes=gap_threshold,
                 )
 
-                # Store both in session state — master dataset stays unsplit
-                st.session_state.dataset_DD = ds_dd
-                st.session_state.dataset_LD = ds_ld
+                # ds_dd / ds_ld stay LOCAL: they are reported on below, then
+                # dropped. They used to be cached in session_state, which meant
+                # four files had to keep that copy in sync with the master — and
+                # sleep_detection.py had to regenerate both on every run to stop
+                # them going stale. The split PARAMETERS are recorded on the
+                # master instead, so any consumer reproduces the same slice.
                 # Mark master as split-applied (but keep all timepoints).
                 # Canonical phase stays 'full' since the master spans both
                 # epochs; split_applied=True records that LD/DD partitions
                 # are available via session_state. See core/dataset_meta.py.
-                from dataset_meta import PHASE_FULL, stamp_phase
+                from dataset_meta import stamp_phase
 
                 stamp_phase(ds, PHASE_FULL, split_applied=True)
-                ds.attrs["split_phase"] = "both"  # legacy alias
                 ds.attrs["split_discard_first_dd_day"] = int(discard_first_dd_day)
                 ds.attrs["gap_threshold_minutes"] = gap_threshold
                 st.session_state.dataset = ds
@@ -302,8 +303,11 @@ else:
 
     if st.session_state.get("show_preprocessing_heatmap"):
         _var_label = "Movement (moving)" if heatmap_var == "moving" else "Activity"
-        _split_phase = ds.attrs.get("split_phase", None)
-        _has_phases = "first_DD_day" in ds.coords and _split_phase in (None, "both")
+        # Canonical phase, not the legacy split_phase alias. 'full' covers both
+        # the never-split case (which the alias left as None) and the post-split
+        # master (which it set to "both") — those are the two states in which this
+        # dataset still spans LD and DD and can be shown as two heatmaps.
+        _has_phases = "first_DD_day" in ds.coords and dataset_phase(ds) == PHASE_FULL
 
         with st.spinner("Generating heatmap..."):
             try:
@@ -338,7 +342,11 @@ else:
                     st.plotly_chart(fig_dd, width="stretch")
                 else:
                     # Single phase (already split, or only LD data)
-                    _phase_label = ds.attrs.get("split_phase", "")
+                    # dataset_phase() always returns a label, so 'full' (an
+                    # unsplit dataset with no DD coord) has to be mapped back to
+                    # no suffix — the alias returned "" for that case.
+                    _phase = dataset_phase(ds)
+                    _phase_label = "" if _phase == PHASE_FULL else _phase
                     _title_suffix = f" — {_phase_label} Phase" if _phase_label else ""
                     title = f"{_var_label}{_title_suffix}"
                     fig = plotting.dataset_to_heatmap(ds, heatmap_var, title)

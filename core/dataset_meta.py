@@ -5,10 +5,11 @@ Single-source-of-truth helpers for the dataset's phase / split state.
 
 Every analysis or visualization page that branches on whether the dataset
 is a full recording, an LD-only partition, or a DD-only partition should
-read the phase from this module. The dataset itself is the source of
-truth — session-state caches like ``dataset_LD`` / ``dataset_DD`` are
-*derivative* and should not be the gating signal for "has the split been
-applied" prompts.
+read the phase from this module. The dataset itself is the source of truth.
+Pages used to gate "has the split been applied" prompts on the existence of
+the ``dataset_LD`` / ``dataset_DD`` session caches instead; those caches are
+gone, and the attrs here are the answer — they also survive a NetCDF round
+trip, which the caches never did.
 
 Canonical attrs
 ---------------
@@ -34,12 +35,23 @@ this convention)::
         - 'LD' / 'DD' map directly to ``phase``.
         - 'both' maps to ``phase='full'`` with ``split_applied=True``.
 
+**Nothing writes ``split_phase`` any more** — backlog item 4 removed the
+two writers (``data_curate_split.py`` and ``dam_utilities.split_xarray_dataset``).
+The reads below are deliberately NOT dead code: every ``.nc`` saved before
+that change still carries the alias, and these fallbacks are the only thing
+that resolves such a file to the right phase. Deleting them would silently
+re-label old saved datasets as ``'full'``. Keep them until you are willing
+to say old files are unsupported.
+
 Use :func:`dataset_phase` and :func:`is_split_applied` rather than
 reading ``ds.attrs`` directly so the legacy fallback stays in one place.
 """
 
 from __future__ import annotations
 
+import numbers
+
+import numpy as np
 import xarray as xr
 
 PHASE_FULL = "full"
@@ -83,7 +95,17 @@ def is_split_applied(ds: xr.Dataset) -> bool:
     explicit = ds.attrs.get("split_applied")
     if isinstance(explicit, bool):
         return explicit
-    if isinstance(explicit, (int,)):  # NetCDF round-trips bool→int
+    # NetCDF round-trips bool→int, and xarray hands that back as a NUMPY integer
+    # (np.int64), which is NOT an instance of Python's int under NumPy 2. Testing
+    # `isinstance(explicit, int)` therefore missed every reloaded file and fell
+    # through to the checks below. That went unnoticed while a split master also
+    # carried the legacy split_phase='both' alias, which rescued it; once item 4
+    # stopped writing the alias, a reloaded split master reported "not split" —
+    # which hides the phase pickers and makes the SCAMP export refuse to run.
+    # numbers.Integral covers Python ints and every NumPy integer width.
+    if isinstance(explicit, numbers.Integral):
+        return bool(explicit)
+    if isinstance(explicit, np.bool_):  # np.bool_ is NOT an Integral
         return bool(explicit)
     legacy = ds.attrs.get("split_phase")
     if isinstance(legacy, str) and legacy in (PHASE_LD, PHASE_DD, "both"):
@@ -199,9 +221,9 @@ def stamp_phase(ds: xr.Dataset, phase: str, split_applied: bool | None = None) -
     split_applied : bool or None
         If None, inferred from ``phase`` (LD/DD ⇒ True, full ⇒ False).
         Pass ``True`` explicitly to mark a master full dataset whose
-        partitioning has been precomputed without yet replacing the
-        master itself (e.g. after the Preprocessing page's apply-split
-        step that populates session_state.dataset_LD/DD).
+        partitioning has been decided without replacing the master itself
+        (the Curate & split page's apply-split step, which records the
+        split parameters on the master so consumers can re-slice on demand).
     """
     if phase not in VALID_PHASES:
         raise ValueError(f"phase must be one of {VALID_PHASES}; got {phase!r}")

@@ -20,7 +20,6 @@ discards everything already drawn — so the outcome is stashed in
 
 import streamlit as st
 
-import dam_utilities
 import sleep_analysis
 from analysis_detection import detect_analyses
 from dataset_meta import PHASE_DD, PHASE_LD, dataset_phase, is_split_applied
@@ -46,10 +45,11 @@ if "moving" not in ds.data_vars:
 # from the dataset itself (core/dataset_meta.py) so a DD-only or
 # LD-only NetCDF doesn't trigger the "split not applied" prompt.
 _ds_phase = dataset_phase(ds)
-_has_split_datasets = (
-    st.session_state.get("dataset_DD") is not None
-    and st.session_state.get("dataset_LD") is not None
-)
+# "Has the split been applied?" now asks the master's canonical attrs. It used
+# to be inferred from the existence of the dataset_LD/DD session caches, which
+# answered a subtly different question — whether the copies happened to still be
+# around — and went wrong whenever they were cleared without the master changing.
+_split_applied = is_split_applied(ds)
 _has_dd_coord = "first_DD_day" in ds.coords
 
 # Phase API (Stage-2): feed the WHOLE dataset and pass an explicit phase to
@@ -74,7 +74,7 @@ if _ds_phase in (PHASE_LD, PHASE_DD):
         f"Using the loaded **{_sleep_phase}** dataset for sleep analysis "
         f"({len(_sleep_ds['id'])} flies, {len(_sleep_ds['time'])} timepoints)."
     )
-elif _has_split_datasets:
+elif _split_applied:
     sleep_phase = st.radio(
         "Data phase for sleep analysis",
         ["LD (recommended)", "DD"],
@@ -93,7 +93,9 @@ elif _has_split_datasets:
         f"Computing **{_sleep_phase}** sleep from the full dataset "
         f"({len(ds['id'])} flies, {len(ds['time'])} timepoints)."
     )
-elif _has_dd_coord and not is_split_applied(ds):
+# Reaching here means _split_applied is False (the branch above caught True),
+# so this is "has an LD/DD boundary but the split was never applied".
+elif _has_dd_coord:
     st.warning(
         "LD/DD split has not been applied yet — it lives on the "
         "**Data → Curate & split** page. Sleep analysis will run on the **full unsplit dataset** (LD+DD). "
@@ -183,36 +185,14 @@ if st.button("Run Sleep Analysis", key="run_sleep"):
             # _sleep_ds is now the WHOLE dataset with phase-masked sleep
             # (out-of-phase minutes are -1). The master always carries it.
             st.session_state.dataset = _sleep_ds
-            # TRANSITIONAL (retires with the dataset_LD/DD sweep): unmigrated
-            # downstream pages still read the pre-sliced dataset_LD/DD, so
-            # regenerate the one for the phase just computed from the new sleep
-            # result. Same slice params as the Curate & split step, so
-            # activity/moving are identical and now carry the correct per-phase
-            # sleep.
-            if _has_split_datasets and _sleep_phase in ("LD", "DD"):
-                _gap = int(_sleep_ds.attrs.get("gap_threshold_minutes", 60))
-                if _sleep_phase == "LD":
-                    _sliced = dam_utilities.split_xarray_dataset(
-                        _sleep_ds, phase="LD", gap_threshold_minutes=_gap
-                    )
-                else:
-                    _disc = bool(_sleep_ds.attrs.get("split_discard_first_dd_day", 0))
-                    _sliced = dam_utilities.split_xarray_dataset(
-                        _sleep_ds,
-                        phase="DD",
-                        discard_first_dd_day=_disc,
-                        gap_threshold_minutes=_gap,
-                    )
-                # §2b: slicing upcasts the int8 sleep masks to float (NaN trim
-                # padding). Restore int8 (padding/missing → -1) so the sliced
-                # object keeps the efficient dtype the masks had on the master.
-                for _sv in ("sleep", "sleep_short", "sleep_intermediate", "sleep_long"):
-                    if _sv in _sliced.data_vars:
-                        _sliced[_sv] = _sliced[_sv].fillna(-1).astype("int8")
-                if _sleep_phase == "LD":
-                    st.session_state.dataset_LD = _sliced
-                else:
-                    st.session_state.dataset_DD = _sliced
+            # The master is the only place sleep is stored. There used to be a
+            # TRANSITIONAL block here that re-sliced the phase just computed and
+            # wrote it back to session_state.dataset_LD/DD, because those caches
+            # were a copy that went stale the moment sleep was recomputed. The
+            # caches are gone, so the copy — and the int8 restoration that only
+            # existed because slicing upcast the sleep masks through NaN — go
+            # with them. Consumers that need a physical slice make it themselves,
+            # from this master, at the point of use.
             st.session_state.analyses = detect_analyses(_sleep_ds)
             ds = _sleep_ds
 

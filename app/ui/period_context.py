@@ -52,10 +52,6 @@ def render_phase_picker(ds):
     from dataset_meta import PHASE_DD, PHASE_LD, dataset_phase, is_split_applied
 
     ds_phase = dataset_phase(ds)
-    has_split_datasets = (
-        st.session_state.get("dataset_DD") is not None
-        and st.session_state.get("dataset_LD") is not None
-    )
     has_dd = "first_DD_day" in ds.coords
 
     if ds_phase in (PHASE_LD, PHASE_DD):
@@ -74,32 +70,12 @@ def render_phase_picker(ds):
                 f"the imposed light cycle, not the endogenous circadian period. "
                 f"{len(period_ds['id'])} flies, {len(period_ds['time'])} timepoints."
             )
-    elif has_split_datasets:
-        _opts = ["DD (recommended)", "LD"]
-        phase_choice = st.radio(
-            "Data phase for period analysis",
-            _opts,
-            index=_opts.index(_remembered("period_phase", _opts[0])),
-            horizontal=True,
-            help="DD (constant darkness) is the standard for circadian period estimation "
-            "(free-running rhythm). LD periods reflect the imposed light cycle.",
-            key="period_phase",
-        )
-        _remember("period_phase", phase_choice)
-        phase_selection = "DD" if "DD" in phase_choice else "LD"
-        if phase_selection == "DD":
-            period_ds = st.session_state.dataset_DD
-            st.success(
-                f"Using **DD (constant darkness)** data — "
-                f"{len(period_ds['id'])} flies, {len(period_ds['time'])} timepoints."
-            )
-        else:
-            period_ds = st.session_state.dataset_LD
-            st.warning(
-                f"Using **LD (light-dark)** data — period estimates will reflect "
-                f"the imposed light cycle, not the endogenous circadian period. "
-                f"{len(period_ds['id'])} flies, {len(period_ds['time'])} timepoints."
-            )
+    # There used to be a branch here for "the pre-sliced dataset_DD/dataset_LD
+    # caches exist", which handed the analyses a physical slice. It is gone with
+    # the caches. The `has_dd` branch below already did the same job better — it
+    # reads split state from attrs that survive a NetCDF round-trip, and lets the
+    # analyses select the phase on-the-fly through the one core selector instead
+    # of consuming a re-zeroed object.
     elif has_dd:
         # Whether the split was APPLIED must be read from ROUND-TRIP-SAFE dataset
         # state — is_split_applied() inspects the split_applied/split_phase attrs,
@@ -201,14 +177,6 @@ def render_period_range(*, show_caption=True):
     return min_period, max_period
 
 
-def has_split_datasets():
-    """True when the Curate & split page left pre-sliced phase caches behind."""
-    return (
-        st.session_state.get("dataset_DD") is not None
-        and st.session_state.get("dataset_LD") is not None
-    )
-
-
 def remember_min_days_floor(value):
     """Record the DD-days floor so Rhythmicity can flag under-floor flies with
     the same number Period analysis filtered on. Called by the page that owns
@@ -286,18 +254,14 @@ def store_period_results(result_ds, phase_selection):
     work on internally. See ``_merge_analysis_outputs`` docstring."""
     from analysis_detection import detect_analyses
 
-    # Stage-2: result_ds is the WHOLE-dataset masked-view + per-fly outputs (the
-    # analysis no longer runs on a re-zeroed slice). Per-fly results are phase-
-    # independent (id,)/(id, analysis-axis) vars, so MERGE them onto the existing
-    # sliced phase dataset rather than replacing it — keeps dataset_DD/LD's sliced
-    # time series intact for unmigrated downstream pages (transitional; retires
-    # with the dataset_LD/DD sweep). _merge_analysis_outputs never touches activity.
-    if has_split_datasets() or phase_selection in ("DD", "LD"):
-        _name = "dataset_DD" if phase_selection == "DD" else "dataset_LD"
-        _tgt = st.session_state.get(_name)
-        if _tgt is not None:
-            st.session_state[_name] = merge_analysis_outputs(_tgt, result_ds)
-
+    # result_ds is the WHOLE-dataset masked view plus per-fly outputs. Those
+    # outputs are phase-independent (id,)/(id, analysis-axis) vars, so they merge
+    # onto the master and that is the end of it.
+    #
+    # A block here used to ALSO merge them into session_state.dataset_DD/LD, to
+    # keep those sliced copies current for pages that had not yet migrated. It
+    # was labelled transitional, "retires with the dataset_LD/DD sweep" — this is
+    # that sweep, so it is gone along with the caches it was feeding.
     master = st.session_state.dataset
     master = merge_analysis_outputs(master, result_ds)
     st.session_state.dataset = master

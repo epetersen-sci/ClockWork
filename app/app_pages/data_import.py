@@ -369,6 +369,13 @@ with tab_netcdf:
                 #      silently to 'full' (plain unsplit recording).
                 #   4. Ambiguous evidence (rare) → defer the load and
                 #      prompt the user to declare via a dropdown.
+                #
+                # KEEP CASE 2. Nothing writes `split_phase` any more (backlog
+                # item 4 removed the two writers), but every `.nc` saved before
+                # that still carries it, and this is the only thing that reads
+                # those files correctly. It is a read-side migration for old
+                # files on disk, not a live alias — do not remove it as dead
+                # code just because no writer remains.
                 _existing_phase = ds.attrs.get("phase")
                 if isinstance(_existing_phase, str) and _existing_phase in VALID_PHASES:
                     stamp_phase(

@@ -15,6 +15,8 @@ from ui.guards import require_dataset
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import dam_utilities
+from dataset_meta import dataset_fingerprint
 from hmm_models import HMMConfig, compare_n_states
 
 st.markdown(
@@ -23,14 +25,90 @@ st.markdown(
     "Results guide parameter choices on the **HMM Analysis** page."
 )
 
-ds = require_dataset()
+master = require_dataset()
 
-# Prefer LD dataset for HMM model selection
-if st.session_state.get("dataset_LD") is not None:
-    ds = st.session_state.dataset_LD
-    st.caption("Using **LD dataset** for HMM model selection.")
+# --- Phase selection: which lighting paradigm to CROSS-VALIDATE on. ---
+# This page used to read st.session_state.dataset_LD if it happened to exist and
+# otherwise fall through to the full LD+DD master, with no phase control at all.
+# That let cross-validation select a model on one data source while HMM Analysis
+# fitted the production model on another — and with no split applied it silently
+# mixed paradigms. The phase is now explicit and sourced from a select_phase()
+# view of the master, mirroring hmm_analysis.py.
+#
+# Only LD and DD are offered here. Analysis also has "Both (together)" and
+# "Both (separate)"; cross-validating those would mean picking one k for a model
+# that is fitted per paradigm, which is not a question this page can answer.
+_has_transition = ("first_DD_day" in master.coords) or ("split_minute" in master.coords)
+if _has_transition:
+    cv_phase = st.radio(
+        "Data phase for cross-validation",
+        ["LD", "DD"],
+        index=0,
+        horizontal=True,
+        key="cv_phase_choice",
+        help="LD (entrained; the standard sleep reference) or DD (constant "
+        "darkness). Pick the same phase you intend to fit on the HMM Analysis "
+        "page — see the note below.",
+    )
+    ds, _phase_used = dam_utilities.select_phase(master, cv_phase)
+else:
+    # Mirror hmm_analysis.py's else branch: no boundary to split on, so say so
+    # rather than silently cross-validating on a mix the user did not choose.
+    cv_phase = "Full"
+    ds = master
+    st.caption("No LD/DD transition in this dataset — cross-validating on the full recording.")
 
-n_flies = len(ds["id"].values)
+# The two pages keep separate widget keys for states/emissions/transitions, so the
+# winning configuration is retyped by hand — and nothing makes the phases agree
+# either. A model selected on LD does not describe a DD fit.
+st.info(
+    f"Cross-validating on **{cv_phase}**. Select the **same phase** on the "
+    "**HMM Analysis** page, or the model chosen here will not describe the data "
+    "actually being fitted. Analysis additionally offers *Both (together)* and "
+    "*Both (separate)*, which this page does not — match the LD or DD case."
+)
+
+
+@st.cache_data(show_spinner=False)
+def _usable_fly_count(fp, _ds):
+    """Flies with at least one finite observation minute, and the mean number of
+    them per fly.
+
+    NOT ``len(ds['id'])``. ``select_phase`` returns a NaN-masked view over the
+    FULL time axis rather than a physical slice, so the id dimension is identical
+    for LD and DD — but ``extract_observations`` keeps only finite minutes
+    (``hmm_models._transform_observation``), so a fly whose record ends before the
+    LD/DD boundary contributes nothing to one phase while still being counted in
+    ``sizes['id']``. On example_data that is 189 flies in LD and 178 in DD.
+    Reporting the id count would tell the user the phase picker did nothing.
+
+    Counted on ``activity`` (or ``moving``); the two masks agree, since
+    select_phase masks every ``(id, time)`` var on the same boundary.
+    """
+    var = "activity" if "activity" in _ds.data_vars else "moving"
+    da = _ds[var]
+    finite_per_fly = np.isfinite(np.asarray(da.values)).sum(axis=da.dims.index("time"))
+    usable = int((finite_per_fly > 0).sum())
+    mean_minutes = float(finite_per_fly[finite_per_fly > 0].mean()) if usable else 0.0
+    return usable, mean_minutes
+
+
+n_flies, _mean_minutes = _usable_fly_count(dataset_fingerprint(ds), ds)
+
+if n_flies < 2:
+    st.error(
+        f"Only {n_flies} fly/flies have usable {cv_phase} data — cross-validation "
+        "needs at least 2. Pick the other phase."
+    )
+    st.stop()
+
+_n_ids = len(ds["id"].values)
+if n_flies < _n_ids:
+    st.caption(
+        f"**{n_flies}** of {_n_ids} flies have usable **{cv_phase}** data "
+        f"(~{_mean_minutes / 1440:.1f} days each). The rest have no minutes in "
+        "this phase and are dropped by the observation extractor."
+    )
 
 # ============================================================
 # Configuration
@@ -52,7 +130,7 @@ with col1:
     # returns and would be stuck describing the default (min(5, n_flies)) forever.
     # Rendering it as a caption after the widget lets it track the slider.
     st.caption(
-        f"Dataset has {n_flies} flies. Each fold holds out ~{n_flies // n_folds} flies."
+        f"{n_flies} usable flies. Each fold holds out ~{n_flies // n_folds} of them."
     )
 
     states_min = st.number_input(
