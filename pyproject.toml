@@ -39,3 +39,15 @@ ignore = [
     "UP038",  # isinstance(x, X | Y) — deprecated in ruff and slower than the tuple form
     "SIM108", # if-else → ternary — hurts readability in the numeric branches here
 ]
+
+[tool.pytest.ini_options]
+# tests/ imports from core/ and app/ the same way the pages do at runtime;
+# conftest.py puts them on sys.path, and this makes conftest itself importable
+# from the test modules (they use it for REPO_ROOT).
+testpaths = ["tests"]
+pythonpath = ["tests"]
+# Streamlit's ScriptRunContext warning is expected: AppTest drives the script
+# runner from the main thread, and the warning says it can be ignored in bare mode.
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
