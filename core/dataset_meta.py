@@ -34,6 +34,14 @@ this convention)::
         - 'LD' / 'DD' map directly to ``phase``.
         - 'both' maps to ``phase='full'`` with ``split_applied=True``.
 
+**Nothing writes ``split_phase`` any more** — backlog item 4 removed the
+two writers (``data_curate_split.py`` and ``dam_utilities.split_xarray_dataset``).
+The reads below are deliberately NOT dead code: every ``.nc`` saved before
+that change still carries the alias, and these fallbacks are the only thing
+that resolves such a file to the right phase. Deleting them would silently
+re-label old saved datasets as ``'full'``. Keep them until you are willing
+to say old files are unsupported.
+
 Use :func:`dataset_phase` and :func:`is_split_applied` rather than
 reading ``ds.attrs`` directly so the legacy fallback stays in one place.
 """

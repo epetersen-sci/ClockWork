@@ -1590,12 +1590,14 @@ def split_xarray_dataset(ds, phase="LD", discard_first_dd_day=False, gap_thresho
                     f"avg: {np.mean(durs):.1f}d, max: {max(durs):.1f}d"
                 )
 
-    # Record what was done. `phase` and `split_applied` are the canonical
-    # attrs (see core/dataset_meta.py); `split_phase` kept as a legacy
-    # alias for files saved with prior code.
+    # Record what was done. `phase` and `split_applied` are the canonical attrs
+    # (see core/dataset_meta.py). The legacy `split_phase` alias is deliberately
+    # NOT written any more: it duplicated `phase` on every new file while the
+    # readers already fall back to it, so writing it only grew the set of files
+    # carrying two sources of truth. dataset_meta still READS it, for `.nc`
+    # files saved before this change — see the note in its module docstring.
     result.attrs["phase"] = phase
     result.attrs["split_applied"] = True
-    result.attrs["split_phase"] = phase
     result.attrs["split_discard_first_dd_day"] = int(discard_first_dd_day)
     result.attrs["gap_threshold_minutes"] = gap_threshold_minutes
     if segment_info:

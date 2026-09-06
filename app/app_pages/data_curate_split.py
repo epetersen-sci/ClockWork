@@ -8,6 +8,7 @@ import streamlit as st
 import dam_utilities
 import plotting
 from analysis_detection import detect_analyses
+from dataset_meta import PHASE_FULL, dataset_phase, is_split_applied
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -117,7 +118,7 @@ st.divider()
 # ============================================================
 st.subheader("2. Apply the LD/DD split")
 
-_already_split = ds.attrs.get("split_phase") is not None
+_already_split = is_split_applied(ds)
 _has_dd_coord = "first_DD_day" in ds.coords
 
 if _already_split:
@@ -206,10 +207,9 @@ else:
                 # Canonical phase stays 'full' since the master spans both
                 # epochs; split_applied=True records that LD/DD partitions
                 # are available via session_state. See core/dataset_meta.py.
-                from dataset_meta import PHASE_FULL, stamp_phase
+                from dataset_meta import stamp_phase
 
                 stamp_phase(ds, PHASE_FULL, split_applied=True)
-                ds.attrs["split_phase"] = "both"  # legacy alias
                 ds.attrs["split_discard_first_dd_day"] = int(discard_first_dd_day)
                 ds.attrs["gap_threshold_minutes"] = gap_threshold
                 st.session_state.dataset = ds
@@ -302,8 +302,11 @@ else:
 
     if st.session_state.get("show_preprocessing_heatmap"):
         _var_label = "Movement (moving)" if heatmap_var == "moving" else "Activity"
-        _split_phase = ds.attrs.get("split_phase", None)
-        _has_phases = "first_DD_day" in ds.coords and _split_phase in (None, "both")
+        # Canonical phase, not the legacy split_phase alias. 'full' covers both
+        # the never-split case (which the alias left as None) and the post-split
+        # master (which it set to "both") — those are the two states in which this
+        # dataset still spans LD and DD and can be shown as two heatmaps.
+        _has_phases = "first_DD_day" in ds.coords and dataset_phase(ds) == PHASE_FULL
 
         with st.spinner("Generating heatmap..."):
             try:
@@ -338,7 +341,11 @@ else:
                     st.plotly_chart(fig_dd, width="stretch")
                 else:
                     # Single phase (already split, or only LD data)
-                    _phase_label = ds.attrs.get("split_phase", "")
+                    # dataset_phase() always returns a label, so 'full' (an
+                    # unsplit dataset with no DD coord) has to be mapped back to
+                    # no suffix — the alias returned "" for that case.
+                    _phase = dataset_phase(ds)
+                    _phase_label = "" if _phase == PHASE_FULL else _phase
                     _title_suffix = f" — {_phase_label} Phase" if _phase_label else ""
                     title = f"{_var_label}{_title_suffix}"
                     fig = plotting.dataset_to_heatmap(ds, heatmap_var, title)
