@@ -6,8 +6,8 @@ a regression introduced by the reorganization — they all predate it. They were
 there because fixing them changes analysis behaviour or touches `core/`, both of which were
 out of scope for a re-cut of `app/`.
 
-**Six are closed** (9, 8, 2, 1, 11, 14 — see [D. Done](#d-done)); six remain in
-[A. Ready to fix](#a-ready-to-fix), one is [held](#b-held), one is an [audit](#c-audit).
+**Nine are closed** (9, 8, 2, 1, 11, 14, 3, 4, 5 — see [D. Done](#d-done)); three remain
+in [A. Ready to fix](#a-ready-to-fix), one is [held](#b-held), one is an [audit](#c-audit).
 
 They have since been triaged into four sections:
 
@@ -23,145 +23,31 @@ renumbered when items move between sections or get closed. A new issue takes the
 free number (item 14 was added this way), it never reuses a closed one.
 
 **Line references were pinned to `d0a477c`** (post-reorganization) and have since been
-re-checked against `486330d`. Only item 5's references moved — the section-A sweep edited
-two of the files it names — and they have been updated in place. Everything else still
-resolves. Re-check the remaining items' references against `main` before trusting them,
-and update them when you close an item.
+re-checked against `1868ba6`. Every reference in the three open items resolves as
+written, with one exception now fixed: item 12's `ui/state.py:96` moved to `:95`.
+Re-check an item's references against `main` before trusting them, and update them
+when you close one.
 
 ---
 
 ## Suggested order
 
-Dependencies are light but real: **3 before 5** (item 3 removes the last analysis-side
-reader of the LD/DD caches, which item 5 then deletes), and **4 before 5** (both edit
-`data_curate_split.py`).
+No dependencies remain between the open items.
 
 | Order | Items | Why here |
 |---|---|---|
-| 1 | **3** | Unblocks 5. Also gates the eventual HMM page merge. |
-| 2 | **4**, then **5** | Both edit `data_curate_split.py`; 5 is the largest item in A. |
-| 3 | **12, 10** | Independent, small to medium. |
-| 4 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
+| 1 | **12, 10** | Independent, small to medium. |
+| 2 | **7** | Largest refactor; touches the compute/render seam. Do it last. |
 
-**Before starting item 5, capture a SCAMP baseline from `main`.** Its Verify step is
-"the same file count and contents as before", which needs a *before* — generate the
-export on `main` and keep it, then diff after the change. Doing this afterwards is
-guesswork.
+**Capture a baseline before any item whose Verify step says "same as before".** Item 5
+needed one and it paid for itself — 721 of 724 SCAMP files matched byte-for-byte, so
+the three that differed could be examined individually instead of argued about. The
+recipe: run the export on `main`, `sha256sum` the tree, keep a copy, then re-run and
+`sha256sum -c` after the change.
 
 ---
 
 # A. Ready to fix
-
-## 3. HMM model selection and analysis run on different data
-
-`app/app_pages/hmm_model_selection.py:28-31` still uses the legacy pattern — `dataset_LD`
-if present, else the full LD+DD master — with no phase control at all.
-`app/app_pages/hmm_analysis.py:70-86` documents moving *off* that exact pattern, because
-with no split applied it silently mixes paradigms, and offers an explicit radio
-(LD / DD / Both together / Both separate, default LD) sourced from
-`select_phase(master, …)` at `:227-241`.
-
-So cross-validation can select a model on one data source while the production fit runs on
-another. This also **blocks merging the two HMM pages into one tabbed page** — a single
-visible phase selector would not honestly govern both tabs.
-
-The two pages also configure the same three knobs under unlinked widget keys
-(`cv_states_min`/`cv_states_max`, `cv_emissions`, `cv_trans` vs `hmm_n_states`,
-`hmm_emission`, `hmm_trans`), so the winning configuration has to be retyped by hand.
-(`hmm_analysis.py:124-139` looks like a hand-off but is not — it syncs the *preset* radio
-to the advanced widgets.)
-
-**Decision.** Both pages default to **LD**, with **DD** available on both. Model selection
-gets an explicit picker rather than an implicit cache read, plus a message telling the user
-to select the same phase on both pages.
-
-**Fix.**
-
-1. Replace `hmm_model_selection.py:28-31` with the same `_has_transition` guard and phase
-   radio that `hmm_analysis.py:70-86` uses, restricted to `["LD", "DD"]`, `index=0`.
-2. Source the data with `dam_utilities.select_phase(master, phase)` instead of reading
-   `st.session_state.dataset_LD`.
-3. When there is no LD/DD transition in the dataset, fall back to the full recording and
-   say so — mirror the `else` branch at `hmm_analysis.py:84-86`.
-4. Add a persistent note on model selection: the phase chosen here should match the phase
-   chosen on HMM Analysis, or the selected model will not describe the data being fitted.
-   Analysis also offers *Both (together)* and *Both (separate)*, which CV does not — the
-   note should say to match the LD or DD case.
-
-**Do not** unify the widget keys as part of this item; that is a separate hand-off feature.
-
-**Verify.** On a dataset with an LD/DD transition, run CV on LD and on DD and confirm the
-fly counts differ as expected; confirm a dataset with no transition still runs.
-
-## 4. Retire the legacy `split_phase` attr
-
-Two phase-metadata schemes coexist. Canonical: `ds.attrs['phase']` +
-`ds.attrs['split_applied']`, owned by `core/dataset_meta.py`. Legacy:
-`ds.attrs['split_phase']` in `{LD, DD, both}`.
-
-Writes (to remove): `app/app_pages/data_curate_split.py:212`, `core/dam_utilities.py:1598`.
-
-Reads (to migrate to the canonical API): `data_curate_split.py:120, 305-306, 341`.
-
-**Fix.** Delete the two writes; convert the three `data_curate_split.py` reads to
-`dataset_meta.dataset_phase()` / `is_split_applied()`.
-
-**Keep** the read-side migration at `app/app_pages/data_import.py:379-389` and the legacy
-handling in `core/dataset_meta.py:64, 88, 108`. Those exist to load `.nc` files written
-*before* this change and must stay — this item stops **writing** the alias, it does not
-stop reading it. Say so in a comment at each surviving site so a later sweep does not
-remove them too.
-
-**Verify.** Save a `.nc` after a split, reload it, confirm the phase is reported
-correctly; then reload an older `.nc` that still carries `split_phase` and confirm the
-migration path still resolves it.
-
-## 5. Delete the `dataset_LD` / `dataset_DD` session caches
-
-Two ways to get a phase view coexist: the pre-sliced `st.session_state.dataset_LD` /
-`dataset_DD`, and on-the-fly `dam_utilities.select_phase`.
-
-The caches are **physical slices** from `split_xarray_dataset`
-(`app/app_pages/data_curate_split.py:190-204`). `select_phase` cannot replace them for
-every consumer: it returns a NaN-masked view over the *full* time axis
-(`core/dam_utilities.py:1210-1216`), while `export_scamp` needs real equal-length files per
-board.
-
-Consumers today:
-
-| Site | Purpose |
-|---|---|
-| `app/app_pages/export_data.py:43, 69-85` | per-phase `.nc` save |
-| `app/app_pages/export_scamp.py:24-25` | the legacy luc files |
-| `app/app_pages/data_curate_split.py:126-130` | its own post-split UI state |
-
-Item 3 removes the last analysis-side reader. What remains is the maintenance cost:
-`app/app_pages/sleep_detection.py:186-209`, labelled `TRANSITIONAL`, must **regenerate both
-caches every time sleep is computed**, because they are a copy that otherwise goes stale.
-
-**Decision.** Delete the caches. They are a staleness-prone copy of something derivable;
-the two export pages can slice on demand when the user clicks export.
-
-**Fix.**
-
-1. `export_scamp.py` and `export_data.py`: call
-   `dam_utilities.split_xarray_dataset(master, phase=…, gap_threshold_minutes=…,
-   discard_first_dd_day=…)` at export time, reading the split parameters from
-   `master.attrs` exactly as `sleep_detection.py:193, 199` does today.
-2. Delete the regeneration block at `sleep_detection.py:186-209` — including the int8
-   restoration that only exists because slicing upcasts the sleep masks.
-3. Delete the writes at `data_curate_split.py:203-204` and the clears at
-   `data_groups.py:46-47, 58-59`. Replace the reads at `data_curate_split.py:126-130` with
-   the canonical `dataset_meta` phase check.
-4. Update the docstring at `export_scamp.py:5-9`, which currently tells the user the
-   caches are a prerequisite.
-
-**Cost.** A few seconds of slicing per export, in exchange for removing a copy that four
-files have to keep in sync.
-
-**Verify.** Full path: import → curate → split → sleep analysis → SCAMP export produces the
-same file count and contents as before (189 LD files across 6 boards on `example_data`),
-and the per-phase `.nc` save still writes both files.
 
 ## 12. Wire up `regroup_dataset` so groups can be redefined after import
 
@@ -184,7 +70,7 @@ reloaded `.nc`, where the alternative is re-reading raw DAM files.
 2. On apply, call `regroup_dataset(ds, chosen)` and write the result back to
    `st.session_state.dataset` **and** `dataset_full`, so the subset filter's restore point
    is regrouped too.
-3. Call `ui.state.invalidate_derived_caches()` (`app/ui/state.py:96`) — `group` feeds every
+3. Call `ui.state.invalidate_derived_caches()` (`app/ui/state.py:95`) — `group` feeds every
    group-level comparison, plot and export, so every cached result is invalid after a
    regroup.
 4. Delete the "cannot yet be redefined here" note at `app/app_pages/data_groups.py:15-17`.
@@ -347,6 +233,43 @@ digits, so numeric and string order agree. The audit needs the lab's real metada
 
 Closed items, newest first. The full description of each lives in the commit that closed
 it — `git show <sha>` — rather than being kept here, so this section stays an index.
+
+## 5. Delete the `dataset_LD` / `dataset_DD` session caches
+
+`1868ba6`. Consumers derive phase views instead: analysis pages via
+`select_phase`, the two export pages via the new `export_helpers.phase_slice`,
+which re-slices from the split parameters recorded on the master.
+
+**The consumer table in this entry was incomplete.** It listed three sites and
+missed two analysis-side readers — `app/ui/period_context.py` (a whole
+phase-picker branch plus a merge-back block) and `rhythmicity.py`. It also said
+"item 3 removes the last analysis-side reader", which was wrong for the same
+reason. Removing the writes would have broken both. If you inventory call sites
+for a future item, grep rather than trusting a table in this file.
+
+Also note the int8 restoration **moved** rather than being deleted as this entry
+implied: slicing pads with NaN and upcasts the sleep masks, so dropping it
+outright would silently change every per-phase `.nc` from int8 to float64. It
+now lives in `phase_slice`, at the point of slicing.
+
+## 4. Retire the legacy `split_phase` attr
+
+`de207a4`. Both writers removed; the three `data_curate_split.py` reads migrated
+to `dataset_meta`. The read-side migration is kept and now says so at each
+surviving site — it is what loads `.nc` files saved before the change.
+
+## 3. HMM model selection and analysis run on different data
+
+`06bb8e7`. Explicit LD/DD phase picker sourced from `select_phase`, matching
+`hmm_analysis.py`, plus a note to match the phase on both pages. Widget keys
+deliberately left unlinked.
+
+**This entry's Verify step needed a correction.** It says to "confirm the fly
+counts differ" between LD and DD. `select_phase` returns a NaN-masked view over
+the full time axis, so `len(ds['id'])` is *identical* for both — the page had to
+start reporting the count of flies with usable minutes in the selected phase
+(189 LD vs 178 DD on `example_data`) before the check meant anything. That count
+now also drives the fold slider.
 
 ## 14. Dataset fingerprints excluded from every `@st.cache_data` key
 
