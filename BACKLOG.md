@@ -6,18 +6,20 @@ a regression introduced by the reorganization — they all predate it. They were
 there because fixing them changes analysis behaviour or touches `core/`, both of which were
 out of scope for a re-cut of `app/`.
 
-They were triaged into four sections:
+They were triaged into these sections:
 
 - **[A. Ready to fix](#a-ready-to-fix)** — the decision is made and written down. Pick one
   up and implement it as described; no further judgement needed.
 - **[B. Held](#b-held)** — a real decision that has not been made yet.
-- **[C. Audit](#c-audit)** — no code change; something to go and check.
 - **[D. Done](#d-done)** — closed, with the commit that closed it.
 
-**All thirteen triaged issues, plus two found while fixing them, are closed**
-(9, 8, 2, 1, 11, 14, 3, 4, 5, 15, 12, 10, 7). One new issue is open — item 16,
-found by an xarray review of the last branch — plus one held decision (item 6)
-and one data audit (item 13).
+(There was a section C, "Audit" — no code change, something to go and check. Its
+one item is closed, so the section is gone. The letter is not reused, for the
+same reason item numbers are not.)
+
+**All thirteen triaged issues, plus two found while fixing them, are closed.**
+One new issue is open — item 16, found by an xarray review — plus one held
+decision (item 6).
 
 **Item numbers are original and stable.** They are referenced from the
 reorganization PR and from the commits that closed them, so they are not renumbered
@@ -153,52 +155,34 @@ and `trim_first_dd_day`. These can go with whichever decision item 6 reaches.
 
 ---
 
-# C. Audit
-
-## 13. Datasets built before the fly/metadata mislabeling fix
-
-**The code bug is fixed** in `d0a477c` — `create_xarray_dataset` now reindexes the metadata
-onto `dam_data.columns` before building any coord. What remains is a **data** question.
-
-The bug: `create_xarray_dataset` paired the activity matrix with the metadata
-*positionally* — values from `dam_data.columns`, per-fly coords (`id`, `genotype`, `group`,
-start/stop, …) from `metadata` row order — and nothing checked the two agreed. They
-diverged whenever the metadata rows were not already in **string**-sorted
-`(Monitor, start_datetime)` order, because the activity frame is built from
-`unique_combos.sort_values(["Monitor", "start_datetime"])` with `Monitor` cast to `str` —
-so `"10"` sorts before `"2"`. A metadata file listing monitors 2 and 10 in natural numeric
-order produced:
-
-```
-metadata row order: ['20250301_2_1', '20250301_2_2', '20250301_10_1', '20250301_10_2']
-data column order : ['20250301_10_1', '20250301_10_2', '20250301_2_1', '20250301_2_2']
-xarray genotype   : ['AAA',           'AAA',           'ZZZ',          'ZZZ']
-```
-
-Monitor 10's traces were analysed under monitor 2's ids and genotypes, and vice versa. It
-failed silently — the shapes matched, so nothing raised. Any experiment mixing single- and
-double-digit monitor numbers was exposed.
-
-**The audit.** Loading a `.nc` via Path B does not go through `create_xarray_dataset`, so a
-file saved before `d0a477c` keeps its mislabeled coords. Re-importing from the raw DAM
-files is the only repair.
-
-To identify affected datasets, check each experiment's metadata file for the trigger: are
-the `Monitor` values in an order that differs from their **string** sort? A file whose
-monitors are all the same digit count is safe. Mixed digit counts listed in numeric order
-are affected.
-
-Work out which saved datasets and published figures came from an affected metadata file.
-
-**Note on `example_data`.** It cannot exercise this bug: its monitors are 17–22, all two
-digits, so numeric and string order agree. The audit needs the lab's real metadata files.
-
----
-
 # D. Done
 
 Closed items, newest first. The full description of each lives in the commit that closed
 it — `git show <sha>` — rather than being kept here, so this section stays an index.
+
+## 13. Datasets built before the fly/metadata mislabeling fix
+
+**Closed as not applicable — there is nothing to audit.** The code bug is fixed
+in `d0a477c`; what this item asked was which SAVED datasets and published
+figures came from the buggy version. The project is still in beta: no `.nc`
+files and no figures were produced by the old code, so the population the audit
+was over is empty.
+
+What the item was right about is that nothing exercised the fix. `example_data`
+is real lab data, but its monitors are 17–22 — all two digits — so string and
+numeric order agree and the trigger (mixed digit counts listed in numeric order)
+cannot occur. `tests/test_monitor_label_pairing.py` now renames COPIES of those
+files to monitors 2 and 10 and asserts each fly keeps the genotype and the
+activity trace of the monitor its data actually came from. 192/192 flies pass on
+the full dataset; the committed test uses two monitors to stay fast.
+
+The committed `example_data` is deliberately unchanged: its monitor numbers and
+the genotype attached to each are real provenance, not test scaffolding.
+
+**If this ever stops being true** — if a `.nc` predating `d0a477c` turns up —
+the trigger test is: does the metadata file list its `Monitor` values in an
+order that differs from their **string** sort? Same digit count everywhere is
+safe. Re-importing from the raw DAM files is the only repair.
 
 ## 7. Inverted dependencies in `core/plotting.py`
 
