@@ -20,18 +20,17 @@ SESSION_DEFAULTS = {
     # undone without re-reading from disk.
     "dataset_full": None,
     "dataset_path": None,
-    "dataset_DD": None,
-    "dataset_LD": None,
     "analyses": {},
     "working_dir": None,
 }
 
 # Every key whose contents are derived from the *current* set of flies. All of
 # these are keyed off fly id, so any change to that set makes them stale.
+# `dataset_DD` / `dataset_LD` used to head this list. They were pre-sliced copies
+# of the master that four files had to keep in sync; consumers now slice on demand
+# (`export_helpers.phase_slice`) or mask on the fly (`dam_utilities.select_phase`),
+# so there is no phase copy left to seed or invalidate.
 DERIVED_CACHE_KEYS = (
-    # Phase splits
-    "dataset_DD",
-    "dataset_LD",
     # Sleep / waveform / rebound
     "wf_df",
     "ip_df",

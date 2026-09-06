@@ -123,19 +123,17 @@ _has_dd_coord = "first_DD_day" in ds.coords
 
 if _already_split:
     _prev_discard = bool(ds.attrs.get("split_discard_first_dd_day", 0))
-    # Show info about existing split
-    _has_dd_ds = st.session_state.get("dataset_DD") is not None
-    _has_ld_ds = st.session_state.get("dataset_LD") is not None
-    if _has_dd_ds and _has_ld_ds:
-        _dd_ds = st.session_state.dataset_DD
-        _ld_ds = st.session_state.dataset_LD
-        st.info(
-            f"LD/DD split applied — discard first DD day: **{_prev_discard}**\n\n"
-            f"- **DD dataset:** {len(_dd_ds['id'])} flies, {len(_dd_ds['time'])} timepoints\n"
-            f"- **LD dataset:** {len(_ld_ds['id'])} flies, {len(_ld_ds['time'])} timepoints"
-        )
-    else:
-        st.info(f"LD/DD split already applied — discard first DD day: **{_prev_discard}**")
+    # Split state comes from the master's own canonical attrs, not from pre-sliced
+    # session copies. There are no per-phase fly/timepoint counts to show here any
+    # more, because there is no stored per-phase dataset to count — consumers slice
+    # on demand. What persists is the split PARAMETERS, and they live on the master,
+    # so they survive a .nc round-trip in a way the session caches never did.
+    st.info(
+        f"LD/DD split applied — discard first DD day: **{_prev_discard}**, "
+        f"gap threshold: **{int(ds.attrs.get('gap_threshold_minutes', 60))}** min.\n\n"
+        "LD and DD views are derived when needed: analysis pages use "
+        "`select_phase`, the export pages re-slice at export time."
+    )
     _resplit = st.checkbox(
         "Re-run split with different settings", value=False, key="resplit_checkbox"
     )
@@ -200,9 +198,12 @@ else:
                     gap_threshold_minutes=gap_threshold,
                 )
 
-                # Store both in session state — master dataset stays unsplit
-                st.session_state.dataset_DD = ds_dd
-                st.session_state.dataset_LD = ds_ld
+                # ds_dd / ds_ld stay LOCAL: they are reported on below, then
+                # dropped. They used to be cached in session_state, which meant
+                # four files had to keep that copy in sync with the master — and
+                # sleep_detection.py had to regenerate both on every run to stop
+                # them going stale. The split PARAMETERS are recorded on the
+                # master instead, so any consumer reproduces the same slice.
                 # Mark master as split-applied (but keep all timepoints).
                 # Canonical phase stays 'full' since the master spans both
                 # epochs; split_applied=True records that LD/DD partitions

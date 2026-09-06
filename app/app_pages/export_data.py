@@ -11,6 +11,7 @@ import dam_utilities
 import export_helpers
 import sleep_analysis
 from analysis_detection import detect_analyses
+from dataset_meta import is_split_applied
 from load_and_save_datasets import save_dataset_to_netcdf
 from ui.guards import require_dataset
 
@@ -40,8 +41,11 @@ with tab_dataset:
         key="export_filename",
     )
 
-    _has_phase_datasets = (
-        st.session_state.get("dataset_DD") is not None or st.session_state.get("dataset_LD") is not None
+    # Offer the per-phase save whenever the master records an applied split —
+    # not when pre-sliced session copies happen to exist. The slices are made
+    # below, at save time, from the parameters on the master.
+    _has_phase_datasets = is_split_applied(ds) and (
+        "first_DD_day" in ds.coords or "split_minute" in ds.coords
     )
     if _has_phase_datasets:
         save_phase_datasets = st.checkbox(
@@ -67,22 +71,22 @@ with tab_dataset:
                     st.success(f"Saved master dataset to {full_path}")
 
                     if save_phase_datasets:
-                        if st.session_state.get("dataset_DD") is not None:
-                            dd_path = os.path.join(save_dir, f"{save_filename}_DD.nc")
+                        # Sliced here, from the master, using the split
+                        # parameters it carries — rather than read from session
+                        # caches that a reload or a group filter could have
+                        # emptied while the master stayed split.
+                        for _phase in ("DD", "LD"):
+                            _phase_path = os.path.join(
+                                save_dir, f"{save_filename}_{_phase}.nc"
+                            )
+                            with st.spinner(f"Slicing {_phase} phase…"):
+                                _phase_ds = export_helpers.phase_slice(ds, _phase)
                             save_dataset_to_netcdf(
-                                st.session_state.dataset_DD,
-                                f"{save_filename}_DD.nc",
+                                _phase_ds,
+                                f"{save_filename}_{_phase}.nc",
                                 output_dir=save_dir,
                             )
-                            st.success(f"Saved DD dataset to {dd_path}")
-                        if st.session_state.get("dataset_LD") is not None:
-                            ld_path = os.path.join(save_dir, f"{save_filename}_LD.nc")
-                            save_dataset_to_netcdf(
-                                st.session_state.dataset_LD,
-                                f"{save_filename}_LD.nc",
-                                output_dir=save_dir,
-                            )
-                            st.success(f"Saved LD dataset to {ld_path}")
+                            st.success(f"Saved {_phase} dataset to {_phase_path}")
                 except Exception as e:
                     st.error(f"Error saving: {e}")
 

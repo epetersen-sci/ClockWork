@@ -22,6 +22,52 @@ builder means they cannot drift again.
 
 import os
 
+#: ``(id, time)`` vars stored as int8 with ``-1`` for "no data". Slicing pads with
+#: NaN, which forces a float upcast, so they are restored after a phase slice.
+_INT8_SLEEP_VARS = ("sleep", "sleep_short", "sleep_intermediate", "sleep_long")
+
+
+def phase_slice(ds, phase):
+    """Physically slice ``ds`` into an ``'LD'`` or ``'DD'`` dataset, using the
+    split parameters recorded on ``ds`` itself.
+
+    This is what the export pages use instead of the old
+    ``st.session_state.dataset_LD`` / ``dataset_DD`` caches. Those were physical
+    slices kept alongside the master, which meant four files had to keep them in
+    sync and Sleep analysis had to regenerate them on every run. Re-slicing on
+    demand costs a few seconds per export and cannot go stale.
+
+    :func:`dam_utilities.select_phase` is NOT a substitute here. It returns a
+    NaN-masked view over the *full* time axis, and both consumers need real
+    equal-length per-board files: SCAMP's loader requires it, and a per-phase
+    ``.nc`` is supposed to contain only that phase's timepoints.
+
+    ``discard_first_dd_day`` is passed for DD only, matching how the split was
+    originally applied on the Curate & split page — the LD epoch has no first-DD
+    day to drop, and passing it there would be meaningless rather than harmless.
+    """
+    import dam_utilities
+
+    kwargs = {
+        "phase": phase,
+        "gap_threshold_minutes": int(ds.attrs.get("gap_threshold_minutes", 60)),
+    }
+    if phase == "DD":
+        kwargs["discard_first_dd_day"] = bool(ds.attrs.get("split_discard_first_dd_day", 0))
+    sliced = dam_utilities.split_xarray_dataset(ds, **kwargs)
+
+    # §2b: the trim pads with NaN, which upcasts the int8 sleep masks to float.
+    # Restore int8 (padding/missing → -1) so a sliced dataset carries the same
+    # dtypes as the master. This used to live in sleep_detection.py, where it ran
+    # on every sleep computation to keep the caches consistent; it belongs at the
+    # point of slicing, which is now here. Dropping it would silently change the
+    # dtype of every per-phase .nc from int8 to float64.
+    for var in _INT8_SLEEP_VARS:
+        if var in sliced.data_vars:
+            sliced[var] = sliced[var].fillna(-1).astype("int8")
+    return sliced
+
+
 # Stat order inside each group's column block. GraphPad's grouped-table layout is
 # Mean, SD, N — NOT the alphabetical Mean, N, SD that sorting the pivot's columns
 # would give — so the CSV pastes straight into a Prism grouped table.

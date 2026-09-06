@@ -16,7 +16,6 @@ from preprocessing_widgets import render_preprocess_expander
 from ui.guards import require_dataset
 from ui.period_context import (
     dd_record_days,
-    has_split_datasets,
     remember_min_days_floor,
     render_period_range,
     render_phase_picker,
@@ -78,8 +77,6 @@ METHOD_DESCRIPTIONS = {
 # controls under the same widget keys. The range is not just a search range:
 # it is also the classification window, so the two pages must not disagree.
 phase_selection, period_ds, _analysis_src, _period_phase = render_phase_picker(ds)
-# Pre-sliced phase caches, if the Curate & split page built them. Several blocks
-# below prefer them for READING stored results (they carry the per-phase vars).
 
 # C2: the recording-duration summary is shown AFTER the DD-days floor filter
 # below, so it describes the flies actually RETAINED (not the pre-filter master).
@@ -340,10 +337,15 @@ with tab_cwt:
                         _avg_out_dir = os.path.join(_wd, "Averaged Scalograms")
                         # Phase label encodes which slice we're CWT'ing so that
                         # DD and LD reruns don't silently overwrite each other.
-                        if has_split_datasets():
-                            _phase_label = str(phase_selection)
-                        else:
-                            _phase_label = "full"
+                        # Keyed off the phase actually selected — it used to ask
+                        # whether the dataset_DD/LD caches existed, which was a
+                        # proxy for the same thing and stopped being one when
+                        # those caches were removed.
+                        _phase_label = (
+                            str(phase_selection)
+                            if phase_selection in ("DD", "LD")
+                            else "full"
+                        )
                     result = periodograms.wavelet_analysis(
                         ds_pp,
                         min_period=min_period,

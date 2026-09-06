@@ -43,8 +43,6 @@ def _apply_group_filter(selected_groups):
     filtered = ds_full.isel(id=np.flatnonzero(mask))
     invalidate_derived_caches()
     st.session_state.dataset = filtered
-    st.session_state.dataset_DD = None
-    st.session_state.dataset_LD = None
     st.session_state.analyses = detect_analyses(filtered)
 
 
@@ -55,8 +53,6 @@ def _reset_group_filter():
         return
     invalidate_derived_caches()
     st.session_state.dataset = ds_full.copy()
-    st.session_state.dataset_DD = None
-    st.session_state.dataset_LD = None
     st.session_state.analyses = detect_analyses(st.session_state.dataset)
 
 

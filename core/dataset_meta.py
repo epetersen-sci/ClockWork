@@ -5,10 +5,11 @@ Single-source-of-truth helpers for the dataset's phase / split state.
 
 Every analysis or visualization page that branches on whether the dataset
 is a full recording, an LD-only partition, or a DD-only partition should
-read the phase from this module. The dataset itself is the source of
-truth — session-state caches like ``dataset_LD`` / ``dataset_DD`` are
-*derivative* and should not be the gating signal for "has the split been
-applied" prompts.
+read the phase from this module. The dataset itself is the source of truth.
+Pages used to gate "has the split been applied" prompts on the existence of
+the ``dataset_LD`` / ``dataset_DD`` session caches instead; those caches are
+gone, and the attrs here are the answer — they also survive a NetCDF round
+trip, which the caches never did.
 
 Canonical attrs
 ---------------
@@ -207,9 +208,9 @@ def stamp_phase(ds: xr.Dataset, phase: str, split_applied: bool | None = None) -
     split_applied : bool or None
         If None, inferred from ``phase`` (LD/DD ⇒ True, full ⇒ False).
         Pass ``True`` explicitly to mark a master full dataset whose
-        partitioning has been precomputed without yet replacing the
-        master itself (e.g. after the Preprocessing page's apply-split
-        step that populates session_state.dataset_LD/DD).
+        partitioning has been decided without replacing the master itself
+        (the Curate & split page's apply-split step, which records the
+        split parameters on the master so consumers can re-slice on demand).
     """
     if phase not in VALID_PHASES:
         raise ValueError(f"phase must be one of {VALID_PHASES}; got {phase!r}")

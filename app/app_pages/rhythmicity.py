@@ -36,7 +36,6 @@ from rhythmicity_classification import (
 from ui.guards import require_dataset
 from ui.period_context import (
     dd_record_days,
-    has_split_datasets,
     min_days_floor,
     render_period_range,
     render_phase_picker,
@@ -52,13 +51,11 @@ st.divider()
 
 st.subheader("Per-fly period summary")
 
-# Re-read period_ds in case analyses were run above
-if has_split_datasets():
-    period_ds = (
-        st.session_state.dataset_DD if phase_selection == "DD" else st.session_state.dataset_LD
-    )
-else:
-    period_ds = st.session_state.dataset
+# Re-read period_ds in case analyses were run above. Always the master now: the
+# pre-sliced dataset_DD / dataset_LD caches this used to prefer are gone, and the
+# per-fly period outputs this table reads are phase-independent ``(id,)`` vars
+# merged onto the master anyway, so the slice never added anything here.
+period_ds = st.session_state.dataset
 
 @st.cache_data(show_spinner=False)
 def _build_period_summary_df(fp, _ds):
