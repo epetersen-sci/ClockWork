@@ -39,7 +39,13 @@ st.caption(
 )
 
 @st.cache_data(show_spinner=False)
-def _curves_by_group(_fp, _ds, var, axis_name, selected, normalize, freq_to_period):
+# `fp`, NOT `_fp`: Streamlit's underscore rule is syntactic and drops ANY
+# leading-underscore parameter from the cache key, not just the unhashable
+# dataset. Named `_fp` it was the one argument that could not reach the key —
+# so a reloaded or re-analysed dataset kept serving the previous run's curves.
+# The remaining args (var, selected, normalize, ...) hid it: changing method or
+# group selection did invalidate, so only a dataset swap went stale.
+def _curves_by_group(fp, _ds, var, axis_name, selected, normalize, freq_to_period):
     """Build {group: (n_flies, n_points)} for a stored (id, axis) spectrum var.
 
     Averages BY GROUP. Per-fly max-normalisation (for the power methods) makes the

@@ -137,9 +137,19 @@ def dataset_fingerprint(ds: xr.Dataset) -> tuple:
     Streamlit hashes the tuple, not the Dataset:
 
     >>> @st.cache_data
-    ... def cached_violin(fp, ds, mode, algos):
+    ... def cached_violin(fp, _ds, mode, algos):
     ...     ...
     >>> cached_violin(dataset_fingerprint(ds), ds, 'period', ('ac',))
+
+    The two parameter names are both load-bearing, and copies of this example
+    have gone wrong in both directions:
+
+    - ``fp`` takes NO leading underscore. Streamlit's rule is purely syntactic
+      and drops EVERY leading-underscore parameter from the cache key, not just
+      the unhashable ones — so ``_fp`` silently removes the fingerprint from the
+      key it exists to form, and the cache stops tracking the dataset at all.
+    - ``_ds`` DOES take one. Without it Streamlit hashes the Dataset, which is
+      the slowness this whole helper exists to avoid.
     """
     if ds is None:
         return ()
