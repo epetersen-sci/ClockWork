@@ -49,6 +49,9 @@ reading ``ds.attrs`` directly so the legacy fallback stays in one place.
 
 from __future__ import annotations
 
+import numbers
+
+import numpy as np
 import xarray as xr
 
 PHASE_FULL = "full"
@@ -92,7 +95,17 @@ def is_split_applied(ds: xr.Dataset) -> bool:
     explicit = ds.attrs.get("split_applied")
     if isinstance(explicit, bool):
         return explicit
-    if isinstance(explicit, (int,)):  # NetCDF round-trips bool→int
+    # NetCDF round-trips bool→int, and xarray hands that back as a NUMPY integer
+    # (np.int64), which is NOT an instance of Python's int under NumPy 2. Testing
+    # `isinstance(explicit, int)` therefore missed every reloaded file and fell
+    # through to the checks below. That went unnoticed while a split master also
+    # carried the legacy split_phase='both' alias, which rescued it; once item 4
+    # stopped writing the alias, a reloaded split master reported "not split" —
+    # which hides the phase pickers and makes the SCAMP export refuse to run.
+    # numbers.Integral covers Python ints and every NumPy integer width.
+    if isinstance(explicit, numbers.Integral):
+        return bool(explicit)
+    if isinstance(explicit, np.bool_):  # np.bool_ is NOT an Integral
         return bool(explicit)
     legacy = ds.attrs.get("split_phase")
     if isinstance(legacy, str) and legacy in (PHASE_LD, PHASE_DD, "both"):
