@@ -171,6 +171,30 @@ def sleep_analysis(
     if t_column not in data.coords:
         raise KeyError(f"The time column {t_column} is not in the dataset")
 
+    # Drop the previous run's results BEFORE anything else looks at `data`.
+    #
+    # This has to happen here rather than just before the merge below, because
+    # `analysis_ds` is derived from `data` immediately after and the per-fly loop
+    # calls `.to_dataframe()` on a slice of it. The bout variables are
+    # (id, sleep_bout_number), so a slice that still carries them makes
+    # to_dataframe take the cartesian product with `time`: on a reloaded .nc with
+    # 134 bouts that is 2,315,654 rows per fly instead of 17,281, every timestamp
+    # repeated 134 times. The duplicated time index then fails the merge with
+    # "cannot reindex or align along dimension 'time'", after a long detour
+    # building those frames — so re-running sleep analysis on a dataset loaded
+    # from .nc was both very slow and guaranteed to fail.
+    #
+    # drop_dims (not drop_vars) for the bout dimension: it removes the dim, its
+    # coordinate and every variable on it in one go. Dropping only the variables
+    # leaves a dangling sleep_bout_number coord sized for the OLD run, which the
+    # new bout results then have to align against.
+    _sleep_mask_vars = ["sleep", "sleep_short", "sleep_intermediate", "sleep_long"]
+    _to_drop = [v for v in _sleep_mask_vars if v in data.data_vars]
+    if _to_drop:
+        data = data.drop_vars(_to_drop)
+    if "sleep_bout_number" in data.dims:
+        data = data.drop_dims("sleep_bout_number")
+
     # Phase selection via the one core selector. `data` keeps the unmasked
     # vars (moving/activity int dtypes intact); `analysis_ds` is the per-fly
     # NaN-masked view the bout detector runs on. Results merge back onto
@@ -354,24 +378,8 @@ def sleep_analysis(
 
     bout_ds = ensure_numpy_backed(bout_ds)
 
-    # Drop pre-existing sleep variables if re-running to avoid merge conflicts
-    _sleep_vars = [
-        "sleep",
-        "sleep_short",
-        "sleep_intermediate",
-        "sleep_long",
-        "sleep_state",
-        "duration",
-        "start_time",
-        "end_time",
-    ]
-    _to_drop = [v for v in _sleep_vars if v in data.data_vars]
-    if _to_drop:
-        data = data.drop_vars(_to_drop)
-    if "sleep_bout_number" in data.dims:
-        _bout_dim_vars = [v for v in data.data_vars if "sleep_bout_number" in data[v].dims]
-        if _bout_dim_vars:
-            data = data.drop_vars(_bout_dim_vars)
+    # (The previous run's variables were dropped up front, before analysis_ds was
+    # derived — see the comment there for why it cannot be done here.)
 
     # Step 1: Merge time-series variables (all share id × time dims with data).
     # bout_ds has dims (id × sleep_bout_number) — merging it in the same call
