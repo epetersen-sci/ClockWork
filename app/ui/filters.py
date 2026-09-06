@@ -17,6 +17,10 @@ Sleep & activity passes ``subset=True`` and gets a ``.sel()``ed dataset back,
 Periodograms filters by hand — and that asymmetry is fine. Only the key is
 shared.
 
+The key alone does not survive a page switch: Streamlit drops a keyed widget's
+value once the widget stops being rendered. ``persist_state="session"`` is the
+built-in fix and is what this module uses.
+
 Note these are *display* filters: they subset a page-local view for plotting. The
 filter on Groups & subsets is a different thing entirely — it replaces the master
 dataset and invalidates every downstream cache.
@@ -57,39 +61,21 @@ def group_filter_sidebar(ds, key, *, label=None, subset=False, help=None):
     group_values = np.asarray([str(v) for v in ds[coord].values])
     all_groups = sorted(set(group_values.tolist()))
 
-    # Sharing `key` between the two pages is NOT enough on its own. Streamlit
-    # garbage-collects widget state for widgets that were not rendered on the
-    # previous run, and a page switch is exactly that — so the selection made on
-    # Periodograms is gone by the time Sleep & activity instantiates its own
-    # multiselect, which then falls back to `default` (all groups). Mirroring the
-    # value under a plain, non-widget key survives the switch; re-seeding
-    # session_state[key] from the mirror BEFORE the widget is created is the
-    # supported way to restore it (assigning after instantiation raises).
-    mirror = f"_{key}_persisted"
-    if key not in st.session_state:
-        remembered = st.session_state.get(mirror)
-        # Intersect with the groups that actually exist: the dataset may have
-        # been reloaded or regrouped since the selection was made, and a stale
-        # label that is not in `options` would raise.
-        st.session_state[key] = (
-            [g for g in remembered if g in all_groups]
-            if remembered is not None
-            else list(all_groups)
-        )
-
     st.sidebar.subheader("Filter groups")
-    # No `default=` on purpose. session_state[key] is always seeded just above,
-    # and passing both makes Streamlit warn ("created with a default value but
-    # also had its value set via the Session State API") *and* return the
-    # default on the run that registers the widget — so the restored selection
-    # would only reach the plots one rerun late.
+    # Sharing `key` between the two pages is not enough on its own: by default a
+    # keyed widget's value is dropped as soon as the widget stops being rendered,
+    # and a page switch is exactly that — so a selection made on Periodograms was
+    # gone by the time Sleep & activity built its multiselect. `persist_state`
+    # is Streamlit's own answer to this; "session" keeps the value for the whole
+    # session, across page switches, and it needs `key` (which we pass).
     selected = st.sidebar.multiselect(
         label or f"Groups ({coord})",
         all_groups,
+        default=all_groups,
         key=key,
+        persist_state="session",
         help=help,
     )
-    st.session_state[mirror] = list(selected) if selected else []
     # multiselect returns a list in the app; guard the None the headless test
     # stub returns (and default to all groups if the widget hasn't populated).
     if not selected:
