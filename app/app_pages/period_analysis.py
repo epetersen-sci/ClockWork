@@ -8,6 +8,7 @@ import numpy as np
 import streamlit as st
 
 import dam_utilities
+import export_helpers
 import periodograms
 from analysis_detection import detect_analyses
 from calibrations import DEFAULT_CWT_METHOD
@@ -359,15 +360,24 @@ with tab_cwt:
                         compute_group_averages=bool(compute_group_averages),
                         group_coord="group",
                         filter_nonrhythmic_for_average=bool(avg_filter_nonrhythmic),
-                        average_output_dir=_avg_out_dir,
                         phase_label=_phase_label,
                     )
+                    # wavelet_analysis returns the group averages as ARRAYS and
+                    # writes nothing; deciding where files go is the caller's
+                    # job, which is why it no longer has to import plotting.
+                    result, _group_averages = result
                     period_ds = result
                     store_period_results(result, phase_selection)
-                    if compute_group_averages and _avg_out_dir:
+                    _saved = []
+                    if _group_averages and _avg_out_dir:
+                        with st.spinner("Saving averaged scalograms…"):
+                            _saved = export_helpers.save_group_average_scalograms(
+                                _group_averages, _avg_out_dir, ds=result
+                            )
+                    if _saved:
                         st.success(
-                            f"CWT analysis complete. Averaged scalograms saved "
-                            f"to `{_avg_out_dir}` (one PNG + CSV per group)."
+                            f"CWT analysis complete. {len(_saved)} averaged scalogram(s) "
+                            f"saved to `{_avg_out_dir}` (one PNG + CSV per group)."
                         )
                     else:
                         st.success("CWT analysis complete!")
