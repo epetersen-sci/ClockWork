@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A second push to the same PR cancels the first — no point finishing a run
+# whose commit is already superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches [tool.ruff] target-version = "py311" in pyproject.toml.
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        # requirements.txt is the app; requirements-dev.txt adds pytest + ruff.
+        # The test suite needs the app's real dependencies because it imports
+        # core/ and app/ and drives the actual pages through Streamlit's AppTest.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint
+        run: python -m ruff check core/ app/ tests/
+
+      - name: Test
+        # No browser and no server: the suite runs Streamlit in-process via
+        # st.testing.v1.AppTest, so a plain runner is enough.
+        run: python -m pytest -q
