@@ -178,6 +178,22 @@ peak is ~40% of standard's and long's, with the ultradian shoulder ordered
 short > standard > long (Figure 5B); and the chi-squared test gives 11/12 flies
 rhythmic at 23.8-24.0 h against Table S2's 93-100% at 23.4-23.8 h.
 
+**Second and third passes** (`d5f5789`, `f7a7631`) added Figure 2's profile
+panels and Figure 1's LD-beside-DD layout, gated the tabs (all nineteen
+figures were computing for whichever single tab was open — 14 s to 3.6 s on
+189 flies), and fixed a bug the NaN fix above had introduced: reducing each
+fly to its longest clean run made per-fly lengths ragged, and the accumulator
+cropped to the running minimum while re-zeroing every run to t=0. On a real
+31-fly group whose median clean run is 9 days, three short flies cut the GROUP
+surface to 3.4 days, and any fly starting late had its data averaged into
+everyone else's day 0. Flies now land on a shared grid at their own offset
+with a per-cell count.
+
+Verified end to end in the running app on all 189 example flies: the
+chi-squared test reports 80-87% of flies rhythmic at 24.0-24.3 h, against the
+paper's Table S2 of 93-100% at 23.4-23.8 h — lower and slightly longer, as
+expected for Opa1/Ldh knockdowns rather than wild-type Canton-S.
+
 ## 16. The gap trim masked `(id, time)` variables on the wrong axis
 
 `_select_longest_segments` now builds one boolean `keep` over `("id", "time")`

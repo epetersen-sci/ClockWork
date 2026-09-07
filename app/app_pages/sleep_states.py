@@ -26,6 +26,13 @@ Tabs are DYNAMIC (``on_change="rerun"``) and every body is guarded by
 guard one visit to this page computed the waveforms, the initiation
 probabilities, six rose rows and six gating rings whether or not anyone looked
 at them — nineteen figures on 189 flies for the one the user was actually on.
+Measured on that dataset, the landing tab went from ~14 s to 3.6 s.
+
+The tradeoff: switching tabs now costs a rerun, so a click made while the page
+is already busy can be dropped and has to be repeated. That is inherent to
+dynamic tabs (a segmented control behaves the same way), and on this page it
+is the better bargain — the tabs that are expensive are expensive precisely
+because nobody wants them computed unseen.
 """
 
 import numpy as np
