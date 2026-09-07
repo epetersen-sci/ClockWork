@@ -12,9 +12,10 @@ and Sleep & activity. Those subset a page-local view for plotting. This one
 replaces the working dataset — reversibly, because the unfiltered copy is kept
 in ``dataset_full``.
 
-Groups themselves are DEFINED at import, inside Create Dataset. See BACKLOG.md
-item 12: ``dam_utilities.regroup_dataset`` exists but is wired to nothing, so
-they cannot yet be redefined here without re-importing.
+Groups are first DEFINED at import, inside Create Dataset, and can be REDEFINED
+here — the "Redefine groups" section re-derives the ``group`` coord from the
+per-fly metadata coords the dataset already carries, so a reloaded ``.nc`` can be
+regrouped without going back to the raw monitor files.
 """
 
 import numpy as np
@@ -23,6 +24,7 @@ import streamlit as st
 
 import dam_utilities
 from analysis_detection import detect_analyses
+from ui import status
 from ui.guards import require_dataset
 from ui.state import invalidate_derived_caches
 
@@ -44,6 +46,37 @@ def _apply_group_filter(selected_groups):
     invalidate_derived_caches()
     st.session_state.dataset = filtered
     st.session_state.analyses = detect_analyses(filtered)
+
+
+def _apply_regroup(chosen):
+    """Re-derive the ``group`` coord from ``chosen`` and replace BOTH datasets.
+
+    ``dataset_full`` is rewritten as well as ``dataset``, because it is the
+    subset filter's restore point: regrouping only the working copy would make
+    *Reset to all groups* quietly put the old grouping back.
+
+    Every derived cache goes too. ``group`` feeds every group-level comparison,
+    plot and export, so a period analysis computed under the previous grouping
+    describes labels that no longer exist — showing it against the new ones would
+    be worse than making the user re-run it.
+    """
+    ds_full = st.session_state.get("dataset_full")
+    base = ds_full if ds_full is not None else st.session_state.dataset
+    base = dam_utilities.ensure_numpy_backed(base)
+
+    regrouped_full = dam_utilities.regroup_dataset(base, chosen)
+    invalidate_derived_caches()
+    st.session_state.dataset_full = regrouped_full
+
+    # Preserve an active subset across the regroup where the ids still exist,
+    # rather than silently widening the working set back to every fly.
+    current = st.session_state.get("dataset")
+    if current is not None and len(current["id"]) < len(regrouped_full["id"]):
+        keep = [str(i) for i in current["id"].values]
+        st.session_state.dataset = regrouped_full.sel(id=keep)
+    else:
+        st.session_state.dataset = regrouped_full.copy()
+    st.session_state.analyses = detect_analyses(st.session_state.dataset)
 
 
 def _reset_group_filter():
@@ -85,6 +118,67 @@ st.dataframe(
     width="stretch",
     height=200,
 )
+
+# Import-time data-quality counters, if this dataset carries them. This page is
+# "what is currently loaded", and for a reloaded .nc it is the only place that
+# can say anything about the quality of the recording behind it.
+status.render_integrity_counters(ds)
+
+# ============================================================
+# Redefine groups — re-derive the `group` coord from the per-fly
+# metadata coords the dataset already carries. Matters most for a
+# reloaded .nc, where the alternative is re-reading the raw DAM files.
+# ============================================================
+_regroup_candidates = dam_utilities.group_defining_coords(ds)
+if _regroup_candidates:
+    with st.expander("Redefine groups"):
+        _current_cols = dam_utilities.get_group_columns(ds)
+        st.markdown(
+            "Groups are built by joining one or more metadata columns with `-`. "
+            "Changing them **re-derives the `group` coord in place** and clears "
+            "every cached analysis result — `group` feeds every group-level "
+            "comparison, plot and export, so previous results describe labels "
+            "that no longer exist."
+        )
+        _chosen = st.multiselect(
+            "Metadata columns that define a group",
+            options=_regroup_candidates,
+            default=[c for c in _current_cols if c in _regroup_candidates],
+            key="regroup_columns",
+            help="Only columns stored per fly at import are offered. Datetime, "
+            "monitor, region and id columns are excluded automatically.",
+        )
+        if not _chosen:
+            st.caption("Select at least one column.")
+        else:
+            _preview = dam_utilities.regroup_dataset(ds, _chosen)
+            _new_groups = sorted({str(g) for g in _preview["group"].values})
+            _unchanged = list(_chosen) == list(_current_cols)
+            st.caption(
+                f"**{len(_new_groups)}** group(s) — "
+                + ", ".join(_new_groups[:8])
+                + (" …" if len(_new_groups) > 8 else "")
+                + (
+                    f"  (currently **{len({str(g) for g in ds['group'].values})}** "
+                    f"from {', '.join(_current_cols) or 'nothing recorded'})"
+                    if not _unchanged
+                    else "  — unchanged from the current grouping"
+                )
+            )
+            if st.button(
+                "Apply grouping",
+                key="apply_regroup",
+                disabled=_unchanged,
+                help="Disabled while the selection matches the current grouping."
+                if _unchanged
+                else None,
+            ):
+                _apply_regroup(_chosen)
+                st.success(
+                    f"Regrouped by {', '.join(_chosen)} — {len(_new_groups)} group(s). "
+                    "Cached analysis results were cleared."
+                )
+                st.rerun()
 
 # ============================================================
 # Group selection — subset the dataset before any downstream

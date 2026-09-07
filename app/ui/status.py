@@ -60,3 +60,46 @@ def refresh(ds):
 
     st.session_state.analyses = detect_analyses(ds)
     return st.session_state.analyses
+
+
+def render_integrity_counters(ds):
+    """Show the import-time data-quality counters a dataset carries, if any.
+
+    ``core/dam_integrity.py`` runs a full load-time quality analysis, but its
+    output only ever existed during a raw import — a reloaded ``.nc`` could say
+    nothing about how clean the recording it came from was. The aggregate
+    counters are stamped onto ``attrs`` at import (see
+    ``MetadataProcessor.integrity_scalars``) and survive the round-trip, so this
+    renders them wherever a dataset is summarized.
+
+    Silent on datasets that predate the counters — their absence means "not
+    recorded", which is different from "clean", so it must not claim clean.
+    """
+    n_bad = ds.attrs.get("integrity_n_status_bad")
+    if n_bad is None:
+        return False
+    n_cos = int(ds.attrs.get("integrity_n_cosmetic_slots", 0) or 0)
+    n_dl = int(ds.attrs.get("integrity_n_dataloss_slots", 0) or 0)
+    n_mon = int(ds.attrs.get("integrity_n_monitors", 0) or 0)
+    n_bad = int(n_bad)
+
+    scope = f" across {n_mon} monitor(s)" if n_mon else ""
+    if n_bad == 0 and n_dl == 0:
+        st.caption(f"Data integrity at import: clean{scope} — no failed reads, no gaps.")
+        return True
+
+    detail = (
+        f"**{n_bad}** non-status-1 rows handled (→NaN), "
+        f"**{n_cos}** cosmetic slot(s) with 0 data lost, "
+        f"**{n_dl}** DATA-LOSS slot(s)"
+    )
+    if n_dl:
+        # Real holes: the user has to know, and the per-monitor detail that says
+        # WHERE only exists during the original import.
+        st.warning(
+            f"Data integrity at import{scope}: {detail}. Per-monitor detail is "
+            "only available during a raw import, not from a reloaded `.nc`."
+        )
+    else:
+        st.caption(f"Data integrity at import{scope}: {detail}.")
+    return True

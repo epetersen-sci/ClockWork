@@ -1776,9 +1776,8 @@ def wavelet_analysis(
     compute_group_averages: bool = False,
     group_coord: str = "group",
     filter_nonrhythmic_for_average: bool = True,
-    average_output_dir: str | None = None,
     phase_label: str | None = None,
-) -> xr.Dataset:
+) -> tuple[xr.Dataset, list[dict]]:
     """
     CWT periodogram analysis. The default reduction method is resolved from
     ``calibrations.DEFAULT_CWT_METHOD`` (``'global_rednoise'``) when
@@ -1856,11 +1855,11 @@ def wavelet_analysis(
         ``"DD"``, ``"LD"``, or ``"both"`` to force a specific phase.
     compute_group_averages : bool, default False
         If True, stream-aggregate per-group means of the 2D power matrix
-        during the per-fly CWT pass and save one PNG (+ matching CSV) per
-        group to ``average_output_dir``. Memory-bounded (running sums and
-        counts only; per-fly 2D matrices are discarded as soon as their
-        contribution is added). Folded into the CWT pass to avoid a second
-        recomputation later. Default off.
+        during the per-fly CWT pass and RETURN them (see Returns). Nothing
+        is written to disk — rendering and saving are the caller's job.
+        Memory-bounded (running sums and counts only; per-fly 2D matrices are
+        discarded as soon as their contribution is added). Folded into the CWT
+        pass to avoid a second recomputation later. Default off.
     group_coord : str, default 'group'
         Per-fly coord that labels group membership for averaging.
     filter_nonrhythmic_for_average : bool, default True
@@ -1869,15 +1868,23 @@ def wavelet_analysis(
         already have been run + classified for this to take effect; if
         the flag is absent the average will include every fly (caller
         should pre-warn the user).
-    average_output_dir : str or None, default None
-        Destination folder for the saved PNG/CSV pair per group. The
-        folder is created if it doesn't exist. When None, the averages
-        are computed but not written to disk (useful for tests).
     phase_label : str or None, default None
-        Active phase label (e.g. ``'DD'``, ``'LD'``, ``'full'``) used in
-        the output filename so that DD and LD reruns don't overwrite
-        each other. When None, falls back to ``phase_used`` (the value
-        returned by :func:`_select_phase`).
+        Active phase label (e.g. ``'DD'``, ``'LD'``, ``'full'``). Carried
+        through on each returned group average so a caller naming files can
+        keep DD and LD reruns from overwriting each other. When None, falls
+        back to ``phase_used`` (the value returned by :func:`_select_phase`).
+
+    Returns
+    -------
+    (merged_ds, group_averages)
+        merged_ds : xr.Dataset
+            ``ds`` with the CWT outputs merged in and the ``cwt_*`` attrs set.
+        group_averages : list of dict
+            One entry per group when ``compute_group_averages`` is True, else
+            empty. Each carries ``group``, ``n_flies``, the 2D ``mean_power``
+            array, its ``period_axis`` and ``time_h`` axes, the
+            ``period_range`` and the ``phase_label`` — everything needed to
+            render or save it, without this function deciding which.
     """
 
     # Resolve the default method from the single calibration source (no
@@ -2026,7 +2033,13 @@ def wavelet_analysis(
 
     if not results:
         print("Warning: CWT analysis failed for all individuals.")
-        return ds
+        # Same 2-tuple shape as the success path below. Returning a bare Dataset
+        # here was a real trap rather than just an inconsistency: a caller doing
+        # `ds, averages = wavelet_analysis(...)` unpacks an xr.Dataset over its
+        # DATA_VARS, so with exactly two of them the unpack SUCCEEDS and silently
+        # binds two variable-name strings. Any other count raises. Both are worse
+        # than the empty list.
+        return ds, []
     print("CWT analysis done.")
     combined_results = xr.concat(results, dim=id_var)
 
@@ -2045,64 +2058,36 @@ def wavelet_analysis(
     merged_ds.attrs["cwt_max_bridge_gap_minutes"] = max_bridge_gap_minutes
     merged_ds.attrs["cwt_phase"] = phase_used
 
-    # ----- Group-averaged scalograms: PNG + CSV per group to disk -----
-    if compute_group_averages and group_sums and average_output_dir:
-        try:
-            import datetime as _datetime
-            import json as _json
-            import os as _os
-            import re as _re
+    # ----- Group-averaged scalograms: RETURNED, not written -----
+    # This block used to `from plotting import save_group_average_scalogram_png`
+    # and write PNG + CSV to disk from inside the analysis. An analysis function
+    # with a filesystem side effect cannot be called without also deciding where
+    # files go, and the deferred plotting import was there to dodge a circular
+    # one — the same wrong-seam signal as the deferred analysis imports in
+    # plotting.py. The arrays come back to the caller, which decides whether to
+    # render or save them.
+    group_averages = []
+    if compute_group_averages and group_sums:
+        sampling_min = group_sampling_rate_min if group_sampling_rate_min is not None else 1.0
+        for grp, _sum in group_sums.items():
+            n = int(group_counts.get(grp, 0))
+            if n <= 0:
+                continue
+            mean_pw = (_sum / float(n)).astype(np.float32)
+            group_averages.append(
+                {
+                    "group": str(grp),
+                    "n_flies": n,
+                    "mean_power": mean_pw,
+                    "period_axis": group_period_axis,
+                    "time_h": (np.arange(mean_pw.shape[1]) * sampling_min / 60.0).astype(
+                        np.float32
+                    ),
+                    "period_range": (float(min_period), float(max_period)),
+                    "phase_label": phase_label,
+                }
+            )
 
-            import pandas as _pd
-
-            from plotting import save_group_average_scalogram_png
-
-            _os.makedirs(average_output_dir, exist_ok=True)
-            timestamp = _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            saved: list = []
-            period_range = (float(min_period), float(max_period))
-            sampling_min = group_sampling_rate_min if group_sampling_rate_min is not None else 1.0
-            for grp, _sum in group_sums.items():
-                n = int(group_counts.get(grp, 0))
-                if n <= 0:
-                    continue
-                mean_pw = (_sum / float(n)).astype(np.float32)
-                time_h = (np.arange(mean_pw.shape[1]) * sampling_min / 60.0).astype(np.float32)
-                grp_safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", str(grp)).strip("_") or "group"
-                stem = f"averaged_scalogram_{grp_safe}_{phase_label}_{timestamp}"
-                png_path = _os.path.join(average_output_dir, stem + ".png")
-                csv_path = _os.path.join(average_output_dir, stem + ".csv")
-                save_group_average_scalogram_png(
-                    mean_pw,
-                    group_period_axis,
-                    time_h,
-                    group_label=str(grp),
-                    n_flies=n,
-                    out_png_path=png_path,
-                    period_range=period_range,
-                    phase_label=phase_label,
-                )
-                # CSV: rows are periods (h), columns are time (h).
-                _df = _pd.DataFrame(mean_pw, index=group_period_axis, columns=time_h)
-                _df.index.name = "period_h"
-                _df.columns.name = "time_h"
-                _df.to_csv(csv_path)
-                saved.append(
-                    {
-                        "group": str(grp),
-                        "n": n,
-                        "png": png_path,
-                        "csv": csv_path,
-                        "phase": phase_label,
-                    }
-                )
-            if saved:
-                # Stash on attrs so the Visualization page can find them.
-                merged_ds.attrs["cwt_group_average_paths"] = _json.dumps(saved)
-                merged_ds.attrs["cwt_group_average_dir"] = average_output_dir
-                print(f"Saved {len(saved)} group-averaged scalogram(s) to {average_output_dir!r}.")
-        except Exception as _e:
-            print(f"Warning: failed to save group-averaged scalograms: {_e}")
 
     # Print summary statistics
     valid_periods = merged_ds["cwt_period"].values
@@ -2131,7 +2116,7 @@ def wavelet_analysis(
                     f"  Flies with rhythmicity >= 0.5: {np.sum(rhythmicity_vals >= 0.5)}/{len(rhythmicity_vals)}"
                 )
 
-    return merged_ds
+    return merged_ds, group_averages
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

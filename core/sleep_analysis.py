@@ -384,19 +384,25 @@ def sleep_analysis(
     # Step 1: Merge time-series variables (all share id × time dims with data).
     # bout_ds has dims (id × sleep_bout_number) — merging it in the same call
     # causes xarray to broadcast across all four dims, allocating a massive array.
-    # join="outer" is stated explicitly rather than left to the default, which
-    # xarray is changing to "exact". It has to stay "outer", and only on TIME:
-    # under a phase selection each per-fly mask is built over that fly's IN-PHASE
-    # minutes only, so the masks carry a shorter time axis than `data` and the
-    # union is what pads the out-of-phase minutes back to NaN. Switching to
-    # "exact" raises there.
+    # join="exact": every input already carries data's exact id index (the helper
+    # above) and its exact time index, so there is nothing to reconcile and any
+    # future mismatch should fail loudly instead of being papered over.
     #
-    # The id dimension is a different story and is handled above: the masks are
-    # put back into `data`'s own id order first, because an outer join over
-    # mismatched ids silently RE-SORTS the merged dataset's flies.
+    # An earlier version of this comment claimed the join had to stay "outer"
+    # because a phase selection left the masks with a SHORTER time axis. That was
+    # wrong, and worth recording: select_phase never slices — it NaN-masks the
+    # full axis (see its docstring) — so the masks always span data's whole time
+    # range. The time-axis mismatch that seemed to prove otherwise was the
+    # cartesian blow-up of the bout dimension, a separate bug fixed since.
+    # Measured for LD, DD and both, on the fixture and on a real .nc: all five
+    # merge inputs carry the identical time index.
+    #
+    # The id dimension needs the helper above regardless: an OUTER join over
+    # equal-but-differently-ordered ids silently RE-SORTS the merged dataset's
+    # flies, which is what made a later export list them in a different order.
     merged_ds = xr.merge(
         [data, combined_sleep_mask_da, combined_short_da, combined_inter_da, combined_long_da],
-        join="outer",
+        join="exact",
     )
 
     # Step 2: Add bout-level variables individually so their (id, sleep_bout_number)

@@ -494,13 +494,12 @@ def sleep_state_totals_bars(
 
 
 def sleep_bout_duration_lines(
-    ds: xr.Dataset,
+    curves_df: pd.DataFrame,
+    stats_result: dict | None = None,
     method: str = "kde",
-    selected_genotypes=None,
-    selected_temperatures=None,
     show_individual: bool = True,
     stat_col: str = "log_mean_duration_min",
-) -> tuple:
+) -> go.Figure:
     """
     Per-fly sleep-bout-duration curve, overlaid as one line per genotype
     (mean ± SEM across flies, with faint per-fly lines underneath).
@@ -508,71 +507,42 @@ def sleep_bout_duration_lines(
     Replaces the old pooled-bout histogram: pooling every bout across flies
     let flies with more bouts dominate the shape and made 3+ genotypes
     unreadable as overlapping bars. Here every fly contributes exactly one
-    curve first (via sleep_analysis.per_fly_bout_duration_curves), so
-    genotypes overlay cleanly as lines regardless of how fragmented any one
-    fly's sleep is. All the actual number-crunching — curve computation,
-    per-fly summary stats, the group-comparison test — lives in
-    core/sleep_analysis.py; this function only pivots that output into
-    plotly traces via the shared group_spectrum_plot renderer.
+    curve first, so genotypes overlay cleanly as lines regardless of how
+    fragmented any one fly's sleep is.
+
+    **Takes the computed frames, not a Dataset.** This used to accept ``ds`` and
+    defer-import three ``sleep_analysis`` functions to compute the curves, the
+    per-fly summary and the group test itself — a deferred import that existed
+    only to dodge a circular one, which is the signal that the compute/render
+    seam was in the wrong place. It was also the sole caller of all three, so
+    the analysis effectively lived inside the plotting module. The caller now
+    computes and passes the result; ``plotting`` only renders.
 
     Parameters
     ----------
-    ds : xr.Dataset
-        Must have 'duration' (from sleep_analysis.sleep_analysis()).
+    curves_df : pd.DataFrame
+        Tidy ``(id, group, x, y)`` from
+        ``sleep_analysis.per_fly_bout_duration_curves``. Empty or None renders
+        the "no data" placeholder.
+    stats_result : dict, optional
+        From ``sleep_analysis.bout_duration_group_stats``. Only used for the
+        significance annotation; omit it and the annotation is skipped.
     method : {'kde', 'survival'}
-        'kde' (default): smooth density of log10(bout duration) per fly, log-x.
-        'survival': empirical P(bout duration > t) per fly, log-y — no
-            bandwidth/binning parameter, makes tail differences most visible.
-    selected_genotypes, selected_temperatures : list, optional
+        Which curve ``curves_df`` holds — chooses the axis labels and scales.
+        'kde': density of log10(bout duration) per fly, log-x.
+        'survival': empirical P(bout duration > t) per fly, log-y.
     show_individual : bool
         Draw faint per-fly lines under each genotype's bold mean.
-    stat_col : {'log_mean_duration_min', 'median_duration_min'}
-        Per-fly summary statistic the significance annotation is based on.
+    stat_col : str
+        Named in the significance annotation, so it matches what the caller
+        actually tested.
 
     Returns
     -------
-    (go.Figure, curves_df, summary_df, stats_result)
-        curves_df : tidy (id, group, x, y) — the plotted per-fly curves.
-        summary_df : per-fly (id, group, n_bouts, median_duration_min,
-            log_mean_duration_min) — the CSV-export payload.
-        stats_result : dict from sleep_analysis.bout_duration_group_stats
-            (pvalue is NaN when there wasn't enough data to test — see
-            its 'notes' field).
+    go.Figure
     """
-    from sleep_analysis import (
-        bout_duration_group_stats,
-        bout_duration_summary,
-        per_fly_bout_duration_curves,
-    )
-
-    empty_curves = pd.DataFrame(columns=["id", "group", "x", "y"])
-    empty_summary = pd.DataFrame(
-        columns=["id", "group", "n_bouts", "median_duration_min", "log_mean_duration_min"]
-    )
-
-    if ds is None or "duration" not in ds.data_vars:
-        fig = go.Figure().add_annotation(
-            text="No sleep bout duration data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
-        return fig, empty_curves, empty_summary, None
-
-    curves_df = per_fly_bout_duration_curves(
-        ds,
-        method=method,
-        selected_genotypes=selected_genotypes,
-        selected_temperatures=selected_temperatures,
-    )
-    summary_df = bout_duration_summary(
-        ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
-    )
-
-    if curves_df.empty:
-        fig = go.Figure().add_annotation(
+    if curves_df is None or getattr(curves_df, "empty", True):
+        return go.Figure().add_annotation(
             text="No sleep bout duration data available for the selected groups.",
             xref="paper",
             yref="paper",
@@ -580,7 +550,6 @@ def sleep_bout_duration_lines(
             y=0.5,
             showarrow=False,
         )
-        return fig, curves_df, summary_df, None
 
     pivot = curves_df.pivot_table(index=["group", "id"], columns="x", values="y")
     x_axis = pivot.columns.to_numpy(dtype=float)
@@ -610,8 +579,7 @@ def sleep_bout_duration_lines(
         show_individual=show_individual,
     )
 
-    stats_result = bout_duration_group_stats(summary_df, value_col=stat_col)
-    p_val = stats_result.get("pvalue", float("nan"))
+    p_val = (stats_result or {}).get("pvalue", float("nan"))
     if np.isfinite(p_val):
         p_str = "p<0.001" if p_val < 0.001 else f"p={p_val:.3f}"
         label = "ANOVA" if stats_result["test"] == "anova" else "Kruskal-Wallis"
@@ -627,7 +595,7 @@ def sleep_bout_duration_lines(
             font=dict(size=11, color="gray"),
         )
 
-    return fig, curves_df, summary_df, stats_result
+    return fig
 
 
 def per_fly_summary_table(
@@ -1886,8 +1854,6 @@ def group_ridge_density_plotly(
     group_val=None,
     temperature=None,
     period_range=None,
-    filter_nonrhythmic=True,
-    filter_gate="ac",
 ):
     """
     Plotly 2D histogram of CWT ridge periods across all flies in a group.
@@ -1908,16 +1874,28 @@ def group_ridge_density_plotly(
         ``cwt_max_period``; falls back to ``(18, 30)`` if those attrs are
         missing. Default-from-attrs is preferred so the y-range tracks
         the user's chosen analysis range across reruns (Phase 2D).
-    filter_nonrhythmic : bool, default True
-        If True, drop arrhythmic flies (per ``filter_gate``) before
-        building the density. Off-rhythm ridge tracks are dominated by
-        noise and would distort the group density.
-    filter_gate : {'ls', 'ac', 'cwt'}, default 'ac'
-        Classifier flag driving the filter.
-
     Returns
     -------
     go.Figure
+
+    Notes
+    -----
+    **Pass an already-filtered dataset.** This used to take
+    ``filter_nonrhythmic`` / ``filter_gate`` and defer-import
+    ``rhythmicity_classification.apply_rhythmic_filter`` to do the filtering
+    itself — a deferred import whose only purpose was dodging a circular one,
+    which is the signal that the compute/render seam is in the wrong place.
+    Arrhythmic flies still need excluding (off-rhythm ridge tracks are noise and
+    distort the group density); that is now the caller's call, made explicitly::
+
+        ds = apply_rhythmic_filter(ds, gate="ac", enabled=True)
+        fig = group_ridge_density_plotly(ds, group_val="w1118")
+
+    This function currently has NO callers — it is one of the unwired plotting
+    functions listed under backlog item 6, which will decide whether the whole
+    Abhilash sleep-state section gets a UI or gets deleted. The signature change
+    therefore has no blast radius, and is here because item 7's requirement is
+    that ``core/plotting.py`` carry no deferred analysis imports at all.
     """
     if "cwt_ridge_periods" not in ds.data_vars:
         return go.Figure().add_annotation(
@@ -1934,11 +1912,6 @@ def group_ridge_density_plotly(
             float(ds.attrs.get("cwt_min_period", 18.0)),
             float(ds.attrs.get("cwt_max_period", 30.0)),
         )
-
-    if filter_nonrhythmic:
-        from rhythmicity_classification import apply_rhythmic_filter
-
-        ds = apply_rhythmic_filter(ds, gate=filter_gate, enabled=True)
 
     # Filter flies
     fly_ids = ds["id"].values

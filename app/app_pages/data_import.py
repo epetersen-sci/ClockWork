@@ -21,6 +21,7 @@ from dataset_meta import (
     stamp_phase,
 )
 from load_and_save_datasets import load_dataset_from_netcdf
+from ui import status
 from ui.state import clear_dataset_state
 
 
@@ -172,6 +173,29 @@ with tab_fresh:
                     # holes (NaN, no valid reading) are shown prominently.
                     for _sev, _text in processor.integrity_summary_lines():
                         _render(_sev, _text)
+
+                    # Per-monitor detail. The aggregate above says how much was
+                    # lost; this says WHERE, which is the actionable half and
+                    # until now went only to the console — invisible to anyone
+                    # not running the app from a terminal. Opened by default when
+                    # a monitor actually lost data, collapsed when everything is
+                    # merely cosmetic.
+                    _mon_reports = processor.integrity_monitor_reports()
+                    if _mon_reports:
+                        _any_loss = any(sev == "warning" for _, sev, _ in _mon_reports)
+                        with st.expander(
+                            f"Per-monitor data integrity — {len(_mon_reports)} monitor(s) "
+                            "with something to report",
+                            expanded=_any_loss,
+                        ):
+                            for _mon, _sev, _text in _mon_reports:
+                                _render(_sev, _text)
+
+                    # Stash the aggregate counters for the Create Dataset step to
+                    # stamp onto attrs. The processor itself is not kept — it
+                    # holds the whole raw scan — and these few ints are all that
+                    # survives a NetCDF round-trip anyway.
+                    st.session_state["_integrity_scalars"] = processor.integrity_scalars()
                 except dam_processor.MetadataError as e:
                     # The metadata file itself is unusable — no monitor was even
                     # opened. The message already names the problem and the fix.
@@ -290,6 +314,12 @@ with tab_fresh:
                         # files. A plain string, so it survives the NetCDF round-trip
                         # (a reloaded .nc still exports to that folder when it exists).
                         ds.attrs["source_data_dir"] = st.session_state.get("working_dir") or ""
+                        # Carry the import-time integrity counters onto the
+                        # dataset so a reloaded .nc can still report its own
+                        # quality. Plain ints only — see
+                        # MetadataProcessor.integrity_scalars for why the
+                        # per-monitor structure deliberately does not come along.
+                        ds.attrs.update(st.session_state.get("_integrity_scalars") or {})
                         _stash_full(ds)
                         st.session_state.dataset = ds
                         st.session_state.analyses = detect_analyses(ds)
@@ -416,6 +446,10 @@ with tab_netcdf:
                     f"Loaded: {len(ds['id'])} flies, "
                     f"{len(ds['time'])} timepoints (phase={dataset_phase(ds)})"
                 )
+                # Integrity counters stamped at the original import, if this file
+                # carries them. Nothing is shown for older files — silence means
+                # "not recorded", which is not the same as "clean".
+                status.render_integrity_counters(ds)
 
                 st.subheader("Detected Analyses")
                 st.text(format_status_summary(analyses))

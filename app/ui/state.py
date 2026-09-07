@@ -95,9 +95,20 @@ def init_session_state():
 def invalidate_derived_caches():
     """Drop every cache derived from the current set of flies.
 
-    Called both when a fresh dataset is loaded (via :func:`clear_dataset_state`)
-    and when a group-subset filter is applied or reset.
+    Called when a fresh dataset is loaded (via :func:`clear_dataset_state`), when
+    a group-subset filter is applied or reset, and when groups are redefined.
+
+    Clears BOTH stores. The session-state keys below are the obvious half; the
+    other is Streamlit's own ``@st.cache_data`` memo, which pages use for the
+    expensive plot and aggregate calls. Those are keyed on
+    :func:`dataset_fingerprint`, which is deliberately a SUMMARY — fly ids, time
+    length, phase, group labels and a handful of attrs — so it can be cheap
+    enough to compute on every rerun. Anything outside that summary is invisible
+    to it, and this function is called precisely when the dataset has been
+    replaced wholesale. Clearing the memo outright is the reliable move; relying
+    on the fingerprint to have caught the change is not.
     """
+    st.cache_data.clear()
     for key in DERIVED_CACHE_KEYS:
         st.session_state.pop(key, None)
     for key in [

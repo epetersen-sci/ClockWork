@@ -205,3 +205,68 @@ def save_csv_button(label, csv_text, ds, filename, key, *, help=None):
         except Exception as e:
             st.error(f"Export failed: {e}")
     return None
+
+
+def save_group_average_scalograms(group_averages, out_dir, ds=None):
+    """Write one PNG + CSV per group-averaged scalogram, and return the manifest.
+
+    ``periodograms.wavelet_analysis`` used to do this itself, which meant an
+    analysis function could not be called without also deciding where files go —
+    and it had to reach into ``plotting`` to do the rendering, a deferred import
+    whose only purpose was dodging a circular one. The analysis now returns the
+    arrays and this writes them, so the dependency runs app → core rather than
+    core → core.
+
+    ``ds``, if given, gets the manifest stamped onto its attrs the way the
+    analysis used to, so the record still travels with the dataset.
+    """
+    import datetime
+    import json
+    import re
+
+    import pandas as pd
+
+    import plotting
+
+    os.makedirs(out_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    saved = []
+    for avg in group_averages:
+        # Group labels come from user metadata and end up in filenames.
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(avg["group"])).strip("_") or "group"
+        stem = f"averaged_scalogram_{safe}_{avg['phase_label']}_{timestamp}"
+        png_path = os.path.join(out_dir, stem + ".png")
+        csv_path = os.path.join(out_dir, stem + ".csv")
+
+        plotting.save_group_average_scalogram_png(
+            avg["mean_power"],
+            avg["period_axis"],
+            avg["time_h"],
+            group_label=str(avg["group"]),
+            n_flies=avg["n_flies"],
+            out_png_path=png_path,
+            period_range=avg["period_range"],
+            phase_label=avg["phase_label"],
+        )
+        # CSV: rows are periods (h), columns are time (h).
+        frame = pd.DataFrame(
+            avg["mean_power"], index=avg["period_axis"], columns=avg["time_h"]
+        )
+        frame.index.name = "period_h"
+        frame.columns.name = "time_h"
+        frame.to_csv(csv_path)
+
+        saved.append(
+            {
+                "group": str(avg["group"]),
+                "n": avg["n_flies"],
+                "png": png_path,
+                "csv": csv_path,
+                "phase": avg["phase_label"],
+            }
+        )
+
+    if saved and ds is not None:
+        ds.attrs["cwt_group_average_paths"] = json.dumps(saved)
+        ds.attrs["cwt_group_average_dir"] = out_dir
+    return saved

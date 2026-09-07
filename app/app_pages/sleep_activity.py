@@ -112,16 +112,46 @@ def _cached_summary_table(
 def _cached_bout_duration_lines(
     fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
 ):
-    """Cache the per-fly bout-duration curve computation (KDE/survival curves
-    + per-fly summary stats + the group-comparison test) — the same numbers
-    drive the plot and both CSV exports below, so they can't drift apart."""
-    return plotting.sleep_bout_duration_lines(
-        _ds,
+    """Compute the per-fly bout-duration curves, the per-fly summary and the
+    group-comparison test, then render them — the same numbers drive the plot and
+    both CSV exports below, so they can't drift apart.
+
+    The three sleep_analysis calls are HERE rather than inside
+    plotting.sleep_bout_duration_lines, which used to defer-import them. That
+    deferred import existed only to dodge a circular one, and this page was the
+    only caller of all three functions, so the analysis was in effect being run
+    by the plotting module. Compute in the caller, pass frames to the renderer.
+    """
+    _genos = list(selected_genotypes) if selected_genotypes else None
+    _temps = list(selected_temperatures) if selected_temperatures else None
+    empty_curves = pd.DataFrame(columns=["id", "group", "x", "y"])
+    empty_summary = pd.DataFrame(
+        columns=["id", "group", "n_bouts", "median_duration_min", "log_mean_duration_min"]
+    )
+    if _ds is None or "duration" not in _ds.data_vars:
+        return (
+            plotting.sleep_bout_duration_lines(empty_curves, method=method),
+            empty_curves,
+            empty_summary,
+            None,
+        )
+
+    curves_df = sleep_analysis.per_fly_bout_duration_curves(
+        _ds, method=method, selected_genotypes=_genos, selected_temperatures=_temps
+    )
+    summary_df = sleep_analysis.bout_duration_summary(
+        _ds, selected_genotypes=_genos, selected_temperatures=_temps
+    )
+    stats_result = (
+        sleep_analysis.bout_duration_group_stats(summary_df) if not curves_df.empty else None
+    )
+    fig = plotting.sleep_bout_duration_lines(
+        curves_df,
+        stats_result,
         method=method,
-        selected_genotypes=list(selected_genotypes) if selected_genotypes else None,
-        selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
         show_individual=show_individual,
     )
+    return fig, curves_df, summary_df, stats_result
 
 def _summary_csv(tbl):
     """Friendly-header CSV of the per-group summary table (mean + SEM per period)."""
