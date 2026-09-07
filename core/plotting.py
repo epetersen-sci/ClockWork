@@ -1026,10 +1026,21 @@ def _gate_arc(onset_h, offset_h, radius, color, width, alpha, name=None, show_le
 
 
 def _period_ticks(pmin, pmax):
-    """The paper's log period ticks, trimmed to the range actually plotted."""
-    candidates = [1, 2, 4, 8, 12, 17, 24, 35]
-    vals = [c for c in candidates if pmin <= c <= pmax]
-    return vals or [pmin, pmax]
+    """Log period ticks: the paper's values where they fit, denser when they don't.
+
+    Figure 5 labels 1, 2, 4, 8, 12, 17, 24 and 35 h. Those are right for a full
+    1-32 h axis but nearly all fall outside a cropped ultradian band — a 2-6 h
+    panel keeps only ``4``, leaving a log axis with a single tick. So fall back
+    to a finer ladder, and always keep at least the two endpoints.
+    """
+    coarse = [1, 2, 4, 8, 12, 17, 24, 35]
+    vals = [c for c in coarse if pmin <= c <= pmax]
+    if len(vals) < 3:
+        fine = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 17, 24, 35]
+        vals = [c for c in fine if pmin <= c <= pmax]
+    if len(vals) < 2:
+        vals = [round(pmin, 2), round(pmax, 2)]
+    return vals
 
 def _day_night_bar(fig, n_days, row, col, phase_label="DD"):
     """The light/dark strip the paper puts above each scalogram.
@@ -1175,6 +1186,145 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
     )
     return fig
 
+
+def _night_shading(fig, phase_label, row, col, n_rows):
+    """Grey the dark phase, per panel.
+
+    Figure 2 shades the LD night as one dark block, and under DD shades the
+    subjective day light grey and the subjective night dark grey. Drawn per
+    panel rather than with ``row="all"`` because a secondary y axis makes the
+    all-rows form ambiguous.
+    """
+    if phase_label == "DD":
+        fig.add_vrect(
+            x0=0, x1=12, fillcolor="rgba(0,0,0,0.05)", line_width=0, layer="below",
+            row=row, col=col,
+        )
+        fig.add_vrect(
+            x0=12, x1=24, fillcolor="rgba(0,0,0,0.13)", line_width=0, layer="below",
+            row=row, col=col,
+        )
+    else:
+        fig.add_vrect(
+            x0=12, x1=24, fillcolor="rgba(0,0,0,0.16)", line_width=0, layer="below",
+            row=row, col=col,
+        )
+
+def state_profile_plot(
+    profile_stats,
+    phase_label="DD",
+    states=("short", "intermediate", "long"),
+    show_standard_reference=True,
+    title="Daily profiles",
+):
+    """Activity and per-state sleep profiles — the LEFT column of Figure 2.
+
+    This panel had no implementation at all. The Abhilash section carried the
+    initiation-probability half of Figure 2 and the rose plots of Figure 3, but
+    not the profiles they are read against — and the paper's argument is
+    precisely the relationship between them ("the gray line represents profiles
+    of standard sleep... Note that the activity counts remain the same within
+    each column").
+
+    Four rows: locomotor activity in red, then each state in its own colour
+    with **standard sleep drawn behind it in grey** as the reference the paper
+    puts in every panel. Sleep is in min/h and activity in counts/h, each on
+    its own row, so no dual axis is needed.
+
+    Parameters
+    ----------
+    profile_stats : pd.DataFrame
+        ``sleep_state_metrics.group_profiles`` output for ONE group, including
+        the ``'activity'`` and ``'standard'`` states.
+    show_standard_reference : bool
+        Draw standard sleep behind each state. Turn off to see a state alone.
+    """
+    from plotly.subplots import make_subplots
+
+    colors, labels = _state_palette()
+    if profile_stats is None or profile_stats.empty:
+        return _empty("No profile data available.")
+
+    present = [s for s in states if s in set(profile_stats["state"])]
+    rows = (["activity"] if "activity" in set(profile_stats["state"]) else []) + present
+    if not rows:
+        return _empty("No profiles available for the requested states.")
+
+    fig = make_subplots(
+        rows=len(rows),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.045,
+        subplot_titles=[labels.get(r, r) for r in rows],
+    )
+
+    standard = profile_stats[profile_stats["state"] == "standard"].sort_values("zt_bin_minute")
+    has_standard = show_standard_reference and not standard.empty
+
+    for row, state in enumerate(rows, start=1):
+        if state != "activity" and has_standard:
+            # The paper's grey reference carries its own SEM band, not just a
+            # line, so the two states' spreads are comparable by eye.
+            _add_profile_trace(
+                fig, standard, "standard", colors, row, name="Standard sleep"
+            )
+        sdf = profile_stats[profile_stats["state"] == state].sort_values("zt_bin_minute")
+        _add_profile_trace(fig, sdf, state, colors, row, name=labels.get(state, state))
+        _night_shading(fig, phase_label, row, 1, len(rows))
+        fig.update_yaxes(
+            title_text="Activity (counts/h)" if state == "activity" else "Sleep (min/h)",
+            rangemode="tozero",
+            row=row,
+            col=1,
+        )
+
+    fig.update_xaxes(dtick=6, range=[0, 24])
+    fig.update_xaxes(
+        title_text=f"{'Circadian' if phase_label == 'DD' else 'Zeitgeber'} time (h)",
+        row=len(rows),
+        col=1,
+    )
+    fig.update_layout(title=title, height=175 * len(rows) + 90, showlegend=False)
+    # Colour each panel label by its state, the way the paper prints them —
+    # with a grey reference line in every sleep panel, the label is what tells
+    # you which trace is the subject.
+    for note, state in zip(fig.layout.annotations, rows):
+        note.update(font=dict(size=12, color=colors.get(state, "#333333")))
+    return fig
+
+def _add_profile_trace(fig, sdf, state, colors, row, name=None, band=True):
+    """One mean +/- SEM profile trace."""
+    color = colors.get(state, "#333333")
+    x = np.asarray(sdf["zt_bin_minute"].values, dtype=float) / 60.0
+    y = np.asarray(sdf["mean"].values, dtype=float)
+    if band and "sem" in sdf:
+        sem = np.nan_to_num(np.asarray(sdf["sem"].values, dtype=float))
+        fig.add_trace(
+            go.Scatter(
+                x=np.concatenate([x, x[::-1]]),
+                y=np.concatenate([y + sem, (y - sem)[::-1]]),
+                fill="toself",
+                fillcolor=_rgba(color, 0.20),
+                line=dict(color="rgba(0,0,0,0)"),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=row,
+            col=1,
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            line=dict(color=color, width=2 if band else 1.4),
+            name=name or state,
+            hovertemplate="%{x:.1f} h<br>%{y:.2f}<extra></extra>",
+            showlegend=False,
+        ),
+        row=row,
+        col=1,
+    )
 
 def initiation_probability_plot(
     init_stats,
@@ -1835,7 +1985,10 @@ def sleep_state_scalogram(
         rows=len(states),
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.055,
+        # Roomier than the other stacked figures: each panel carries a
+        # light/dark bar above it AND a title above that, and 0.055 left the
+        # title sitting on the panel above.
+        vertical_spacing=0.09,
         subplot_titles=[labels.get(s, s) for s in states],
     )
 
@@ -1886,11 +2039,11 @@ def sleep_state_scalogram(
         row=len(states),
         col=1,
     )
-    fig.update_layout(title=title, height=230 * len(states) + 100)
+    fig.update_layout(title=title, height=250 * len(states) + 110)
     # Each panel carries a light/dark bar immediately above it, which the
     # default subplot-title position overprints.
     for note in fig.layout.annotations:
-        note.update(yshift=22)
+        note.update(yshift=26)
     return fig
 
 
@@ -2527,166 +2680,132 @@ def polar_gating_plot(
     return fig
 
 
-def ultradian_amplitude_plot(amplitude_dict, title="Ultradian Amplitude over Time"):
-    """
-    Line plots of mean ultradian CWT power over time per sleep state.
+def ultradian_amplitude_plot(
+    amplitude_dict,
+    bin_size_min=5,
+    phase_label="DD",
+    n_bootstrap=1000,
+    bands=None,
+    title="Ultradian amplitude over time",
+):
+    """Ultradian-band amplitude against time, with bootstrap CI — Figure 6A/C/E.
 
-    Shows whether ultradian rhythm strength varies with the circadian cycle.
-    95% CI from 2000-resample bootstrap (Riggle et al. 2022).
+    "Also, shown are amplitude values over time for each sleep state... The
+    error regions for each time vs. amplitude trace represent 95% confidence
+    intervals estimated through bootstrapping."
+
+    Three changes from the previous version, all about being readable against
+    the printed panel: the x axis is **hours since the start of the epoch**
+    (the paper's 0-216 h) rather than an unlabelled bin index, the subjective
+    day/night blocks are shaded so the circadian gating the figure exists to
+    show is visible, and the resample count is the paper's 1000.
 
     Parameters
     ----------
     amplitude_dict : dict
-        Keys are state label strings; values are (n_flies, n_timepoints) ndarrays
-        of mean power in the ultradian band per 5-min bin.
-    title : str
-
-    Returns
-    -------
-    go.Figure  (one subplot row per state)
+        state -> (n_flies, n_timepoints) ultradian-band amplitude.
+    bands : dict or None
+        state -> (min, max) hours, shown in each panel's subtitle so a reader
+        knows which band was averaged (1-4 h for short and intermediate sleep,
+        2-6 h for long sleep).
     """
     from plotly.subplots import make_subplots
 
-    states = list(amplitude_dict.keys())
-    n = len(states)
-    if n == 0:
-        return go.Figure().add_annotation(
-            text="No ultradian amplitude data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
+    colors, labels = _state_palette()
+    states = [s for s in amplitude_dict if amplitude_dict[s] is not None]
+    if not states:
+        return _empty("No ultradian amplitude data available.")
 
-    # Paper colours, shared with every other Abhilash-figure renderer. The
-    # literals that used to sit here were Plotly's default cycle, which gave
-    # short sleep the paper's long-sleep blue and long sleep its activity red.
-    STATE_COLORS, _ = _state_palette()
-    # 1000 replications, as the paper specifies.
-    N_BOOTSTRAP = 1000
     rng = np.random.default_rng(42)
-
-    fig = make_subplots(rows=n, cols=1, subplot_titles=states, shared_xaxes=True)
-
-    for row, state in enumerate(states, start=1):
-        data_mat = np.asarray(amplitude_dict[state])  # (n_flies, n_t)
-        if data_mat.ndim == 1:
-            data_mat = data_mat[np.newaxis, :]
-        n_flies, n_t = data_mat.shape
-        t = np.arange(n_t) * 5 / 60.0  # convert 5-min bins to hours
-
-        mean_amp = np.nanmean(data_mat, axis=0)
-
-        # Bootstrap CI
-        boot = np.empty((N_BOOTSTRAP, n_t))
-        for b in range(N_BOOTSTRAP):
-            idx = rng.integers(0, n_flies, size=n_flies)
-            boot[b] = np.nanmean(data_mat[idx], axis=0)
-        ci_lo = np.nanpercentile(boot, 2.5, axis=0)
-        ci_hi = np.nanpercentile(boot, 97.5, axis=0)
-
-        color = STATE_COLORS.get(state, "#333333")
-        r, g_c, b_c = tuple(int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
-
-        lg = str(state)
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=mean_amp,
-                mode="lines",
-                line=dict(color=color, width=2),
-                name=state,
-                legendgroup=lg,
-            ),
-            row=row,
-            col=1,
+    subtitles = []
+    for state in states:
+        band = (bands or {}).get(state)
+        subtitles.append(
+            f"{labels.get(state, state)}"
+            + (f" — {band[0]}-{band[1]} h band" if band else "")
         )
-        # SAME legendgroup as the mean so a legend click toggles both together.
-        x_fill = np.concatenate([t, t[::-1]])
-        y_fill = np.concatenate([ci_hi, ci_lo[::-1]])
+
+    fig = make_subplots(
+        rows=len(states),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=subtitles,
+    )
+
+    max_hours = 0.0
+    for row, state in enumerate(states, start=1):
+        mat = np.asarray(amplitude_dict[state], dtype=float)
+        if mat.ndim == 1:
+            mat = mat[np.newaxis, :]
+        keep = ~np.all(~np.isfinite(mat), axis=1)
+        mat = mat[keep]
+        if mat.size == 0:
+            continue
+        hours = np.arange(mat.shape[1]) * bin_size_min / 60.0
+        max_hours = max(max_hours, float(hours[-1]))
+        mean = np.nanmean(mat, axis=0)
+
+        if mat.shape[0] > 1:
+            boot = np.empty((n_bootstrap, mat.shape[1]))
+            for b in range(n_bootstrap):
+                boot[b] = np.nanmean(mat[rng.integers(0, mat.shape[0], mat.shape[0])], axis=0)
+            lo = np.nanpercentile(boot, 2.5, axis=0)
+            hi = np.nanpercentile(boot, 97.5, axis=0)
+        else:
+            lo = hi = mean
+
+        color = colors.get(state, "#333333")
         fig.add_trace(
             go.Scatter(
-                x=x_fill,
-                y=y_fill,
+                x=np.concatenate([hours, hours[::-1]]),
+                y=np.concatenate([hi, lo[::-1]]),
                 fill="toself",
-                fillcolor=f"rgba({r},{g_c},{b_c},0.2)",
+                fillcolor=_rgba(color, 0.22),
                 line=dict(color="rgba(0,0,0,0)"),
-                legendgroup=lg,
                 showlegend=False,
                 hoverinfo="skip",
             ),
             row=row,
             col=1,
         )
-        fig.update_yaxes(title_text="Ultradian power", row=row, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=hours,
+                y=mean,
+                mode="lines",
+                line=dict(color=color, width=1.8),
+                name=labels.get(state, state),
+                showlegend=False,
+                hovertemplate="%{x:.1f} h<br>%{y:.3f}<extra></extra>",
+            ),
+            row=row,
+            col=1,
+        )
+        fig.update_yaxes(title_text="Norm. amplitude", rangemode="tozero", row=row, col=1)
 
-    fig.update_xaxes(title_text="Time (hours)", row=n, col=1)
-    fig.update_layout(title=title, height=200 * n)
+    # Subjective day/night blocks across the whole recording, so the gating is
+    # readable rather than inferred from tick positions.
+    for row in range(1, len(states) + 1):
+        for day in range(int(np.ceil(max_hours / 24.0))):
+            fig.add_vrect(
+                x0=day * 24 + 12,
+                x1=min(day * 24 + 24, max_hours),
+                fillcolor="rgba(0,0,0,0.11)" if phase_label == "DD" else "rgba(0,0,0,0.16)",
+                line_width=0,
+                layer="below",
+                row=row,
+                col=1,
+            )
+
+    fig.update_xaxes(dtick=24, range=[0, max_hours])
+    fig.update_xaxes(
+        title_text=f"Hours since start of {'constant darkness' if phase_label == 'DD' else 'the light cycle'}",
+        row=len(states),
+        col=1,
+    )
+    fig.update_layout(title=title, height=185 * len(states) + 90)
     return fig
-
-
-# =============================================================================
-# Rhythmicity violin grid (Period Analysis page)
-# =============================================================================
-
-# Metadata about each algorithm's variables and display. Keep in sync with
-# rhythmicity_classification._ALGO_META.
-_RHYTH_VIOLIN_META = {
-    "ls": {
-        "label": "Lomb-Scargle",
-        "period_var": "ls_period",
-        "metric_var": "ls_power",
-        "metric_label": "LS power (R^2 strength)",
-        "period_label": "LS period (h)",
-        "flag_coord": "ls_rhythmic",
-        "threshold_attr": "ls_power_threshold",
-        "metric_lower_is_rhythmic": False,  # higher power = more rhythmic (LS's RI)
-        "metric_log_y": True,
-    },
-    "ac": {
-        "label": "Autocorrelation",
-        "period_var": "ac_period",
-        "metric_var": "ac_power",
-        "metric_label": "RI (peak autocorr.)",
-        "period_label": "AC period (h)",
-        "flag_coord": "ac_rhythmic",
-        "threshold_attr": "ac_ri_threshold",
-        "metric_lower_is_rhythmic": False,
-        "metric_log_y": False,
-    },
-    "cwt": {
-        "label": "CWT",
-        "period_var": "cwt_period",
-        "metric_var": "cwt_rhythmicity",
-        "metric_label": "CWT rhythmicity",
-        "period_label": "CWT period (h)",
-        "flag_coord": "cwt_rhythmic",
-        "threshold_attr": "cwt_rhythmicity_threshold",
-        "metric_lower_is_rhythmic": False,
-        "metric_log_y": False,
-    },
-    # MESA is a PERIOD method with NO significance test, so its rhythmic call
-    # BORROWS the Autocorrelation RI (`ac_power`) as the strength metric: MESA
-    # supplies the period (`mesa_period`), AC supplies the rhythmicity. The MESA
-    # explorer tab therefore shows the MESA period distribution of the flies AC
-    # calls rhythmic, gated by the AC RI threshold (MESA has no cutoff of its
-    # own). `mesa_power` (peak/median PSD) is still reported in the page-3 summary
-    # table as an informational SNR, just not used to gate here. This entry is
-    # consumed only by threshold_coupled_figure (rhythmicity_violin_grid is unused
-    # by any page), so borrowing ac_power here does not affect other plots.
-    "mesa": {
-        "label": "MESA",
-        "period_var": "mesa_period",
-        "metric_var": "ac_power",  # borrow AC's RI (MESA has no metric)
-        "metric_label": "RI (autocorr. — MESA borrows AC)",
-        "period_label": "MESA period (h)",
-        "flag_coord": "ac_rhythmic",
-        "threshold_attr": "ac_ri_threshold",
-        "metric_lower_is_rhythmic": False,
-        "metric_log_y": False,
-    },
-}
 
 def chi_sq_periodogram_plot(
     chi_ds,
@@ -2777,6 +2896,63 @@ def chi_sq_periodogram_plot(
     fig.update_layout(title=title, height=180 * len(present) + 80)
     return fig
 
+
+
+_RHYTH_VIOLIN_META = {
+    "ls": {
+        "label": "Lomb-Scargle",
+        "period_var": "ls_period",
+        "metric_var": "ls_power",
+        "metric_label": "LS power (R^2 strength)",
+        "period_label": "LS period (h)",
+        "flag_coord": "ls_rhythmic",
+        "threshold_attr": "ls_power_threshold",
+        "metric_lower_is_rhythmic": False,  # higher power = more rhythmic (LS's RI)
+        "metric_log_y": True,
+    },
+    "ac": {
+        "label": "Autocorrelation",
+        "period_var": "ac_period",
+        "metric_var": "ac_power",
+        "metric_label": "RI (peak autocorr.)",
+        "period_label": "AC period (h)",
+        "flag_coord": "ac_rhythmic",
+        "threshold_attr": "ac_ri_threshold",
+        "metric_lower_is_rhythmic": False,
+        "metric_log_y": False,
+    },
+    "cwt": {
+        "label": "CWT",
+        "period_var": "cwt_period",
+        "metric_var": "cwt_rhythmicity",
+        "metric_label": "CWT rhythmicity",
+        "period_label": "CWT period (h)",
+        "flag_coord": "cwt_rhythmic",
+        "threshold_attr": "cwt_rhythmicity_threshold",
+        "metric_lower_is_rhythmic": False,
+        "metric_log_y": False,
+    },
+    # MESA is a PERIOD method with NO significance test, so its rhythmic call
+    # BORROWS the Autocorrelation RI (`ac_power`) as the strength metric: MESA
+    # supplies the period (`mesa_period`), AC supplies the rhythmicity. The MESA
+    # explorer tab therefore shows the MESA period distribution of the flies AC
+    # calls rhythmic, gated by the AC RI threshold (MESA has no cutoff of its
+    # own). `mesa_power` (peak/median PSD) is still reported in the page-3 summary
+    # table as an informational SNR, just not used to gate here. This entry is
+    # consumed only by threshold_coupled_figure (rhythmicity_violin_grid is unused
+    # by any page), so borrowing ac_power here does not affect other plots.
+    "mesa": {
+        "label": "MESA",
+        "period_var": "mesa_period",
+        "metric_var": "ac_power",  # borrow AC's RI (MESA has no metric)
+        "metric_label": "RI (autocorr. — MESA borrows AC)",
+        "period_label": "MESA period (h)",
+        "flag_coord": "ac_rhythmic",
+        "threshold_attr": "ac_ri_threshold",
+        "metric_lower_is_rhythmic": False,
+        "metric_log_y": False,
+    },
+}
 
 
 def _get_group_coord_values(ds: xr.Dataset, group_coord: str = "group") -> np.ndarray:

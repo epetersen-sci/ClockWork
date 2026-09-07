@@ -51,10 +51,50 @@ def test_unsplit_dataset_renders(app, unsplit_ds):
         assert not at.exception, f"{page} raised on an unsplit dataset: {at.exception}"
 
 
+TAB_KEY = "sleep_states_tab"
+
+
+def _open_tab(at, label):
+    """Select a dynamic tab, then rerun.
+
+    A Tab object in AppTest is read-only, so the only handle on the selection
+    is the widget key. It also does NOT survive a rerun triggered by another
+    widget, so it has to be re-asserted immediately before any `.run()` that
+    follows a click — otherwise the page falls back to the landing tab and the
+    assertions silently measure the wrong panel.
+    """
+    at.session_state[TAB_KEY] = label
+    return at.run()
+
+
+def test_sleep_states_tabs_are_gated(app, states_ds):
+    """Only the OPEN tab's figures may render.
+
+    st.tabs renders every tab's content by default, so this page used to draw
+    all nineteen figures — waveforms, six initiation rows, six rose rows, six
+    gating rings — on 189 flies for whichever single tab the user was looking
+    at. With on_change="rerun" plus `tab.open` guards, the landing tab draws
+    one figure.
+    """
+    at = app(ds=states_ds, page="sleep_states")
+    assert not at.exception
+    landing = len(at.get("plotly_chart"))
+    assert landing == 1, (
+        f"the Waveforms tab should draw exactly one figure, got {landing} — "
+        "the tab guards are not holding"
+    )
+
+    # Selecting a tab through its key is the only route a headless AppTest has;
+    # its Tab objects are read-only.
+    at = _open_tab(at, "Rose & gating (Fig 3)")
+    assert not at.exception
+    assert len(at.get("plotly_chart")) > landing, "the rose tab drew nothing"
+
+
 def test_sleep_states_wavelet_button_runs(app, states_ds):
-    """The Sleep states page keeps its wavelet run behind a button, so the
-    parametrised smoke tests above never touch it — and it is the one path on
-    that page that can fail on real data while an empty render looks fine.
+    """The wavelet run is behind a button on a tab that is closed by default, so
+    nothing else on this page reaches it — and it is the one path here that can
+    fail on real data while an empty render looks fine.
 
     It caught two things worth keeping a test for: the page passed
     ``phase="both"``, which the period-analysis phase guard rejects outright,
@@ -63,12 +103,21 @@ def test_sleep_states_wavelet_button_runs(app, states_ds):
     into NaN.
     """
     at = app(ds=states_ds, page="sleep_states")
+    at = _open_tab(at, "Scalograms (Fig 5)")
+
     buttons = [b for b in at.button if "wavelet" in b.label.lower()]
     assert buttons, "the wavelet run button is missing"
 
-    at = buttons[0].click().run()
+    buttons[0].click()
+    at = _open_tab(at, "Scalograms (Fig 5)")
     assert not at.exception, f"the wavelet run raised: {at.exception}"
     assert not at.error, f"the page reported an error: {[e.value for e in at.error]}"
-    # Scalograms, period-vs-amplitude and the ultradian tab all draw once the
-    # results are in session state.
-    assert len(at.get("plotly_chart")) > 5
+    assert "sleep_states_cwt" in at.session_state, "no results were stored"
+    # The scalogram and the period-vs-amplitude figure.
+    assert len(at.get("plotly_chart")) >= 2
+
+    # The Ultradian tab reads the same session-state results, which is why the
+    # run is not wrapped in a fragment.
+    at = _open_tab(at, "Ultradian (Fig 6)")
+    assert not at.exception
+    assert len(at.get("plotly_chart")) >= 2, "the ultradian tab lost the results"

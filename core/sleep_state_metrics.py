@@ -86,7 +86,10 @@ def _zt_minutes_of(ds, values):
     values = np.asarray(values)
     if np.issubdtype(values.dtype, np.integer) or np.issubdtype(values.dtype, np.floating):
         return values.astype(float) % MINUTES_PER_DAY
-    ref_start = pd.to_datetime(ds["start_datetime"].values[0])
+    # Select by dimension name rather than a bare [0]: this is the first fly's
+    # start, and `get_zt_binned_dataframe` uses the same reference so absolute-
+    # time datasets bin identically here and there.
+    ref_start = pd.to_datetime(ds["start_datetime"].isel(id=0).values)
     deltas = (pd.to_datetime(values) - ref_start).total_seconds() / 60.0
     return np.asarray(deltas, dtype=float) % MINUTES_PER_DAY
 

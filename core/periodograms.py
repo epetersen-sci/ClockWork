@@ -3107,6 +3107,36 @@ def mesa_analysis(
 # ===========================================================================
 
 
+def _bin_offset(all_time, clean_time, bin_size):
+    """Index of a clean run's first bin on the shared binned grid.
+
+    Each fly is reduced to its longest continuous stretch, which may start well
+    after the epoch does. The group surface is accumulated on one grid derived
+    from the whole time axis, so every fly needs the offset of its own run —
+    without it a fly whose data begins on day 3 gets averaged into day 0.
+
+    Handles both time representations: relative integer minutes subtract
+    directly, datetimes go through a timedelta.
+    """
+    if len(clean_time) == 0:
+        return 0
+    start, first = np.asarray(all_time)[0], np.asarray(clean_time)[0]
+    if np.issubdtype(np.asarray(all_time).dtype, np.integer) or np.issubdtype(
+        np.asarray(all_time).dtype, np.floating
+    ):
+        minutes = float(first) - float(start)
+    else:
+        minutes = (
+            np.asarray(first, dtype="datetime64[s]")
+            - np.asarray(start, dtype="datetime64[s]")
+        ).astype("timedelta64[s]").astype(float) / 60.0
+    return max(0, int(round(minutes / bin_size)))
+
+
+# Bin width of the sleep-state CWT path, in minutes (STAR Methods).
+SLEEP_CWT_BIN_MINUTES = 5
+
+
 def sleep_cwt_analysis(
     ds,
     states=("standard", "short", "intermediate", "long"),
@@ -3225,6 +3255,11 @@ def sleep_cwt_analysis(
           sleep_cwt_<state>_<range>_fly_power      (id, period) per-fly avg power spectrum
           sleep_cwt_<state>_ultradian_amplitude    (id, time) mean ultradian power per fly
     """
+    # 5-minute binning is fixed by the method, not a per-fly choice: "Sleep
+    # timeseries for all three states of sleep were binned in 5-min intervals
+    # and subjected to Continuous Wavelet Transforms."
+    bin_size = SLEEP_CWT_BIN_MINUTES
+
     var_map = {
         "standard": "sleep",
         "short": "sleep_short",
@@ -3283,11 +3318,31 @@ def sleep_cwt_analysis(
             # individual surfaces: the two per-fly outputs (a time-averaged
             # spectrum and an ultradian amplitude trace) are both reductions
             # that can be taken as each fly finishes.
-            surface_sum = None  # (n_periods, n_t) running sum
-            n_surfaces = 0
+            #
+            # Flies are accumulated ONTO A SHARED TIME GRID at each fly's own
+            # offset, with a per-cell count, rather than being left-aligned and
+            # cropped to the shortest. Both halves of that matter:
+            #
+            # - Cropping to the shortest run threw away most of the recording.
+            #   On a real 31-fly group whose median clean run is 9 days, three
+            #   flies with 1.1-, 2.3- and 3.4-day runs cut the GROUP surface to
+            #   3.4 days. (Before each fly was reduced to its longest clean run
+            #   this never bit, because every fly then had the full time axis.)
+            # - Re-zeroing each run to t=0 misaligned them. A fly whose clean
+            #   stretch begins on day 3 would have its day-3 column averaged
+            #   into everyone else's day 0, smearing exactly the daily
+            #   structure these scalograms exist to show — and mislabelling the
+            #   "days since start" axis.
+            #
+            # A cell covered by no fly stays NaN rather than 0, so a partly
+            # covered surface reads as missing instead of as an absence of
+            # rhythm.
+            n_bins_total = max(1, len(time_vals) // bin_size)
+            surface_sum = None  # (n_periods, n_bins_total)
+            surface_count = None
             fly_period_axes = None
             fly_spectra = []  # per-fly time-averaged spectrum, or None
-            fly_ultradian_amps = []  # list of (n_timepoints,) arrays
+            fly_ultradian_amps = []  # list of (offset, values) or None
 
             for fly_id in all_fly_ids:
                 fly_da = analysis_ds[var].sel(id=fly_id)
@@ -3314,7 +3369,6 @@ def sleep_cwt_analysis(
                     continue
 
                 # Bin to 5-minute intervals by summing
-                bin_size = 5  # minutes
                 if time_is_int:
                     n_bins = len(clean) // bin_size
                     if n_bins == 0:
@@ -3380,18 +3434,21 @@ def sleep_cwt_analysis(
 
                 power = power.astype(np.float32)
 
-                # Fold into the running mean. A fly whose series came out
-                # shorter (a ragged time axis) crops the accumulator rather
-                # than being padded, which is what the old min-length stack
-                # did once every surface was in hand.
-                if surface_sum is None:
-                    surface_sum = power.astype(np.float64)
-                else:
-                    keep = min(surface_sum.shape[1], power.shape[1])
-                    surface_sum = surface_sum[:, :keep] + power[:, :keep]
-                n_surfaces += 1
+                # Where this fly's clean run starts on the shared grid.
+                offset = _bin_offset(time_vals, clean_time, bin_size)
+                take = min(power.shape[1], n_bins_total - offset)
+                if take <= 0:
+                    fly_spectra.append(None)
+                    fly_ultradian_amps.append(None)
+                    continue
 
-                fly_spectra.append(np.mean(power, axis=1))
+                if surface_sum is None:
+                    surface_sum = np.zeros((power.shape[0], n_bins_total))
+                    surface_count = np.zeros(n_bins_total, dtype=np.int32)
+                surface_sum[:, offset : offset + take] += power[:, :take]
+                surface_count[offset : offset + take] += 1
+
+                fly_spectra.append(np.mean(power[:, :take], axis=1))
 
                 # Extract ultradian amplitude from ultradian sub-range
                 if range_name == "ultradian" or (
@@ -3400,7 +3457,11 @@ def sleep_cwt_analysis(
                     u_min, u_max = ultradian_range
                     u_mask = (fly_period_axes >= u_min) & (fly_period_axes <= u_max)
                     if np.any(u_mask):
-                        fly_ultradian_amps.append(np.mean(power[u_mask], axis=0))
+                        # Carry the offset so the per-fly traces line up on the
+                        # shared grid too, not just the averaged surface.
+                        fly_ultradian_amps.append(
+                            (offset, np.mean(power[u_mask, :take], axis=0))
+                        )
                     else:
                         fly_ultradian_amps.append(None)
                 else:
@@ -3411,12 +3472,27 @@ def sleep_cwt_analysis(
                     total_ops = n_flies * len(states) * len(ranges_to_run)
                     progress_callback(completed, total_ops)
 
-            # Group-average normalised surfaces
-            if surface_sum is None or n_surfaces == 0 or fly_period_axes is None:
+            # Group-average normalised surfaces: per-cell mean over the flies
+            # that actually cover each time bin.
+            if surface_sum is None or fly_period_axes is None:
+                continue
+            if not surface_count.any():
                 continue
 
-            avg_surface = (surface_sum / n_surfaces).astype(np.float32)
-            min_t = avg_surface.shape[1]
+            with np.errstate(invalid="ignore"):
+                avg_surface = surface_sum / np.where(surface_count > 0, surface_count, np.nan)
+            avg_surface = avg_surface.astype(np.float32)
+
+            # Trim bins no fly covers off BOTH ends, so column 0 is the first
+            # minute anyone contributed. The shared grid spans the whole time
+            # axis, and a select_phase() view masks the out-of-phase epoch — on
+            # a DD view of a 6-day recording that is two empty leading days,
+            # which the scalogram would otherwise render as blank and label
+            # "days since start of constant darkness". Interior gaps stay NaN.
+            covered = np.flatnonzero(surface_count > 0)
+            lo, hi = int(covered[0]), int(covered[-1]) + 1
+            avg_surface = avg_surface[:, lo:hi]
+            trim_lo, min_t = lo, avg_surface.shape[1]
 
             surf_var = f"sleep_cwt_{state}_{range_name}_avg_surface"
             pax_var = f"sleep_cwt_{state}_{range_name}_period_axis"
@@ -3458,11 +3534,18 @@ def sleep_cwt_analysis(
                 for amp in fly_ultradian_amps:
                     row = np.full(min_t, np.nan)
                     if amp is not None:
-                        # A fly can be shorter than the accumulated surface as
-                        # well as longer, so write into the row instead of
-                        # slicing — np.stack needs every row the same length.
-                        take = min(min_t, len(amp))
-                        row[:take] = amp[:take]
+                        # Written in at the fly's own offset, so a fly whose
+                        # clean run starts late leaves NaN before it rather
+                        # than shifting its trace to day 0.
+                        off, values = amp
+                        # Same trim as the surface, so the amplitude traces and
+                        # the scalogram share one x axis.
+                        off -= trim_lo
+                        start = max(0, off)
+                        src = max(0, -off)
+                        n = min(len(values) - src, min_t - start)
+                        if n > 0:
+                            row[start : start + n] = values[src : src + n]
                     amp_arrays.append(row)
 
                 amp_tdim = f"cwt_tbin_{state}_ultradian"

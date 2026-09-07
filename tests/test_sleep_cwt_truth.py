@@ -257,3 +257,127 @@ class TestFullPipeline:
             f"surface spans {n_bins} five-minute bins but only "
             f"{in_phase_minutes} minutes are in phase"
         )
+
+
+class TestRaggedFliesOnASharedGrid:
+    """Flies whose usable stretch is short, or starts late, must not distort the
+    group surface. Both of these appeared on real data the moment each fly was
+    reduced to its longest clean run — before that every fly spanned the full
+    axis and neither could bite.
+    """
+
+    @staticmethod
+    def _hole(ds, fly_idx, lo, hi):
+        """NaN out a span of one fly, in whichever dim order each var uses."""
+        out = ds.copy(deep=True)
+        for var in ("activity", "moving", "sleep", "sleep_short", "sleep_intermediate", "sleep_long"):
+            if var not in out.data_vars:
+                continue
+            da = out[var].transpose("id", "time").astype(float)
+            values = da.values
+            values[fly_idx, lo:hi] = np.nan
+            out[var] = da.copy(data=values)
+        return out
+
+    def test_one_short_fly_does_not_crop_the_group_surface(self, states_ds):
+        """Measured on a real 31-fly group: three flies with 1.1-, 2.3- and
+        3.4-day usable runs cut the GROUP surface from 9 days to 3.4, because
+        the accumulator cropped to the running minimum length."""
+        from periodograms import sleep_cwt_analysis
+
+        clean = sleep_cwt_analysis(states_ds, states=("long",), phase="DD")
+        full_bins = clean["sleep_cwt_long_full_avg_surface"].shape[1]
+
+        # Leave one fly only a short usable stretch at the end of the epoch.
+        n_time = states_ds.sizes["time"]
+        maimed = self._hole(states_ds, 0, 0, int(n_time * 0.9))
+        out = sleep_cwt_analysis(maimed, states=("long",), phase="DD")
+        assert out["sleep_cwt_long_full_avg_surface"].shape[1] == full_bins, (
+            "a single short fly shortened the whole group surface"
+        )
+
+    def test_a_late_starting_fly_lands_at_its_own_offset(self, states_ds):
+        """Re-zeroing each clean run to t=0 would average a fly's day-5 column
+        into everyone else's day 0, smearing the daily structure the scalogram
+        exists to show."""
+        from periodograms import sleep_cwt_analysis
+
+        n_time = states_ds.sizes["time"]
+        # Every fly but one loses the FIRST half, so the early bins are covered
+        # by that single intact fly alone.
+        maimed = states_ds.copy(deep=True)
+        for idx in range(1, maimed.sizes["id"]):
+            maimed = self._hole(maimed, idx, 0, n_time // 2)
+
+        out = sleep_cwt_analysis(maimed, states=("long",), phase="DD")
+        amp = out["sleep_cwt_long_ultradian_amplitude"].transpose("id", ...).values
+
+        # Count flies per column rather than guessing where the epoch starts:
+        # the first covered column must belong to the one intact fly alone, and
+        # later columns to many. Left-aligning every run would put them all in
+        # the first column.
+        per_column = np.isfinite(amp).sum(axis=0)
+        first = int(np.flatnonzero(per_column > 0)[0])
+        assert per_column[first] == 1, (
+            f"{per_column[first]} flies cover the first column; only the intact "
+            "one should, so late runs are being shifted to the start"
+        )
+        assert per_column.max() > 1, "the maimed flies never appear at all"
+
+    def test_leading_uncovered_bins_are_trimmed(self, states_ds):
+        """Column 0 must be the first minute some fly contributed.
+
+        The shared grid spans the whole time axis, and a select_phase() view
+        masks the out-of-phase epoch — on a DD view of a six-day recording that
+        is two empty leading days. Left in, the scalogram would render them
+        blank under an axis labelled "days since start of constant darkness".
+        """
+        from periodograms import sleep_cwt_analysis
+
+        out = sleep_cwt_analysis(states_ds, states=("long",), phase="DD")
+        surface = out["sleep_cwt_long_full_avg_surface"].values
+        assert np.isfinite(surface[:, 0]).any(), "the first column is empty"
+        assert np.isfinite(surface[:, -1]).any(), "the last column is empty"
+
+        # And the retained span must be the DD epoch, not the whole recording.
+        in_phase = int(np.isfinite(states_ds["sleep_long"].transpose("id", "time").values[0]).sum())
+        assert surface.shape[1] <= in_phase // 5 + 1
+
+    def test_the_surface_spans_the_union_of_the_flies(self, states_ds):
+        """Flies whose usable runs cover different parts of the epoch must be
+        combined over the UNION of their spans, each cell averaged over just
+        the flies that reach it.
+
+        Cropping to a common length would keep only the intersection, and a
+        fixed divisor would dilute the sparsely covered columns toward zero.
+        """
+        from periodograms import sleep_cwt_analysis
+
+        n_time = states_ds.sizes["time"]
+        n_id = states_ds.sizes["id"]
+        maimed = states_ds.copy(deep=True)
+        # Half the flies lose the front of the recording, half lose the back,
+        # so their longest clean runs fall on opposite sides.
+        for idx in range(n_id):
+            if idx % 2:
+                maimed = self._hole(maimed, idx, 0, int(n_time * 0.45))
+            else:
+                maimed = self._hole(maimed, idx, int(n_time * 0.55), n_time)
+
+        out = sleep_cwt_analysis(maimed, states=("long",), phase="DD")
+        amp = out["sleep_cwt_long_ultradian_amplitude"].transpose("id", ...).values
+        per_column = np.isfinite(amp).sum(axis=0)
+        assert per_column.max() >= 1
+
+        # Coverage must VARY across the record — that is the signature of a
+        # per-cell divisor over a union rather than one common window.
+        assert per_column.min() < per_column.max(), (
+            "every column is covered by the same number of flies, so the "
+            "surface is an intersection, not a union"
+        )
+        # And the front-covering and back-covering halves must both appear.
+        first_half = per_column[: len(per_column) // 2].sum()
+        second_half = per_column[len(per_column) // 2 :].sum()
+        assert first_half > 0 and second_half > 0, (
+            "one group of flies is missing from the combined surface"
+        )
