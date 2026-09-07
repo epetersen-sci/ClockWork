@@ -183,3 +183,51 @@ def app():
         return at.run()
 
     return _make
+
+
+def _build_with_sleep_structure(n_per_group=3, groups=("ctrl", "mut"), seed=1):
+    """Like ``_build`` but with immobility long enough to make real bouts.
+
+    ``_build``'s ``moving`` flickers with Poisson noise, so it yields almost no
+    bout over 60 minutes and every long-sleep figure comes out empty. The
+    sleep-state work needs all three states populated, so this lays down an
+    explicit structure: mostly immobile through the subjective night, mostly
+    mobile through the day, and a siesta — which is also roughly what a real
+    fly does, and what makes the rose plots and the CWT non-degenerate.
+    """
+    rng = np.random.default_rng(seed)
+    ds = _build(n_per_group=n_per_group, groups=groups, with_sleep=False, seed=seed)
+    n_time = ds.sizes["time"]
+    n_id = ds.sizes["id"]
+    minute_of_day = (ds["time"].values % MINUTES_PER_DAY).astype(int)
+
+    moving = np.zeros((n_time, n_id), dtype=np.float32)
+    for fly in range(n_id):
+        # Base probability of moving by time of day: awake ZT0-12 with a
+        # midday siesta, asleep ZT12-24.
+        p = np.where(minute_of_day < 12 * 60, 0.55, 0.04)
+        siesta = (minute_of_day >= 5 * 60) & (minute_of_day < 8 * 60)
+        p = np.where(siesta, 0.10, p)
+        # A per-fly offset so no two flies are identical (identical traces make
+        # two figures serialize the same and trip StreamlitDuplicateElementId).
+        p = np.clip(p + 0.03 * (fly - n_id / 2) / n_id, 0.01, 0.95)
+        moving[:, fly] = (rng.random(n_time) < p).astype(np.float32)
+
+    ds["moving"] = (("time", "id"), moving)
+    ds["activity"] = (("time", "id"), (moving * rng.poisson(4, (n_time, n_id))).astype(np.float32))
+    return ds
+
+
+@pytest.fixture(scope="session")
+def states_ds():
+    """Master dataset with sleep states and the per-bout table really computed.
+
+    Runs the production ``sleep_analysis`` rather than hand-writing masks, so
+    the bout table, the state labels and the masks are guaranteed consistent
+    with each other the way the pages require.
+    """
+    import sleep_analysis
+
+    return sleep_analysis.sleep_analysis(
+        _build_with_sleep_structure(), phase="both", sleep_threshold_sec=300
+    )
