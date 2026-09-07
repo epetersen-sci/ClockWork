@@ -28,10 +28,6 @@ builder means they cannot drift again.
 
 import os
 
-#: ``(id, time)`` vars stored as int8 with ``-1`` for "no data". Slicing pads with
-#: NaN, which forces a float upcast, so they are restored after a phase slice.
-_INT8_SLEEP_VARS = ("sleep", "sleep_short", "sleep_intermediate", "sleep_long")
-
 
 def phase_slice(ds, phase):
     """Physically slice ``ds`` into an ``'LD'`` or ``'DD'`` dataset, using the
@@ -62,15 +58,12 @@ def phase_slice(ds, phase):
         kwargs["discard_first_dd_day"] = bool(ds.attrs.get("split_discard_first_dd_day", 0))
     sliced = dam_utilities.split_xarray_dataset(ds, **kwargs)
 
-    # §2b: the trim pads with NaN, which upcasts the int8 sleep masks to float.
-    # Restore int8 (padding/missing → -1) so a sliced dataset carries the same
-    # dtypes as the master. This used to live in sleep_detection.py, where it ran
-    # on every sleep computation to keep the caches consistent; it belongs at the
-    # point of slicing, which is now here. Dropping it would silently change the
-    # dtype of every per-phase .nc from int8 to float64.
-    for var in _INT8_SLEEP_VARS:
-        if var in sliced.data_vars:
-            sliced[var] = sliced[var].fillna(-1).astype("int8")
+    # No dtype repair needed. The trim used to cast integer vars to float so it
+    # could write NaN sentinels, and this function cast them back — a round trip
+    # that existed only because the masking could not express "missing" for an
+    # int. _select_longest_segments now masks by dimension name and writes each
+    # dtype's own sentinel (-1 for the int8 sleep masks), so they arrive here
+    # already int8. Backlog item 16.
     return sliced
 
 

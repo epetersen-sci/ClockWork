@@ -17,9 +17,9 @@ They were triaged into these sections:
 one item is closed, so the section is gone. The letter is not reused, for the
 same reason item numbers are not.)
 
-**All thirteen triaged issues, plus two found while fixing them, are closed.**
-One new issue is open — item 16, found by an xarray review — plus one held
-decision (item 6).
+**Every issue in this file is closed except one held decision (item 6).**
+Thirteen from the original triage, plus three found while fixing them (14, 15,
+16).
 
 **Item numbers are original and stable.** They are referenced from the
 reorganization PR and from the commits that closed them, so they are not renumbered
@@ -41,8 +41,7 @@ than no line number.
 
 ## What this file is for now
 
-Section A holds one item (16). Two habits from clearing the rest are worth
-keeping:
+Section A is empty. Three habits from clearing it are worth keeping:
 
 **Capture a baseline before any item whose Verify step says "same as before".**
 Item 5 needed one and it paid for itself — 721 of 724 SCAMP files matched
@@ -54,6 +53,12 @@ a copy, then re-run and `sha256sum -c` after the change.
 table was missing two of five, and item 3's Verify step asked for a difference
 the code could not produce. Both are recorded in their Done entries.
 
+**Check whether `example_data` can even reach the code you changed.** It is real
+lab data, but it is one experiment: its monitors are all two digits (so item 13's
+trigger cannot occur) and no fly has a gap (so item 16's trim never fires). Twice
+a "clean" verification run proved only that the trigger was absent. Build the
+triggering case from copies — items 13 and 16 both do.
+
 There is now a test suite (`tests/`, run by CI on every PR), so a Verify step can
 usually become a test rather than a one-off check done by hand. `tests/README.md`
 covers what the fixtures do and do not imitate.
@@ -62,62 +67,12 @@ covers what the fixtures do and do not imitate.
 
 # A. Ready to fix
 
-## 16. The gap trim masks `(id, time)` variables on the wrong axis
+**Empty.** Every item triaged here has been closed — see [D. Done](#d-done).
+What remains is one held decision (item 6).
 
-`core/dam_utilities.py:1076-1079`, inside `_select_longest_segments`. The loop
-that blanks each fly's out-of-segment minutes indexes `[time, fly]`:
-
-```python
-for fly_idx, info in enumerate(segment_info):
-    arr[: info["segment_start_idx"], fly_idx] = np.nan
-    if info["segment_end_idx"] + 1 < arr.shape[0]:
-        arr[info["segment_end_idx"] + 1 :, fly_idx] = np.nan
-```
-
-**Dimension order is not uniform in this codebase.** `activity` and `moving` are
-`(time, id)`; the four sleep masks are `(id, time)`. `activity` has its own
-correctly-shaped block above, so the sleep masks are the casualties, and they
-are hit twice over:
-
-- The **trimmed fly keeps** its out-of-segment sleep — the data the trim exists
-  to discard survives into the export.
-- **Every other fly** gets a spurious `-1` at low time indices.
-- The tail branch tests `end_idx + 1 < arr.shape[0]`, but `shape[0]` is `n_id`
-  for these vars, so it is essentially never true and the post-gap tail is never
-  masked at all.
-
-Reproduced on the test fixture (6 flies × 8640 min, one 1200-min gap in fly 0,
-sliced to DD):
-
-```
-moving (time,id) masked per fly: [2321, 0, 0, 0, 0, 0]   <- correct
-sleep  (id,time)     -1 per fly: [   1, 1, 1, 1, 1, 1]   <- wrong on both counts
-```
-
-This reaches real output: `export_helpers.phase_slice` →
-`split_xarray_dataset` → the per-phase `.nc` written by `export_data.py` and the
-SCAMP files written by `export_scamp.py`.
-
-**Fix.** Mask in xarray so it broadcasts by dim NAME rather than by position:
-build one `(id, time)` boolean `keep` DataArray from `segment_info` and apply
-`xr.where(keep, da, sentinel)` per variable. The repo already has the pattern —
-`select_phase` restores dim order with `masked[var] = m.transpose(*da.dims)`
-(`core/dam_utilities.py:1384`), and every other numpy drop-out in `core/` calls
-`.transpose("time", "id")` first. Doing it in xarray also removes the explicit
-`astype(float)` above, so the int8 sleep masks would never need restoring
-afterwards — which would let `export_helpers.phase_slice` drop its int8 repair
-block entirely.
-
-**Verify.** A fly with a ≥60-minute gap must lose the same minutes from `sleep`
-as from `moving`, and a fly without a gap must lose none. `tests/conftest.py`
-already builds the mixed dim order deliberately, so the fixture is one punched
-gap away from covering it. Then re-run the SCAMP baseline diff from item 5 —
-this changes exported values, so the 721-of-724 byte match will move, and the
-files that change should be exactly the trimmed flies.
-
-**Found by** an xarray-skill review of the item 12/10/7 branch, and verified
-before filing. Not fixed there because it is pre-existing, changes exported
-numbers, and wants its own baseline diff.
+New issues go here as they are found, with the same shape the closed ones had:
+a Decision, a numbered Fix, and a Verify step that says what to check rather
+than "it works".
 
 
 # B. Held
@@ -159,6 +114,30 @@ and `trim_first_dd_day`. These can go with whichever decision item 6 reaches.
 
 Closed items, newest first. The full description of each lives in the commit that closed
 it — `git show <sha>` — rather than being kept here, so this section stays an index.
+
+## 16. The gap trim masked `(id, time)` variables on the wrong axis
+
+`_select_longest_segments` now builds one boolean `keep` over `("id", "time")`
+and lets xarray broadcast it, so dimension order is irrelevant. Each dtype keeps
+its own missing marker (`-1` for the int8 sleep masks), which removed the
+`astype(float)` upcast and let `export_helpers.phase_slice` drop its int8 repair
+block entirely.
+
+Measured on a dataset with one 180-minute gap (31 flies trimmed):
+
+| | trimmed fly | untrimmed fly |
+|---|---|---|
+| before | sleep 211 missing vs moving 1080 | sleep 31 missing |
+| after | sleep 1080 vs moving 1080 | sleep 0 |
+
+So ~869 minutes per trimmed fly that the trim exists to discard were kept, and
+every fly picked up one spurious missing marker per trimmed fly.
+
+**Correcting the scope this entry originally claimed:** it reached the per-phase
+`.nc`, NOT the SCAMP export. SCAMP writes `activity`, which had its own
+correctly-shaped masking block and was never affected. Verified: the SCAMP
+output is byte-identical before and after on both a clean dataset (724/724
+files) and the gap dataset (722/722).
 
 ## 13. Datasets built before the fly/metadata mislabeling fix
 

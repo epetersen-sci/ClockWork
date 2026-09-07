@@ -1061,23 +1061,41 @@ def _select_longest_segments(ds, gap_threshold_minutes=60):
     # Write modified activity back
     ds["activity"].values = activity
 
-    # Also mask any other (time, id) data variables consistently
+    # Also mask every other per-fly time series consistently.
+    #
+    # BY DIMENSION NAME, not by axis position. This loop used to index
+    # `arr[:start, fly_idx]`, i.e. [time, fly] — but dimension order is NOT
+    # uniform here: `activity` and `moving` are (time, id) while the sleep masks
+    # are (id, time). For those, [time, fly] blanked the wrong axis entirely:
+    # the trimmed fly kept the out-of-segment data the trim exists to discard,
+    # every OTHER fly picked up a spurious sentinel at low time indices, and the
+    # tail branch compared a time index against `arr.shape[0]` (= n_id), so the
+    # post-gap tail was never masked at all. Building one boolean `keep` over
+    # ("id", "time") and letting xarray broadcast it makes the dim order
+    # irrelevant, which is the whole point of labelled arrays.
+    keep = xr.DataArray(
+        np.ones((ds.sizes["id"], ds.sizes["time"]), dtype=bool),
+        dims=("id", "time"),
+        coords={"id": ds["id"], "time": ds["time"]},
+    )
+    for fly_idx, info in enumerate(segment_info):
+        keep[fly_idx, : info["segment_start_idx"]] = False
+        keep[fly_idx, info["segment_end_idx"] + 1 :] = False
+
     for var in ds.data_vars:
         if var == "activity":
             continue
         if "time" in ds[var].dims and "id" in ds[var].dims:
-            arr = ds[var].values
-            # Only mask float-compatible vars (int vars like 'moving' need
-            # conversion to float to support NaN)
-            if np.issubdtype(arr.dtype, np.integer):
-                arr = arr.astype(float)
-                ds[var] = ds[var].astype(float)
-                ds[var].values = arr
-            for fly_idx, info in enumerate(segment_info):
-                arr[: info["segment_start_idx"], fly_idx] = np.nan
-                if info["segment_end_idx"] + 1 < arr.shape[0]:
-                    arr[info["segment_end_idx"] + 1 :, fly_idx] = np.nan
-            ds[var].values = arr
+            da = ds[var]
+            # Each dtype keeps its own missing marker, so nothing is upcast.
+            # Integer (id, time) vars in this codebase are the sleep masks, whose
+            # documented no-data sentinel is -1 (§2a: never 0, which is a real
+            # value). Previously they were cast to float to hold NaN and then
+            # cast back by export_helpers.phase_slice — a round trip that only
+            # existed because this function could not express "missing" for an
+            # int. astype() restores the dtype after xr.where, which promotes.
+            sentinel = -1 if np.issubdtype(da.dtype, np.integer) else np.nan
+            ds[var] = xr.where(keep, da, sentinel).astype(da.dtype).transpose(*da.dims)
 
     # Trim shared time axis: drop timepoints where ALL flies are NaN
     any_valid = np.any(np.isfinite(ds["activity"].values), axis=1)
