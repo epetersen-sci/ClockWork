@@ -79,15 +79,20 @@ def test_sleep_states_tabs_are_gated(app, states_ds):
     at = app(ds=states_ds, page="sleep_states")
     assert not at.exception
     landing = len(at.get("plotly_chart"))
-    assert landing == 1, (
-        f"the Waveforms tab should draw exactly one figure, got {landing} — "
-        "the tab guards are not holding"
+    # The Waveforms tab draws one panel per epoch present (Figure 1B prints LD
+    # beside DD), so at most two. Anything more means another tab's figures
+    # rendered too.
+    assert landing <= 2, (
+        f"the Waveforms tab drew {landing} figures — at most two epochs are "
+        "expected, so the tab guards are not holding"
     )
 
     # Selecting a tab through its key is the only route a headless AppTest has;
     # its Tab objects are read-only.
     at = _open_tab(at, "Rose & gating (Fig 3)")
     assert not at.exception
+    # One rose row and one gating ring per group, so strictly more than the
+    # waveform tab drew — and proof the guard lets the OPEN tab through.
     assert len(at.get("plotly_chart")) > landing, "the rose tab drew nothing"
 
 

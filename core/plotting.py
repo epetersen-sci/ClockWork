@@ -1092,7 +1092,9 @@ def _get_group_colors(groups):
     return {g: palette[i % len(palette)] for i, g in enumerate(sorted(groups))}
 
 
-def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profiles"):
+def normalized_waveform_overlay(
+    waveform_df, phase_label="DD", title="Normalized Daily Sleep Profiles"
+):
     """
     Overlay normalized daily sleep waveforms for multiple sleep states.
 
@@ -1106,6 +1108,10 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
         Output of sleep_state_metrics.compute_normalized_waveforms().
         Columns: 'group', 'state', 'zt_bin_minute', 'mean_normalized',
                  'sem_normalized'.
+    phase_label : {'DD', 'LD'}
+        Sets the time axis label and the day/night shading. Under DD the axis
+        is CT and both halves are subjective, so the "day" half is shaded too;
+        calling it ZT there would name the wrong timescale.
     title : str
 
     Returns
@@ -1115,7 +1121,7 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
     # Paper colours, shared with every other Abhilash-figure renderer. The
     # literals that used to sit here were Plotly's default cycle, which gave
     # short sleep the paper's long-sleep blue and long sleep its activity red.
-    STATE_COLORS, _ = _state_palette()
+    STATE_COLORS, STATE_LABELS = _state_palette()
     DASH_STYLES = ["solid", "dash", "dot", "dashdot", "longdash"]
 
     if waveform_df.empty:
@@ -1145,7 +1151,8 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
             y = sdf["mean_normalized"].values
             sem = sdf["sem_normalized"].values
 
-            name = f"{state} ({group})" if len(groups) > 1 else state
+            label = STATE_LABELS.get(state, state)
+            name = f"{label} ({group})" if len(groups) > 1 else label
 
             fig.add_trace(
                 go.Scatter(
@@ -1174,12 +1181,17 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
                 )
             )
 
-    # Light/dark shading (assuming LD 12:12)
-    fig.add_vrect(x0=12, x1=24, fillcolor="rgba(0,0,0,0.08)", layer="below", line_width=0)
+    # Two-tone under DD (both halves subjective), one dark block under LD.
+    for x0, x1, fill in _day_night_spans(phase_label):
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=fill, layer="below", line_width=0)
 
     fig.update_layout(
         title=title,
-        xaxis=dict(title="ZT (hours)", range=[0, 24], dtick=4),
+        xaxis=dict(
+            title=f"{'CT' if phase_label == 'DD' else 'ZT'} (hours)",
+            range=[0, 24],
+            dtick=4,
+        ),
         yaxis=dict(title="Normalized sleep (fraction of max)", range=[0, 1.05]),
         hovermode="x unified",
         legend=dict(orientation="v"),
@@ -1187,28 +1199,38 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
     return fig
 
 
-def _night_shading(fig, phase_label, row, col, n_rows):
-    """Grey the dark phase, per panel.
+def _day_night_spans(phase_label):
+    """Day/night shading for a 0-24 h Cartesian axis, as (x0, x1, fill) spans.
 
-    Figure 2 shades the LD night as one dark block, and under DD shades the
-    subjective day light grey and the subjective night dark grey. Drawn per
-    panel rather than with ``row="all"`` because a secondary y axis makes the
-    all-rows form ambiguous.
+    One definition shared by every Cartesian panel here. Under DD BOTH halves
+    are subjective, so the paper shades the day light grey and the night dark
+    grey; under LD only the real dark phase is shaded. Returns nothing for a
+    ramped light cycle, which the paper annotates instead of shading.
     """
     if phase_label == "DD":
+        return [(0, 12, "rgba(0,0,0,0.05)"), (12, 24, "rgba(0,0,0,0.13)")]
+    if phase_label == "LD":
+        return [(12, 24, "rgba(0,0,0,0.16)")]
+    return []
+
+
+def _night_shading(fig, phase_label, row, col, n_rows):
+    """Grey the dark phase on one panel, from the shared spans.
+
+    Drawn per panel rather than with ``row="all"`` because a secondary y axis
+    makes the all-rows form ambiguous.
+    """
+    for x0, x1, fill in _day_night_spans(phase_label):
         fig.add_vrect(
-            x0=0, x1=12, fillcolor="rgba(0,0,0,0.05)", line_width=0, layer="below",
-            row=row, col=col,
+            x0=x0,
+            x1=x1,
+            fillcolor=fill,
+            line_width=0,
+            layer="below",
+            row=row,
+            col=col,
         )
-        fig.add_vrect(
-            x0=12, x1=24, fillcolor="rgba(0,0,0,0.13)", line_width=0, layer="below",
-            row=row, col=col,
-        )
-    else:
-        fig.add_vrect(
-            x0=12, x1=24, fillcolor="rgba(0,0,0,0.16)", line_width=0, layer="below",
-            row=row, col=col,
-        )
+
 
 def state_profile_plot(
     profile_stats,

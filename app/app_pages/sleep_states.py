@@ -29,6 +29,7 @@ at them — nineteen figures on 189 flies for the one the user was actually on.
 """
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 import plotting
@@ -112,6 +113,9 @@ phase = st.sidebar.radio(
     "Phase",
     phase_options,
     index=phase_options.index(default_phase) if default_phase in phase_options else 0,
+    # Explicit key so the LD branch is reachable from a test; without one the
+    # widget id is generated and nothing can select the non-default epoch.
+    key="sleep_states_phase",
     help=(
         "The paper's circadian figures are under constant darkness, so DD is the "
         "default. A dataset already stamped with a single epoch can only be shown "
@@ -198,26 +202,60 @@ if tab_wave.open:
             "specifies — the other order makes every fly's own peak 1.0 and "
             "flattens between-fly differences in profile shape."
         )
-        waveforms = _cached_waveforms(fp, phase_ds, bin_size_min)
-        if waveforms.empty:
+        # Figure 1B prints LD and DD beside each other, because its claim is
+        # that the waveform SHAPES survive the loss of the light cycle. Showing
+        # only the selected epoch loses that comparison, so both are drawn when
+        # the dataset carries both. Same flies in each panel.
+        fly_ids = phase_ds["id"].values
+        epochs = {}
+        for epoch in ("LD", "DD"):
+            if epoch == phase_used:
+                epochs[epoch] = phase_ds
+                continue
+            try:
+                other, other_used = select_phase(ds, phase=epoch)
+            except (ValueError, KeyError):
+                continue  # this dataset holds only the one epoch
+            try:
+                epochs[other_used] = other.sel(id=fly_ids)
+            except KeyError:
+                continue
+
+        panels = [(name, _cached_waveforms(dataset_fingerprint(sub), sub, bin_size_min))
+                  for name, sub in epochs.items()]
+        panels = [(name, frame) for name, frame in panels if not frame.empty]
+
+        if not panels:
             st.info("No waveforms could be computed for the current selection.")
         else:
-            st.plotly_chart(
-                plotting.normalized_waveform_overlay(
-                    waveforms, title=f"Normalised waveforms — {phase_used}"
-                ),
-                width="stretch",
-            )
+            for column, (name, frame) in zip(st.columns(len(panels)), panels):
+                with column:
+                    st.plotly_chart(
+                        plotting.normalized_waveform_overlay(
+                            frame,
+                            phase_label=name,
+                            title=f"Normalised waveforms — {name}",
+                        ),
+                        width="stretch",
+                        key=f"waveform_{name}",
+                    )
             st.info(
                 "The paper's error band is between-RUN SEM across three "
                 "independent experiments. This dataset is one run, so the band "
                 "here is between-fly SEM within each group — a narrower claim.",
                 icon=":material/info:",
             )
+            # Every panel shown, tagged by epoch, so the CSV matches the figure
+            # rather than only its left half.
+            waveforms = pd.concat(
+                [frame.assign(epoch=name) for name, frame in panels], ignore_index=True
+            )
             st.download_button(
                 "Download normalised waveforms (CSV)",
                 waveforms.to_csv(index=False).encode(),
-                file_name=f"sleep_state_waveforms_{phase_used}.csv",
+                file_name="sleep_state_waveforms_"
+                + "_".join(name for name, _ in panels)
+                + ".csv",
                 mime="text/csv",
                 icon=":material/download:",
             )
