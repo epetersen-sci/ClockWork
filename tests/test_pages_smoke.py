@@ -210,9 +210,8 @@ def test_sleep_states_wavelet_is_per_genotype(app, states_ds):
     state with every genotype averaged into it — the only thing these two tabs
     could show, and not a description of any genotype in the experiment.
     """
-    from periodograms import sleep_cwt_analysis
-
     from dam_utilities import select_phase
+    from periodograms import sleep_cwt_analysis
 
     view, used = select_phase(states_ds, phase="DD")
     ids = [str(i) for i in view["id"].values]

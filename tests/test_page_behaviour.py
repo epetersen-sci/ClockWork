@@ -168,7 +168,6 @@ class TestSleepActivityEpoch:
         would cover the whole recording next to profiles covering one epoch.
         """
         import sleep_analysis as sa
-
         from dam_utilities import select_phase
 
         whole = len(sa.raw_bout_dataframe(states_ds))

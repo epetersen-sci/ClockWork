@@ -243,8 +243,9 @@ class TestEpochWithoutMasks:
     @pytest.fixture(scope="class")
     def ld_only_ds(self):
         """Sleep computed on LD only, over a dataset that also spans DD."""
-        import sleep_analysis
         from conftest import _build_with_sleep_structure
+
+        import sleep_analysis
 
         return sleep_analysis.sleep_analysis(
             _build_with_sleep_structure(), phase="LD", sleep_threshold_sec=300

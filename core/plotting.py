@@ -27,8 +27,8 @@ save_group_average_scalogram_png()   — Disk-saved per-group 2D averaged CWT
 # dam_utilities is co-located in the core/ directory; the app pages add core/ to sys.path
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import plotly.colors as pc
+import plotly.graph_objects as go
 import xarray as xr
 
 import dam_utilities
