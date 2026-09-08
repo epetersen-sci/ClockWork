@@ -856,6 +856,225 @@ def summary_bars(
 # ===========================================================================
 
 
+
+
+
+def _state_palette():
+    """Paper colours, imported lazily so plotting.py keeps no import-time dep."""
+    from sleep_state_metrics import STATE_COLORS, STATE_LABELS
+
+    return STATE_COLORS, STATE_LABELS
+
+
+def _rgba(hex_color, alpha):
+    r, g, b = (int(hex_color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _empty(text):
+    return go.Figure().add_annotation(
+        text=text, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False
+    )
+
+
+# The paper draws its scalograms on a jet-like ramp with a fixed 0-1.5 z range
+# ("All scalograms have a z axis scale that ranges from 0 to 1.5"). Plotly's
+# "Jet" is the same ramp, and pinning the range is what makes two panels — or
+# our panel and the printed one — comparable at a glance.
+SCALOGRAM_COLORSCALE = "Jet"
+SCALOGRAM_ZMAX = 1.5
+
+
+def _polar_layout(tick_prefix="", inner_hole=0.0, label_hours=(0, 6, 12, 18)):
+    """Clock-face polar axis: 00 at the top, time increasing clockwise.
+
+    Every circular figure in the paper is oriented this way — 00 top, 06 right,
+    12 bottom, 18 left — with spokes every 3 h and no radial tick labels. In
+    Plotly that is ``rotation=90`` (put theta=0 at the top) plus
+    ``direction='clockwise'``; the authors' own ``phase::rosePlotsSleep`` sets
+    the same direction and the same 8 tick labels.
+    """
+    # Spokes every 3 h but LABELS only where `label_hours` asks for them. The
+    # paper prints 00 and 12 on every panel of a row and puts 18 on the leftmost
+    # ring and 06 on the rightmost only, because at five panels wide the 06 of
+    # one ring and the 18 of the next land on top of each other.
+    return dict(
+        hole=inner_hole,
+        angularaxis=dict(
+            tickmode="array",
+            tickvals=list(range(0, 360, 45)),
+            ticktext=[
+                f"{tick_prefix}{h:02d}" if h in tuple(label_hours) else ""
+                for h in range(0, 24, 3)
+            ],
+            direction="clockwise",
+            rotation=90,
+            gridcolor="rgba(0,0,0,0.35)",
+            linecolor="black",
+        ),
+        radialaxis=dict(showticklabels=False, showgrid=False, showline=False, ticks=""),
+    )
+
+
+def _wedges(theta_start_deg, theta_end_deg, radius, n_points=2):
+    """Closed polygon for one rose wedge, as ``phase`` draws them.
+
+    ``phase::rosePlotsSleep`` adds each bin as a ``scatterpolar`` polygon
+    ``r = c(0, x, x, 0)`` / ``theta = c(0, y - width, y, 0)`` and fills it,
+    which is why the printed wedges are contiguous with no inter-bar gap.
+    Barpolar leaves hairlines between bars at 48 bins, so this matches the
+    reference implementation rather than approximating it.
+    """
+    thetas = np.linspace(theta_start_deg, theta_end_deg, n_points)
+    r = [0.0] + [radius] * len(thetas) + [0.0]
+    theta = [thetas[0]] + list(thetas) + [thetas[-1]]
+    return r, theta
+
+
+def _day_night_wedges(phase_label):
+    """Background shading for the subjective/actual day and night halves.
+
+    Figure 3A (DD) shades CT00-12 light grey and CT12-24 darker grey; Figure 3B
+    (ramped light) has no shading, only min/max light annotations. Drawn as two
+    full-radius wedges underneath the data.
+    """
+    if phase_label == "DD":
+        return [(0.0, 180.0, "rgba(0,0,0,0.08)"), (180.0, 360.0, "rgba(0,0,0,0.21)")]
+    if phase_label == "LD":
+        return [(180.0, 360.0, "rgba(0,0,0,0.21)")]
+    return []
+
+
+def _add_background_wedge(fig, start_deg, end_deg, fillcolor):
+    thetas = np.linspace(start_deg, end_deg, 60)
+    fig.add_trace(
+        go.Scatterpolar(
+            r=[0.0] + [1.0] * len(thetas) + [0.0],
+            theta=[thetas[0]] + list(thetas) + [thetas[-1]],
+            mode="lines",
+            fill="toself",
+            fillcolor=fillcolor,
+            line=dict(color="rgba(0,0,0,0)"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    # Plotly draws traces in insertion order, so the shading has to be moved
+    # behind the wedges that were added first.
+    fig.data = tuple(fig.data[-1:]) + tuple(fig.data[:-1])
+
+
+def _add_rose_series(fig, sdf, state, bin_size_min, normalise, colors, opacity=1.0):
+    """Add one series' wedges. Shared by rose_plot and rose_plot_with_activity.
+
+    Collapses to ONE value per bin first. Handed a frame still covering several
+    groups, the previous behaviour was to draw every group's wedge set on top of
+    one another — 48 wedges became 192, all overlapping, which looks like a
+    plausible rose and is not one. Pooling the groups is the interpretable
+    reading of such a frame; pass one group at a time to plot them separately.
+    """
+    sdf = sdf.groupby("zt_bin_minute", as_index=False)["mean"].mean()
+    sdf = sdf.sort_values("zt_bin_minute")
+    values = np.asarray(sdf["mean"].values, dtype=float)
+    values = np.where(np.isfinite(values), values, 0.0)
+    peak = values.max() if values.size else 0.0
+    scale = peak if (normalise and peak > 0) else 1.0
+    width_deg = bin_size_min / 1440.0 * 360.0
+    color = colors.get(state, "#333333")
+
+    for start_min, value in zip(sdf["zt_bin_minute"].values, values):
+        # Bins are right-labelled, matching the reference implementation's
+        # theta = c(0, y - width, y, 0): the wedge ENDS at the labelled edge.
+        end_deg = (float(start_min) + bin_size_min) / 1440.0 * 360.0
+        r, theta = _wedges(end_deg - width_deg, end_deg, value / scale)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=r,
+                theta=theta,
+                mode="lines",
+                fill="toself",
+                fillcolor=_rgba(color, opacity),
+                line=dict(color="rgba(40,40,40,0.85)", width=0.6),
+                hovertemplate=(
+                    f"{state}<br>%{{theta:.1f}}deg<br>{value:.2f}<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+
+
+def _gate_arc(onset_h, offset_h, radius, color, width, alpha, name=None, show_legend=False):
+    """One gate as a constant-radius arc, unwrapped so it never runs backwards."""
+    start = onset_h % 24.0
+    end = offset_h % 24.0
+    if end <= start:
+        end += 24.0  # gate crosses the origin: go forward through it
+    n = max(8, int((end - start) * 6))
+    hours = np.linspace(start, end, n)
+    theta = (hours % 24.0) / 24.0 * 360.0
+    return go.Scatterpolar(
+        r=np.full(n, radius),
+        theta=theta,
+        mode="lines",
+        line=dict(color=_rgba(color, alpha), width=width),
+        name=name,
+        showlegend=show_legend,
+        hovertemplate=(
+            f"{name or ''}<br>gate {start % 24:.1f}h to {end % 24:.1f}h<extra></extra>"
+        ),
+    )
+
+
+def _period_ticks(pmin, pmax):
+    """Log period ticks: the paper's values where they fit, denser when they don't.
+
+    Figure 5 labels 1, 2, 4, 8, 12, 17, 24 and 35 h. Those are right for a full
+    1-32 h axis but nearly all fall outside a cropped ultradian band — a 2-6 h
+    panel keeps only ``4``, leaving a log axis with a single tick. So fall back
+    to a finer ladder, and always keep at least the two endpoints.
+    """
+    coarse = [1, 2, 4, 8, 12, 17, 24, 35]
+    vals = [c for c in coarse if pmin <= c <= pmax]
+    if len(vals) < 3:
+        fine = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 17, 24, 35]
+        vals = [c for c in fine if pmin <= c <= pmax]
+    if len(vals) < 2:
+        vals = [round(pmin, 2), round(pmax, 2)]
+    return vals
+
+def _day_night_bar(fig, n_days, row, col, phase_label="DD"):
+    """The light/dark strip the paper puts above each scalogram.
+
+    Figure 5A carries a bar of alternating light-grey and black blocks across
+    the top marking subjective day and night, plus dashed verticals at the
+    transitions. Under DD both halves are subjective, which is why day is grey
+    rather than white.
+    """
+    day_fill = "rgba(190,190,190,1)" if phase_label == "DD" else "rgba(250,250,210,1)"
+    for day in range(int(np.ceil(n_days))):
+        for half, fill in ((0.0, day_fill), (0.5, "rgba(0,0,0,1)")):
+            x0 = day + half
+            if x0 >= n_days:
+                continue
+            fig.add_shape(
+                type="rect",
+                x0=x0,
+                x1=min(x0 + 0.5, n_days),
+                y0=1.01,
+                y1=1.06,
+                yref="y domain",
+                fillcolor=fill,
+                line=dict(width=0.4, color="black"),
+                row=row,
+                col=col,
+            )
+        fig.add_vline(
+            x=day + 0.5,
+            line=dict(color="rgba(90,90,90,0.55)", width=1, dash="dash"),
+            row=row,
+            col=col,
+        )
+
 def _get_group_colors(groups):
     """Return a dict mapping group names to Plotly color strings."""
     palette = [
@@ -873,7 +1092,9 @@ def _get_group_colors(groups):
     return {g: palette[i % len(palette)] for i, g in enumerate(sorted(groups))}
 
 
-def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profiles"):
+def normalized_waveform_overlay(
+    waveform_df, phase_label="DD", title="Normalized Daily Sleep Profiles"
+):
     """
     Overlay normalized daily sleep waveforms for multiple sleep states.
 
@@ -887,18 +1108,20 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
         Output of sleep_state_metrics.compute_normalized_waveforms().
         Columns: 'group', 'state', 'zt_bin_minute', 'mean_normalized',
                  'sem_normalized'.
+    phase_label : {'DD', 'LD'}
+        Sets the time axis label and the day/night shading. Under DD the axis
+        is CT and both halves are subjective, so the "day" half is shaded too;
+        calling it ZT there would name the wrong timescale.
     title : str
 
     Returns
     -------
     go.Figure
     """
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
+    # Paper colours, shared with every other Abhilash-figure renderer. The
+    # literals that used to sit here were Plotly's default cycle, which gave
+    # short sleep the paper's long-sleep blue and long sleep its activity red.
+    STATE_COLORS, STATE_LABELS = _state_palette()
     DASH_STYLES = ["solid", "dash", "dot", "dashdot", "longdash"]
 
     if waveform_df.empty:
@@ -928,7 +1151,8 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
             y = sdf["mean_normalized"].values
             sem = sdf["sem_normalized"].values
 
-            name = f"{state} ({group})" if len(groups) > 1 else state
+            label = STATE_LABELS.get(state, state)
+            name = f"{label} ({group})" if len(groups) > 1 else label
 
             fig.add_trace(
                 go.Scatter(
@@ -957,12 +1181,17 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
                 )
             )
 
-    # Light/dark shading (assuming LD 12:12)
-    fig.add_vrect(x0=12, x1=24, fillcolor="rgba(0,0,0,0.08)", layer="below", line_width=0)
+    # Two-tone under DD (both halves subjective), one dark block under LD.
+    for x0, x1, fill in _day_night_spans(phase_label):
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=fill, layer="below", line_width=0)
 
     fig.update_layout(
         title=title,
-        xaxis=dict(title="ZT (hours)", range=[0, 24], dtick=4),
+        xaxis=dict(
+            title=f"{'CT' if phase_label == 'DD' else 'ZT'} (hours)",
+            range=[0, 24],
+            dtick=4,
+        ),
         yaxis=dict(title="Normalized sleep (fraction of max)", range=[0, 1.05]),
         hovermode="x unified",
         legend=dict(orientation="v"),
@@ -970,109 +1199,272 @@ def normalized_waveform_overlay(waveform_df, title="Normalized Daily Sleep Profi
     return fig
 
 
-def initiation_probability_plot(init_df, title="Probability of Sleep State Initiation"):
-    """
-    Plot probability of initiating each sleep state per ZT hour.
+def _day_night_spans(phase_label):
+    """Day/night shading for a 0-24 h Cartesian axis, as (x0, x1, fill) spans.
 
-    Per-fly traces are shown as thin semi-transparent lines beneath the group
-    mean thick line.  Matches Abhilash et al. 2026 Figure 2 right panels.
+    One definition shared by every Cartesian panel here. Under DD BOTH halves
+    are subjective, so the paper shades the day light grey and the night dark
+    grey; under LD only the real dark phase is shaded. Returns nothing for a
+    ramped light cycle, which the paper annotates instead of shading.
+    """
+    if phase_label == "DD":
+        return [(0, 12, "rgba(0,0,0,0.05)"), (12, 24, "rgba(0,0,0,0.13)")]
+    if phase_label == "LD":
+        return [(12, 24, "rgba(0,0,0,0.16)")]
+    return []
+
+
+def _night_shading(fig, phase_label, row, col, n_rows):
+    """Grey the dark phase on one panel, from the shared spans.
+
+    Drawn per panel rather than with ``row="all"`` because a secondary y axis
+    makes the all-rows form ambiguous.
+    """
+    for x0, x1, fill in _day_night_spans(phase_label):
+        fig.add_vrect(
+            x0=x0,
+            x1=x1,
+            fillcolor=fill,
+            line_width=0,
+            layer="below",
+            row=row,
+            col=col,
+        )
+
+
+def state_profile_plot(
+    profile_stats,
+    phase_label="DD",
+    states=("short", "intermediate", "long"),
+    show_standard_reference=True,
+    title="Daily profiles",
+):
+    """Activity and per-state sleep profiles — the LEFT column of Figure 2.
+
+    This panel had no implementation at all. The Abhilash section carried the
+    initiation-probability half of Figure 2 and the rose plots of Figure 3, but
+    not the profiles they are read against — and the paper's argument is
+    precisely the relationship between them ("the gray line represents profiles
+    of standard sleep... Note that the activity counts remain the same within
+    each column").
+
+    Four rows: locomotor activity in red, then each state in its own colour
+    with **standard sleep drawn behind it in grey** as the reference the paper
+    puts in every panel. Sleep is in min/h and activity in counts/h, each on
+    its own row, so no dual axis is needed.
 
     Parameters
     ----------
-    init_df : pd.DataFrame
-        Output of sleep_state_metrics.compute_initiation_probability().
-        Columns: 'id', 'group', 'state', 'zt_bin_minute', 'p_initiation'.
-    title : str
-
-    Returns
-    -------
-    go.Figure
+    profile_stats : pd.DataFrame
+        ``sleep_state_metrics.group_profiles`` output for ONE group, including
+        the ``'activity'`` and ``'standard'`` states.
+    show_standard_reference : bool
+        Draw standard sleep behind each state. Turn off to see a state alone.
     """
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
-
-    if init_df.empty:
-        return go.Figure().add_annotation(
-            text="No initiation probability data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
-
-    groups = sorted(init_df["group"].unique())
-    states = [
-        s for s in ["standard", "short", "intermediate", "long"] if s in init_df["state"].unique()
-    ]
-    n_groups = len(groups)
-
     from plotly.subplots import make_subplots
 
+    colors, labels = _state_palette()
+    if profile_stats is None or profile_stats.empty:
+        return _empty("No profile data available.")
+
+    present = [s for s in states if s in set(profile_stats["state"])]
+    rows = (["activity"] if "activity" in set(profile_stats["state"]) else []) + present
+    if not rows:
+        return _empty("No profiles available for the requested states.")
+
     fig = make_subplots(
-        rows=1,
-        cols=max(1, n_groups),
-        subplot_titles=[f"Group: {g}" for g in groups] if n_groups > 1 else None,
-        shared_yaxes=True,
+        rows=len(rows),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.045,
+        subplot_titles=[labels.get(r, r) for r in rows],
     )
 
-    for g_idx, group in enumerate(groups):
-        col = g_idx + 1
-        gdf = init_df[init_df["group"] == group]
+    standard = profile_stats[profile_stats["state"] == "standard"].sort_values("zt_bin_minute")
+    has_standard = show_standard_reference and not standard.empty
 
-        for state in states:
-            sdf = gdf[gdf["state"] == state]
-            if sdf.empty:
-                continue
+    for row, state in enumerate(rows, start=1):
+        if state != "activity" and has_standard:
+            # The paper's grey reference carries its own SEM band, not just a
+            # line, so the two states' spreads are comparable by eye.
+            _add_profile_trace(
+                fig, standard, "standard", colors, row, name="Standard sleep"
+            )
+        sdf = profile_stats[profile_stats["state"] == state].sort_values("zt_bin_minute")
+        _add_profile_trace(fig, sdf, state, colors, row, name=labels.get(state, state))
+        _night_shading(fig, phase_label, row, 1, len(rows))
+        fig.update_yaxes(
+            title_text="Activity (counts/h)" if state == "activity" else "Sleep (min/h)",
+            rangemode="tozero",
+            row=row,
+            col=1,
+        )
 
-            color = STATE_COLORS.get(state, "#333333")
-            r, g_c, b = tuple(int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    fig.update_xaxes(dtick=6, range=[0, 24])
+    fig.update_xaxes(
+        title_text=f"{'Circadian' if phase_label == 'DD' else 'Zeitgeber'} time (h)",
+        row=len(rows),
+        col=1,
+    )
+    fig.update_layout(title=title, height=175 * len(rows) + 90, showlegend=False)
+    # Colour each panel label by its state, the way the paper prints them —
+    # with a grey reference line in every sleep panel, the label is what tells
+    # you which trace is the subject.
+    for note, state in zip(fig.layout.annotations, rows):
+        note.update(font=dict(size=12, color=colors.get(state, "#333333")))
+    return fig
 
-            # Per-fly thin lines
-            for fly_id in sdf["id"].unique():
-                fdf = sdf[sdf["id"] == fly_id].sort_values("zt_bin_minute")
-                x = fdf["zt_bin_minute"].values / 60.0
-                y = fdf["p_initiation"].values
-                fig.add_trace(
-                    go.Scatter(
-                        x=x,
-                        y=y,
-                        mode="lines",
-                        line=dict(color=f"rgba({r},{g_c},{b},0.15)", width=1),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    ),
-                    row=1,
-                    col=col,
-                )
+def _add_profile_trace(fig, sdf, state, colors, row, name=None, band=True):
+    """One mean +/- SEM profile trace."""
+    color = colors.get(state, "#333333")
+    x = np.asarray(sdf["zt_bin_minute"].values, dtype=float) / 60.0
+    y = np.asarray(sdf["mean"].values, dtype=float)
+    if band and "sem" in sdf:
+        sem = np.nan_to_num(np.asarray(sdf["sem"].values, dtype=float))
+        fig.add_trace(
+            go.Scatter(
+                x=np.concatenate([x, x[::-1]]),
+                y=np.concatenate([y + sem, (y - sem)[::-1]]),
+                fill="toself",
+                fillcolor=_rgba(color, 0.20),
+                line=dict(color="rgba(0,0,0,0)"),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=row,
+            col=1,
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            line=dict(color=color, width=2 if band else 1.4),
+            name=name or state,
+            hovertemplate="%{x:.1f} h<br>%{y:.2f}<extra></extra>",
+            showlegend=False,
+        ),
+        row=row,
+        col=1,
+    )
 
-            # Group mean thick line
-            mean_df = sdf.groupby("zt_bin_minute")["p_initiation"].mean().reset_index()
-            mean_df = mean_df.sort_values("zt_bin_minute")
-            x_m = mean_df["zt_bin_minute"].values / 60.0
-            y_m = mean_df["p_initiation"].values
-            show_legend = g_idx == 0
+def initiation_probability_plot(
+    init_stats,
+    activity_stats=None,
+    phase_label="DD",
+    title="Probability of initiating a sleep bout",
+):
+    """Bars of P(initiation) per hour with the activity profile overlaid — Figure 2 right.
+
+    The paper's panels are bar charts with SEM whiskers on a left axis, and the
+    locomotor activity profile as a red line on a **secondary right axis** in
+    counts/h. That pairing is the whole point of the figure — it is how you see
+    that "P(long) was highest in the hour immediately following the evening
+    peak of activity" — and the previous version had neither the bars nor the
+    activity overlay, drawing per-fly spaghetti lines instead.
+
+    Parameters
+    ----------
+    init_stats : pd.DataFrame
+        ``sleep_state_metrics.group_initiation_probability`` output for one
+        group: ``state``, ``bin_hour``, ``mean``, ``sem``.
+    activity_stats : pd.DataFrame or None
+        ``group_profiles`` rows for ``state == 'activity'`` (same group), giving
+        the red overlay. Omitted, the panels just lose the overlay.
+    """
+    from plotly.subplots import make_subplots
+
+    colors, labels = _state_palette()
+    if init_stats is None or init_stats.empty:
+        return _empty("No initiation probability data available.")
+
+    states = [s for s in ("standard", "short", "intermediate", "long") if s in set(init_stats["state"])]
+    if not states:
+        return _empty("No initiation probability data available.")
+
+    fig = make_subplots(
+        rows=len(states),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.045,
+        subplot_titles=[labels.get(s, s) for s in states],
+        specs=[[{"secondary_y": True}] for _ in states],
+    )
+
+    for row, state in enumerate(states, start=1):
+        sdf = init_stats[init_stats["state"] == state].sort_values("bin_hour")
+        color = colors.get(state, "#333333")
+        fig.add_trace(
+            go.Bar(
+                x=sdf["bin_hour"].values,
+                y=sdf["mean"].values,
+                error_y=dict(
+                    type="data",
+                    array=sdf["sem"].values,
+                    visible=True,
+                    thickness=1,
+                    width=2,
+                    color="rgba(30,30,30,0.85)",
+                ),
+                marker=dict(color=color, line=dict(color="rgba(30,30,30,0.9)", width=0.6)),
+                name=labels.get(state, state),
+                showlegend=False,
+                hovertemplate="hour %{x}<br>P = %{y:.4f}<extra></extra>",
+            ),
+            row=row,
+            col=1,
+            secondary_y=False,
+        )
+
+        if activity_stats is not None and not activity_stats.empty:
+            adf = activity_stats.sort_values("zt_bin_minute")
+            x_h = adf["zt_bin_minute"].values / 60.0
             fig.add_trace(
                 go.Scatter(
-                    x=x_m,
-                    y=y_m,
+                    x=x_h,
+                    y=adf["mean"].values,
                     mode="lines",
-                    name=state,
-                    line=dict(color=color, width=2.5),
-                    showlegend=show_legend,
-                    legendgroup=state,
+                    line=dict(color=colors["activity"], width=1.8),
+                    name="Activity",
+                    showlegend=(row == 1),
+                    hovertemplate="CT/ZT %{x:.1f} h<br>%{y:.1f} counts/h<extra></extra>",
                 ),
-                row=1,
-                col=col,
+                row=row,
+                col=1,
+                secondary_y=True,
+            )
+            fig.update_yaxes(
+                title_text="Activity (counts/h)",
+                color=colors["activity"],
+                showgrid=False,
+                secondary_y=True,
+                row=row,
+                col=1,
             )
 
-    fig.update_xaxes(title_text="ZT (hours)", range=[0, 24], dtick=4)
-    fig.update_yaxes(title_text="P(initiation)", row=1, col=1)
-    fig.update_layout(title=title, hovermode="x unified")
+        # Night shading: the actual dark phase under LD, the subjective night
+        # under DD. Drawn per panel because a secondary axis makes add_vrect
+        # with row='all' ambiguous.
+        fig.add_vrect(
+            x0=12,
+            x1=24,
+            fillcolor="rgba(0,0,0,0.10)" if phase_label == "DD" else "rgba(0,0,0,0.16)",
+            line_width=0,
+            layer="below",
+            row=row,
+            col=1,
+        )
+        fig.update_yaxes(title_text="P(initiation)", secondary_y=False, row=row, col=1)
+
+    # Applied to every row: with shared_xaxes only the range travels through
+    # `matches`, so per-row settings like dtick have to be set on all of them.
+    fig.update_xaxes(dtick=3, range=[0.5, 24.5])
+    fig.update_xaxes(
+        title_text=f"{'Circadian' if phase_label == 'DD' else 'Zeitgeber'} time (h)",
+        row=len(states),
+        col=1,
+    )
+    fig.update_layout(title=title, height=185 * len(states) + 90, bargap=0.12)
     return fig
 
 
@@ -1097,12 +1489,10 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
     from scipy import stats as _stats
 
     STATE_ORDER = ["standard", "short", "intermediate", "long"]
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
+    # Paper colours, shared with every other Abhilash-figure renderer. The
+    # literals that used to sit here were Plotly's default cycle, which gave
+    # short sleep the paper's long-sleep blue and long sleep its activity red.
+    STATE_COLORS, _ = _state_palette()
 
     if rebound_df.empty:
         return go.Figure().add_annotation(
@@ -1189,144 +1579,173 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
     return fig
 
 
-def period_amplitude_plot(per_fly_power_dict, period_axis, title="Period vs. Amplitude"):
-    """
-    Plot mean normalised CWT power vs period with 95% bootstrap CI.
+def period_amplitude_plot(
+    per_fly_power_dict,
+    period_axis,
+    n_bootstrap=1000,
+    ultradian_band=None,
+    title="Period vs. amplitude",
+):
+    """Time-averaged spectrum per state with bootstrap CI — Figure 5B.
 
-    Works for both activity CWT (from cwt_powerseries) and sleep state CWT.
-    Bootstrap CI uses 2000 resamples (Riggle et al. 2022).
+    "Time-averaged period versus amplitude plots were generated to capture the
+    overall contribution of specific period bands to the overall raw timeseries
+    of the various sleep states. A 95% confidence interval for the
+    time-averaged amplitude of different period components was generated by
+    using the bootstrap method, using 1000 replications." The resample is over
+    FLIES, which is what makes non-overlapping bands a between-state claim:
+    "any amplitude values that have non-overlapping error regions may be
+    considered statistically significantly different from each other".
+
+    ``n_bootstrap`` defaults to the paper's 1000 rather than the 2000 used
+    before, and the period axis is logarithmic with the paper's tick values,
+    dashed 12-h and 24-h references, and the ultradian band marked.
 
     Parameters
     ----------
     per_fly_power_dict : dict
-        Keys are label strings; values are (n_flies, n_periods) ndarrays of
-        normalized power per fly.
+        state -> (n_flies, n_periods) normalised power per fly.
     period_axis : np.ndarray or dict
-        If ndarray: shared period values in hours for all states.
-        If dict: keys match per_fly_power_dict keys, values are per-state
-        period axes (allows states with different CWT scale counts).
-    title : str
-
-    Returns
-    -------
-    go.Figure
+    ultradian_band : tuple or dict or None
+        (min, max) hours to annotate, per state if a dict. The paper uses
+        1-4 h for short and intermediate sleep and 2-6 h for long sleep.
     """
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-        "activity": "#2ca02c",
-    }
-    N_BOOTSTRAP = 2000
+    from plotly.subplots import make_subplots
+
+    colors, labels = _state_palette()
+    states = [s for s in per_fly_power_dict if per_fly_power_dict[s] is not None]
+    if not states:
+        return _empty("No period-amplitude data available.")
+
     rng = np.random.default_rng(42)
+    fig = make_subplots(
+        rows=len(states),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=[labels.get(s, s) for s in states],
+    )
+    # Make the x axes logarithmic BEFORE any add_vline / add_vrect below.
+    # add_vline converts its x to log10 only when the axis is ALREADY log at
+    # call time; adding the 12-h and 24-h markers first and switching the axis
+    # afterwards leaves the raw 24 stored as a log coordinate, so the axis
+    # autoranges out to 10^24 and every curve collapses against the left edge.
+    fig.update_xaxes(type="log")
 
-    if not per_fly_power_dict:
-        return go.Figure().add_annotation(
-            text="No CWT power data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
+    pmin, pmax = np.inf, -np.inf
+    for row, state in enumerate(states, start=1):
+        mat = np.asarray(per_fly_power_dict[state], dtype=float)
+        if mat.ndim == 1:
+            mat = mat[np.newaxis, :]
+        periods = period_axis[state] if isinstance(period_axis, dict) else period_axis
+        periods = np.asarray(periods, dtype=float)
+        pmin, pmax = min(pmin, periods.min()), max(pmax, periods.max())
 
-    # Normalize period_axis to a dict keyed by label
-    if isinstance(period_axis, dict):
-        pax_dict = period_axis
-    else:
-        pax_dict = {label: np.asarray(period_axis) for label in per_fly_power_dict}
-
-    fig = go.Figure()
-
-    for label, power_matrix in per_fly_power_dict.items():
-        pax = np.asarray(pax_dict.get(label, []))
-        if len(pax) == 0:
+        good = ~np.all(~np.isfinite(mat), axis=1)
+        mat = mat[good]
+        if mat.size == 0:
             continue
-        power_matrix = np.asarray(power_matrix)
-        if power_matrix.ndim == 1:
-            power_matrix = power_matrix[np.newaxis, :]
-        n_flies = power_matrix.shape[0]
-        if n_flies == 0:
-            continue
+        mean = np.nanmean(mat, axis=0)
 
-        mean_power = np.nanmean(power_matrix, axis=0)
+        n_flies = mat.shape[0]
+        if n_flies > 1:
+            boot = np.empty((n_bootstrap, mat.shape[1]))
+            for b in range(n_bootstrap):
+                boot[b] = np.nanmean(mat[rng.integers(0, n_flies, n_flies)], axis=0)
+            lo = np.nanpercentile(boot, 2.5, axis=0)
+            hi = np.nanpercentile(boot, 97.5, axis=0)
+        else:
+            lo = hi = mean
 
-        # Bootstrap CI
-        boot_means = np.empty((N_BOOTSTRAP, len(pax)))
-        for b in range(N_BOOTSTRAP):
-            idx = rng.integers(0, n_flies, size=n_flies)
-            boot_means[b] = np.nanmean(power_matrix[idx], axis=0)
-        ci_lo = np.nanpercentile(boot_means, 2.5, axis=0)
-        ci_hi = np.nanpercentile(boot_means, 97.5, axis=0)
-
-        color = STATE_COLORS.get(label, "#333333")
-        r, g_c, b_c = tuple(int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
-
-        lg = str(label)
+        color = colors.get(state, "#333333")
         fig.add_trace(
             go.Scatter(
-                x=pax,
-                y=mean_power,
+                x=np.concatenate([periods, periods[::-1]]),
+                y=np.concatenate([hi, lo[::-1]]),
+                fill="toself",
+                fillcolor=_rgba(color, 0.22),
+                line=dict(color="rgba(0,0,0,0)"),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=row,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=periods,
+                y=mean,
                 mode="lines",
-                name=label,
-                legendgroup=lg,
                 line=dict(color=color, width=2),
-            )
+                name=labels.get(state, state),
+                hovertemplate="%{x:.2f} h<br>%{y:.3f}<extra></extra>",
+            ),
+            row=row,
+            col=1,
         )
-        # CI band — filter out NaN to prevent plotly autorange issues. SAME
-        # legendgroup as the mean so a legend click toggles both together.
-        valid_ci = np.isfinite(ci_hi) & np.isfinite(ci_lo)
-        if np.any(valid_ci):
-            pax_v = pax[valid_ci]
-            x_fill = np.concatenate([pax_v, pax_v[::-1]])
-            y_fill = np.concatenate([ci_hi[valid_ci], ci_lo[valid_ci][::-1]])
-            fig.add_trace(
-                go.Scatter(
-                    x=x_fill,
-                    y=y_fill,
-                    fill="toself",
-                    fillcolor=f"rgba({r},{g_c},{b_c},0.2)",
-                    line=dict(color="rgba(0,0,0,0)"),
-                    legendgroup=lg,
-                    showlegend=False,
-                    hoverinfo="skip",
+
+        # On a log axis, SHAPES take data units (Plotly converts them when it
+        # renders) but ANNOTATIONS take log10 units and are never converted.
+        # Letting add_vline/add_vrect attach their own labels therefore parks an
+        # annotation at x = 24, which autoranges as 10^24 and squashes every
+        # curve into the left edge of the panel. So the lines are added with raw
+        # periods and the labels separately, in log10.
+        for ref in (12, 24):
+            if periods.min() <= ref <= periods.max():
+                fig.add_vline(
+                    x=ref,
+                    line=dict(color="rgba(120,120,120,0.7)", width=1, dash="dash"),
+                    row=row,
+                    col=1,
                 )
+                fig.add_annotation(
+                    x=float(np.log10(ref)),
+                    y=1.0,
+                    yref="y domain",
+                    text=f"{ref}-h",
+                    showarrow=False,
+                    font=dict(size=9, color="#666666"),
+                    xanchor="left",
+                    yanchor="top",
+                    row=row,
+                    col=1,
+                )
+
+        band = ultradian_band[state] if isinstance(ultradian_band, dict) else ultradian_band
+        if band:
+            fig.add_vrect(
+                x0=band[0],
+                x1=band[1],
+                fillcolor="rgba(220,40,40,0.07)",
+                line_width=0,
+                row=row,
+                col=1,
             )
-
-    # Determine x-axis range from actual period data
-    all_pax_list = [np.asarray(pax_dict[k]) for k in per_fly_power_dict if k in pax_dict]
-    if all_pax_list:
-        all_pax = np.concatenate(all_pax_list)
-        all_pax = all_pax[np.isfinite(all_pax)]
-    else:
-        all_pax = np.array([])
-
-    if len(all_pax) > 0:
-        x_min = float(all_pax.min())
-        x_max = float(all_pax.max())
-        fig.update_xaxes(
-            type="log",
-            title="Period (hours)",
-            range=[np.log10(max(x_min * 0.9, 0.1)), np.log10(x_max * 1.1)],
-        )
-        if x_min <= 24 <= x_max:
-            fig.add_vline(
-                x=24,
-                line_dash="dot",
-                line_color="grey",
-                annotation_text="24h",
-                annotation_position="top right",
+            fig.add_annotation(
+                x=float(np.log10(np.sqrt(band[0] * band[1]))),
+                y=0.04,
+                yref="y domain",
+                text="ultradian",
+                showarrow=False,
+                font=dict(size=9, color="#B03030"),
+                row=row,
+                col=1,
             )
-    else:
-        fig.update_xaxes(type="log", title="Period (hours)")
+        fig.update_yaxes(title_text="Norm. amplitude", row=row, col=1)
 
-    fig.update_yaxes(title="Normalised power")
-    fig.update_layout(title=title, hovermode="x unified")
+    ticks = _period_ticks(pmin, pmax)
+    # Ticks go on EVERY row: shared_xaxes links the rows through `matches`,
+    # which carries the range but not per-axis settings like tickvals.
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=ticks,
+        ticktext=[str(t) for t in ticks],
+    )
+    fig.update_xaxes(title_text="Period (h; log scale)", row=len(states), col=1)
+    fig.update_layout(title=title, height=190 * len(states) + 80, showlegend=False)
     return fig
 
 
-# Categorical palette for group overlays (colour-blind-safe qualitative set).
 _GROUP_PALETTE = [
     "#4477AA",
     "#EE6677",
@@ -1539,67 +1958,114 @@ def group_spectrum_plot(
     return fig
 
 
-def sleep_state_scalogram(avg_surface_dict, period_axis, title="Normalised Average Scalogram"):
-    """
-    Group-averaged normalised CWT scalogram for each sleep state.
+def sleep_state_scalogram(
+    avg_surface_dict,
+    period_axis,
+    bin_size_min=5,
+    phase_label="DD",
+    zmax=SCALOGRAM_ZMAX,
+    title="Normalised average scalograms",
+):
+    """Group-averaged normalised scalograms, one row per state — Figure 5A.
+
+    Four changes from the previous version, all of them about being comparable
+    to the printed figure rather than merely plausible:
+
+    - **Fixed z range 0 to 1.5** instead of the 98th percentile of whatever
+      happened to be in the data. The paper states "All scalograms have a z
+      axis scale that ranges from 0 to 1.5"; a data-dependent range rescales
+      every panel differently, so two states — or our panel and the paper's —
+      cannot be compared by colour at all.
+    - **Jet colour ramp** instead of Viridis, matching the printed blue-to-red
+      ramp. (Viridis is the better colourmap in general; here the whole point
+      is to read our output against theirs.)
+    - **x axis in days**, not "5-min bins", with the subjective day/night bar
+      and transition markers above each panel.
+    - **Stacked rows** with a shared x axis, the paper's arrangement, so the
+      same time on the clock lines up vertically across states.
 
     Parameters
     ----------
     avg_surface_dict : dict
-        Keys are state label strings; values are (n_periods, n_timepoints) ndarrays
-        of group-averaged normalised CWT power.
-    period_axis : np.ndarray
-        Period values in hours (n_periods).
-    title : str
-
-    Returns
-    -------
-    go.Figure  (subplots: 1 row × n_states columns)
+        state -> (n_periods, n_timepoints) group-averaged normalised power.
+    period_axis : np.ndarray or dict
+        Period values in hours; a dict is keyed like ``avg_surface_dict`` for
+        states whose CWT ran on a different grid.
+    bin_size_min : int
+        Time-bin width of the surfaces, used to convert columns to days.
+    zmax : float
+        Upper end of the colour range. Keep at 1.5 to match the paper.
     """
     from plotly.subplots import make_subplots
 
+    colors, labels = _state_palette()
     states = list(avg_surface_dict.keys())
-    n = len(states)
-    if n == 0:
-        return go.Figure().add_annotation(
-            text="No scalogram data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
+    if not states:
+        return _empty("No scalogram data available.")
 
-    fig = make_subplots(rows=1, cols=n, subplot_titles=states, shared_yaxes=True)
+    fig = make_subplots(
+        rows=len(states),
+        cols=1,
+        shared_xaxes=True,
+        # Roomier than the other stacked figures: each panel carries a
+        # light/dark bar above it AND a title above that, and 0.055 left the
+        # title sitting on the panel above.
+        vertical_spacing=0.09,
+        subplot_titles=[labels.get(s, s) for s in states],
+    )
 
-    # Shared z-scale
-    all_vals = np.concatenate([s.ravel() for s in avg_surface_dict.values()])
-    zmax = float(np.nanpercentile(all_vals, 98))
-    zmin = 0.0
-
-    for col, state in enumerate(states, start=1):
-        surface = avg_surface_dict[state]  # (n_periods, n_timepoints)
+    for row, state in enumerate(states, start=1):
+        surface = np.asarray(avg_surface_dict[state])
+        periods = period_axis[state] if isinstance(period_axis, dict) else period_axis
+        periods = np.asarray(periods)
         n_t = surface.shape[1]
-        time_axis = np.arange(n_t)  # timepoints (5-min bins)
+        days = np.arange(n_t) * bin_size_min / 60.0 / 24.0
 
         fig.add_trace(
             go.Heatmap(
                 z=surface,
-                x=time_axis,
-                y=period_axis,
-                colorscale="Viridis",
-                zmin=zmin,
+                x=days,
+                y=periods,
+                colorscale=SCALOGRAM_COLORSCALE,
+                zmin=0.0,
                 zmax=zmax,
-                showscale=(col == n),
-                colorbar=dict(title="Norm. power") if col == n else None,
+                zsmooth="best",
+                showscale=(row == 1),
+                colorbar=dict(
+                    title="Normalised<br>amplitude",
+                    len=0.9 / len(states),
+                    y=1.0,
+                    yanchor="top",
+                )
+                if row == 1
+                else None,
+                hovertemplate="day %{x:.2f}<br>period %{y:.2f} h<br>%{z:.2f}<extra></extra>",
             ),
-            row=1,
-            col=col,
+            row=row,
+            col=1,
         )
+        ticks = _period_ticks(float(periods.min()), float(periods.max()))
+        fig.update_yaxes(
+            type="log",
+            tickmode="array",
+            tickvals=ticks,
+            ticktext=[str(t) for t in ticks],
+            title_text="Period (h)" if row == (len(states) + 1) // 2 else None,
+            row=row,
+            col=1,
+        )
+        _day_night_bar(fig, days[-1] if n_t else 1, row, 1, phase_label)
 
-    fig.update_yaxes(type="log", title_text="Period (hours)", row=1, col=1)
-    fig.update_xaxes(title_text="Time (5-min bins)")
-    fig.update_layout(title=title)
+    fig.update_xaxes(
+        title_text=f"Days since start of {'constant darkness' if phase_label == 'DD' else 'the light cycle'}",
+        row=len(states),
+        col=1,
+    )
+    fig.update_layout(title=title, height=250 * len(states) + 110)
+    # Each panel carries a light/dark bar immediately above it, which the
+    # default subplot-title position overprints.
+    for note in fig.layout.annotations:
+        note.update(yshift=26)
     return fig
 
 
@@ -1959,474 +2425,501 @@ def group_ridge_density_plotly(
     return fig
 
 
-def rose_plot(bout_times_df, bin_size_min=30, title="Sleep State Temporal Distribution"):
-    """
-    Polar bar chart showing the temporal distribution of sleep state initiations.
+def rose_plot(
+    profile_stats,
+    state,
+    bin_size_min=30,
+    phase_label="DD",
+    title=None,
+    normalise=True,
+):
+    """Rose plot of one state's daily profile, as in Abhilash et al. 2026 Fig 3A/B.
 
-    Each bar spans bin_size_min degrees of arc; bar height is the fraction of
-    bouts initiated in that window.  Matches Abhilash et al. 2026 Figure 3A-B.
+    **This function used to plot the wrong quantity.** It binned sleep-bout
+    INITIATION times and drew the fraction of bouts starting in each bin. The
+    paper's rose plots are profiles: "We calculated sleep time series, binned
+    at 30-minute intervals... These were then averaged over days and across
+    flies. The resulting average activity or sleep profiles were plotted as
+    rose plots." The authors' own implementation confirms it —
+    ``phase::rosePlotsSleep`` is handed ``binnedDataInput()``, the binned time
+    series, and never sees a bout table. Bout initiation is a different figure
+    entirely (Figure 2's Cartesian bar panels, see
+    :func:`initiation_probability_plot`), so a rose plot built from it looked
+    superficially similar and could never match the paper.
 
     Parameters
     ----------
-    bout_times_df : pd.DataFrame
-        Columns: 'id', 'group', 'state', 'zt_minute'.
+    profile_stats : pd.DataFrame
+        From ``sleep_state_metrics.group_profiles`` — needs ``state``,
+        ``zt_bin_minute`` and ``mean``, already filtered to one group.
+    state : str
+        Which state's profile to draw.
     bin_size_min : int
-        Arc width in minutes. Default 30.
-    title : str
+        Must match the binning used to build ``profile_stats``. Sets the wedge
+        width, so a mismatch silently draws over- or under-wide wedges.
+    phase_label : {'DD', 'LD', 'ramp'}
+        Chooses the day/night background shading.
+    normalise : bool
+        Scale the profile so its peak touches the outer circle. The paper does
+        this implicitly by giving each panel its own radial range: sleep
+        (min/h) and activity (counts/h) have no common unit, so overlaying
+        them raw would make whichever has the larger numbers swamp the other.
 
     Returns
     -------
     go.Figure
     """
-    if bout_times_df.empty:
-        return go.Figure().add_annotation(
-            text="No bout timing data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
-
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
-
-    n_bins = 1440 // bin_size_min
-    bin_degrees = 360.0 / n_bins
-    theta_centers = np.arange(n_bins) * bin_degrees
+    colors, labels = _state_palette()
+    if profile_stats is None or profile_stats.empty:
+        return _empty("No profile data available.")
+    sdf = profile_stats[profile_stats["state"] == state].sort_values("zt_bin_minute")
+    if sdf.empty:
+        return _empty(f"No profile data for {state!r}.")
 
     fig = go.Figure()
-    groups = sorted(bout_times_df["group"].unique())
-    states = [
-        s
-        for s in ["standard", "short", "intermediate", "long"]
-        if s in bout_times_df["state"].unique()
-    ]
+    _add_rose_series(fig, sdf, state, bin_size_min, normalise, colors)
+    for start, end, fill in _day_night_wedges(phase_label):
+        _add_background_wedge(fig, start, end, fill)
 
-    for group in groups:
-        gdf = bout_times_df[bout_times_df["group"] == group]
-        for state in states:
-            sdf = gdf[gdf["state"] == state]
-            if sdf.empty:
-                continue
-
-            zt_min = sdf["zt_minute"].values
-            total = len(zt_min)
-            if total == 0:
-                continue
-
-            bin_counts = np.zeros(n_bins)
-            for zt in zt_min:
-                bin_idx = int(zt // bin_size_min) % n_bins
-                bin_counts[bin_idx] += 1
-
-            r = bin_counts / total
-            color = STATE_COLORS.get(state, "#333333")
-            name_label = f"{state} ({group})" if len(groups) > 1 else state
-
-            fig.add_trace(
-                go.Barpolar(
-                    r=r,
-                    theta=theta_centers,
-                    width=bin_degrees * np.ones(n_bins),
-                    name=name_label,
-                    marker_color=color,
-                    opacity=0.7,
-                )
-            )
-
-    # Convert theta axis to ZT hours
-    tickvals = list(range(0, 360, 360 // 8))
-    ticktext = [f"ZT{int(v / 360 * 24):02d}" for v in tickvals]
     fig.update_layout(
-        title=title,
-        polar=dict(
-            angularaxis=dict(
-                tickvals=tickvals,
-                ticktext=ticktext,
-                direction="clockwise",
-                rotation=90,
-            ),
-            radialaxis=dict(title="Fraction of bouts"),
-        ),
+        title=title or labels.get(state, state),
+        polar=_polar_layout("CT" if phase_label == "DD" else "ZT"),
+        showlegend=False,
     )
     return fig
 
 
-def rose_plot_with_activity(bout_times_df, activity_zt_counts, group, bin_size_min=30, title=None):
-    """
-    Paper-style rose plots: 4 subplots for one group.
+def rose_plot_with_activity(
+    profile_stats,
+    group="",
+    bin_size_min=30,
+    phase_label="DD",
+    states=("standard", "short", "intermediate", "long"),
+    title=None,
+):
+    """The full Figure 3A/B row: activity alone, then each state with activity overlaid.
 
-    Subplot 1: Activity only (grey)
-    Subplot 2: Activity (grey) + Short sleep (blue)
-    Subplot 3: Activity (grey) + Intermediate sleep (orange)
-    Subplot 4: Activity (grey) + Long sleep (red)
+    Five panels in the paper's order and colours — locomotor activity (red),
+    then standard (grey), short (orange), intermediate (green) and long (blue)
+    sleep, each with the activity profile drawn over it in translucent red "to
+    facilitate visualization of their temporal inter-relationships".
+
+    The previous version drew four panels with activity in grey and the states
+    in Plotly's default cycle, which put short sleep in the paper's long-sleep
+    blue and long sleep in the paper's activity red.
+
+    Each series is scaled to its own maximum, so a panel shows the SHAPE and
+    relative timing of the two profiles rather than their absolute magnitudes;
+    activity in counts/h and sleep in min/h share no unit. The paper notes
+    "the activity counts remain the same within each column", which is what
+    per-series scaling reproduces.
 
     Parameters
     ----------
-    bout_times_df : pd.DataFrame
-        Sleep bout timing with columns: id, group, state, zt_minute.
-        Should already be filtered to this group.
-    activity_zt_counts : np.ndarray
-        ZT-binned normalized activity counts for this group (sum to 1).
-        Length must equal 1440 // bin_size_min.
-    group : str
-        Group label (for title).
-    bin_size_min : int
-        Arc width in minutes. Default 30.
-    title : str or None
-
-    Returns
-    -------
-    go.Figure
+    profile_stats : pd.DataFrame
+        ``sleep_state_metrics.group_profiles`` output for ONE group, including
+        the ``'activity'`` state.
     """
     from plotly.subplots import make_subplots
 
-    STATE_COLORS = {
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
-    ACTIVITY_COLOR = "#999999"
-    sleep_states = ["short", "intermediate", "long"]
+    colors, labels = _state_palette()
+    if profile_stats is None or profile_stats.empty:
+        return _empty("No profile data available.")
 
-    n_bins = 1440 // bin_size_min
-    bin_degrees = 360.0 / n_bins
-    theta_centers = np.arange(n_bins) * bin_degrees
-
-    activity_r = np.asarray(activity_zt_counts)
-    if len(activity_r) != n_bins:
-        # Rebin if needed
-        activity_r = np.zeros(n_bins)
-
-    # Compute per-state bout distributions
-    state_distributions = {}
-    for state in sleep_states:
-        sdf = bout_times_df[bout_times_df["state"] == state]
-        if sdf.empty:
-            continue
-        zt_min = sdf["zt_minute"].values
-        total = len(zt_min)
-        if total == 0:
-            continue
-        bin_counts = np.zeros(n_bins)
-        for zt in zt_min:
-            bin_idx = int(zt // bin_size_min) % n_bins
-            bin_counts[bin_idx] += 1
-        state_distributions[state] = bin_counts / total
-
-    # Build 2x2 subplot grid with polar axes
-    subplot_titles = ["Activity only"] + [
-        f"Activity + {s.capitalize()}" for s in sleep_states if s in state_distributions
-    ]
-    n_plots = len(subplot_titles)
-    # Use 2x2 grid, fill remaining with empty
-    n_cols = min(n_plots, 2)
-    n_rows = (n_plots + n_cols - 1) // n_cols
+    present = [s for s in states if s in set(profile_stats["state"])]
+    if not present:
+        return _empty("No sleep-state profiles available.")
+    has_activity = "activity" in set(profile_stats["state"])
+    panels = (["activity"] if has_activity else []) + present
 
     fig = make_subplots(
-        rows=n_rows,
-        cols=n_cols,
-        specs=[[{"type": "polar"}] * n_cols for _ in range(n_rows)],
-        subplot_titles=subplot_titles,
+        rows=1,
+        cols=len(panels),
+        specs=[[{"type": "polar"}] * len(panels)],
+        subplot_titles=[labels.get(p, p) for p in panels],
+        horizontal_spacing=0.02,
     )
 
-    tickvals = list(range(0, 360, 360 // 8))
-    ticktext = [f"ZT{int(v / 360 * 24):02d}" for v in tickvals]
+    act = profile_stats[profile_stats["state"] == "activity"].sort_values("zt_bin_minute")
+    shading = _day_night_wedges(phase_label)
 
-    plot_idx = 0
+    for col, panel in enumerate(panels, start=1):
+        sub = go.Figure()
+        if panel != "activity" and has_activity:
+            # Activity UNDER the state so the state stays readable, matching
+            # the printed panels where the solid state colour reads on top.
+            _add_rose_series(sub, act, "activity", bin_size_min, True, colors, opacity=0.45)
+        sdf = profile_stats[profile_stats["state"] == panel].sort_values("zt_bin_minute")
+        _add_rose_series(sub, sdf, panel, bin_size_min, True, colors, opacity=0.9)
+        for start, end, fill in shading:
+            _add_background_wedge(sub, start, end, fill)
+        for trace in sub.data:
+            fig.add_trace(trace, row=1, col=col)
 
-    def _add_to_subplot(traces, idx):
-        row = idx // n_cols + 1
-        col = idx % n_cols + 1
-        for trace in traces:
-            fig.add_trace(trace, row=row, col=col)
-
-    # Subplot 1: Activity only
-    _add_to_subplot(
-        [
-            go.Barpolar(
-                r=activity_r,
-                theta=theta_centers,
-                width=bin_degrees * np.ones(n_bins),
-                name="Activity",
-                marker_color=ACTIVITY_COLOR,
-                opacity=0.7,
-                showlegend=(plot_idx == 0),
-            )
-        ],
-        plot_idx,
-    )
-    plot_idx += 1
-
-    # Subplots 2-4: Activity (grey) + one sleep state
-    for state in sleep_states:
-        if state not in state_distributions:
-            continue
-        traces = [
-            go.Barpolar(
-                r=activity_r,
-                theta=theta_centers,
-                width=bin_degrees * np.ones(n_bins),
-                name="Activity",
-                marker_color=ACTIVITY_COLOR,
-                opacity=0.4,
-                showlegend=False,
-            ),
-            go.Barpolar(
-                r=state_distributions[state],
-                theta=theta_centers,
-                width=bin_degrees * np.ones(n_bins),
-                name=state.capitalize(),
-                marker_color=STATE_COLORS.get(state, "#333333"),
-                opacity=0.7,
-                showlegend=True,
-            ),
-        ]
-        _add_to_subplot(traces, plot_idx)
-        plot_idx += 1
-
-    # Configure all polar axes
-    for i in range(n_plots):
-        polar_key = f"polar{i + 1}" if i > 0 else "polar"
+    prefix = "CT" if phase_label == "DD" else "ZT"
+    for i in range(len(panels)):
+        hours = [0, 12]
+        if i == 0:
+            hours.append(18)
+        if i == len(panels) - 1:
+            hours.append(6)
         fig.update_layout(
             **{
-                polar_key: dict(
-                    barmode="overlay",
-                    angularaxis=dict(
-                        tickvals=tickvals,
-                        ticktext=ticktext,
-                        direction="clockwise",
-                        rotation=90,
-                    ),
-                    radialaxis=dict(title="", showticklabels=True),
+                f"polar{i + 1}" if i else "polar": _polar_layout(
+                    prefix, label_hours=hours
                 )
             }
         )
 
-    if title is None:
-        title = f"Sleep State Temporal Distribution — {group}"
     fig.update_layout(
-        title=title,
-        height=400 * n_rows,
-        showlegend=True,
+        title=title or (f"Temporal organisation of sleep states — {group}" if group else None),
+        showlegend=False,
+        height=380,
+        margin=dict(t=110, b=30),
     )
+    # Lift the panel titles clear of the CT00/ZT00 tick, which sits at the top
+    # of each ring and otherwise overprints them.
+    for note in fig.layout.annotations:
+        note.update(yshift=16, font=dict(size=12))
     return fig
 
 
-def polar_gating_plot(bout_df, title="Sleep State Gating"):
-    """
-    Polar plot showing onset/offset arcs for each sleep state per fly.
+def polar_gating_plot(
+    stats_df,
+    gates_df=None,
+    phase_label="DD",
+    states=("activity", "short", "intermediate", "long"),
+    title="Circadian gating of sleep states",
+):
+    """Concentric per-fly gate arcs with the mean gate outermost — Figure 3C.
 
-    Each fly is shown as a thin arc; the group mean arc is shown as a thick
-    arc.  Matches Abhilash et al. 2026 Figure 3C.
+    Each fly contributes one arc per state spanning its circadian gate, drawn
+    at its own radius so the arcs nest instead of piling up; the outermost ring
+    carries the thick group-mean arcs. Radii are assigned fly-by-fly so the
+    colours interleave the way the printed figure's rings do.
+
+    Three things were wrong before:
+
+    - **Every per-fly arc was drawn at r = 1.** The paper's "each concentric
+      ring shows the gate of each sleep/wake state for each fly" became one
+      overlapping ring, so nothing about the per-fly spread was legible.
+    - **Gates came from bout onset/offset.** The paper derives them from
+      circular dispersion instead: the centre of mass gives a mean phase, and
+      angular deviation about it stands in for gate width, because there is no
+      objective phase marker for the start of a sleep state. See
+      ``sleep_state_metrics.circular_state_stats``.
+    - **Arcs that crossed the origin were drawn backwards.** A ``linspace``
+      from onset to offset in degrees traverses the long way round whenever
+      offset < onset, i.e. for exactly the states whose gate straddles
+      midnight. Here the offset is unwrapped forward past the onset first.
 
     Parameters
     ----------
-    bout_df : pd.DataFrame
-        Columns: 'id', 'group', 'state', 'onset_zt_min', 'offset_zt_min'.
-    title : str
-
-    Returns
-    -------
-    go.Figure
+    stats_df : pd.DataFrame
+        ``circular_state_stats`` output (one row per fly and state), already
+        filtered to one group.
+    gates_df : pd.DataFrame or None
+        ``group_gates`` output for the same group. Omit to skip the mean ring.
     """
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
+    colors, labels = _state_palette()
+    if stats_df is None or stats_df.empty:
+        return _empty("No circular statistics available.")
 
-    if bout_df.empty:
-        return go.Figure().add_annotation(
-            text="No gating data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
+    present = [s for s in states if s in set(stats_df["state"])]
+    if not present:
+        return _empty("No gates available for the requested states.")
+
+    flies = list(dict.fromkeys(stats_df["id"].tolist()))
+    n_rings = max(1, len(flies) * len(present))
+    inner, outer = 0.45, 0.93  # leave the middle clear for the CT/ZT labels
 
     fig = go.Figure()
-    states = [
-        s for s in ["standard", "short", "intermediate", "long"] if s in bout_df["state"].unique()
-    ]
-
-    def _zt_to_deg(zt_min):
-        return (zt_min / 1440.0) * 360.0
-
-    for state in states:
-        color = STATE_COLORS.get(state, "#333333")
-        sdf = bout_df[bout_df["state"] == state]
-
-        onsets_deg = []
-        offsets_deg = []
-
-        for fly_id in sdf["id"].unique():
-            fdf = sdf[sdf["id"] == fly_id]
-            if fdf.empty:
+    ring = 0
+    for fly in flies:
+        for state in present:
+            row = stats_df[(stats_df["id"] == fly) & (stats_df["state"] == state)]
+            ring += 1
+            if row.empty:
                 continue
-            onset_deg = _zt_to_deg(fdf["onset_zt_min"].mean())
-            offset_deg = _zt_to_deg(fdf["offset_zt_min"].mean())
-            onsets_deg.append(onset_deg)
-            offsets_deg.append(offset_deg)
+            onset, offset = float(row["onset_h"].iloc[0]), float(row["offset_h"].iloc[0])
+            if not (np.isfinite(onset) and np.isfinite(offset)):
+                continue
+            radius = inner + (outer - inner) * (ring / n_rings)
+            fig.add_trace(_gate_arc(onset, offset, radius, colors[state], width=1.4, alpha=0.30))
 
-            # Per-fly arc (thin)
-            theta_arc = np.linspace(onset_deg, offset_deg, 20)
+    if gates_df is not None and not gates_df.empty:
+        for state in present:
+            row = gates_df[gates_df["state"] == state]
+            if row.empty:
+                continue
+            onset, offset = float(row["onset_h"].iloc[0]), float(row["offset_h"].iloc[0])
+            if not (np.isfinite(onset) and np.isfinite(offset)):
+                continue
+            # Nudge each mean arc onto its own radius: the paper's gates are
+            # allowed to overlap ("although sleep states cannot co-occur in
+            # time within a fly, the circadian gates may overlap"), and one
+            # shared radius would hide whichever was drawn first.
+            offset_idx = present.index(state)
+            radius = 1.0 + 0.055 * offset_idx
             fig.add_trace(
-                go.Scatterpolar(
-                    r=np.ones(20),
-                    theta=theta_arc,
-                    mode="lines",
-                    line=dict(color=color, width=1),
-                    opacity=0.2,
-                    showlegend=False,
-                    hoverinfo="skip",
+                _gate_arc(
+                    onset,
+                    offset,
+                    radius,
+                    colors[state],
+                    width=7,
+                    alpha=1.0,
+                    name=labels.get(state, state),
+                    show_legend=True,
                 )
             )
 
-        if onsets_deg:
-            # Group mean arc (thick)
-            mean_onset = float(np.mean(onsets_deg))
-            mean_offset = float(np.mean(offsets_deg))
-            theta_mean = np.linspace(mean_onset, mean_offset, 30)
-            fig.add_trace(
-                go.Scatterpolar(
-                    r=np.ones(30) * 1.1,
-                    theta=theta_mean,
-                    mode="lines",
-                    line=dict(color=color, width=4),
-                    name=state,
-                )
-            )
-
-    tickvals = list(range(0, 360, 45))
-    ticktext = [f"ZT{int(v / 360 * 24):02d}" for v in tickvals]
+    layout = _polar_layout("", inner_hole=0.0)
+    layout["radialaxis"]["range"] = [0, 1.0 + 0.055 * len(present) + 0.05]
+    # Pin the polar domain rather than letting the legend squeeze it, so the
+    # CT/ZT label in the middle of the rings can be placed on the actual centre
+    # of the circle. With an auto domain the legend shifts the plot left and a
+    # paper-space x of 0.5 lands off-centre.
+    domain_x = (0.0, 0.66)
+    layout["domain"] = dict(x=list(domain_x), y=[0.0, 1.0])
     fig.update_layout(
         title=title,
-        polar=dict(
-            angularaxis=dict(
-                tickvals=tickvals,
-                ticktext=ticktext,
-                direction="clockwise",
-                rotation=90,
-            ),
-        ),
+        polar=layout,
+        showlegend=True,
+        legend=dict(x=0.70, y=0.9, yanchor="top"),
+        annotations=[
+            dict(
+                text="CT" if phase_label == "DD" else "ZT",
+                x=sum(domain_x) / 2,
+                y=0.5,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=13),
+            )
+        ],
     )
     return fig
 
 
-def ultradian_amplitude_plot(amplitude_dict, title="Ultradian Amplitude over Time"):
-    """
-    Line plots of mean ultradian CWT power over time per sleep state.
+def ultradian_amplitude_plot(
+    amplitude_dict,
+    bin_size_min=5,
+    phase_label="DD",
+    n_bootstrap=1000,
+    bands=None,
+    title="Ultradian amplitude over time",
+):
+    """Ultradian-band amplitude against time, with bootstrap CI — Figure 6A/C/E.
 
-    Shows whether ultradian rhythm strength varies with the circadian cycle.
-    95% CI from 2000-resample bootstrap (Riggle et al. 2022).
+    "Also, shown are amplitude values over time for each sleep state... The
+    error regions for each time vs. amplitude trace represent 95% confidence
+    intervals estimated through bootstrapping."
+
+    Three changes from the previous version, all about being readable against
+    the printed panel: the x axis is **hours since the start of the epoch**
+    (the paper's 0-216 h) rather than an unlabelled bin index, the subjective
+    day/night blocks are shaded so the circadian gating the figure exists to
+    show is visible, and the resample count is the paper's 1000.
 
     Parameters
     ----------
     amplitude_dict : dict
-        Keys are state label strings; values are (n_flies, n_timepoints) ndarrays
-        of mean power in the ultradian band per 5-min bin.
-    title : str
-
-    Returns
-    -------
-    go.Figure  (one subplot row per state)
+        state -> (n_flies, n_timepoints) ultradian-band amplitude.
+    bands : dict or None
+        state -> (min, max) hours, shown in each panel's subtitle so a reader
+        knows which band was averaged (1-4 h for short and intermediate sleep,
+        2-6 h for long sleep).
     """
     from plotly.subplots import make_subplots
 
-    states = list(amplitude_dict.keys())
-    n = len(states)
-    if n == 0:
-        return go.Figure().add_annotation(
-            text="No ultradian amplitude data available.",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-        )
+    colors, labels = _state_palette()
+    states = [s for s in amplitude_dict if amplitude_dict[s] is not None]
+    if not states:
+        return _empty("No ultradian amplitude data available.")
 
-    STATE_COLORS = {
-        "standard": "#888888",
-        "short": "#1f77b4",
-        "intermediate": "#ff7f0e",
-        "long": "#d62728",
-    }
-    N_BOOTSTRAP = 2000
     rng = np.random.default_rng(42)
-
-    fig = make_subplots(rows=n, cols=1, subplot_titles=states, shared_xaxes=True)
-
-    for row, state in enumerate(states, start=1):
-        data_mat = np.asarray(amplitude_dict[state])  # (n_flies, n_t)
-        if data_mat.ndim == 1:
-            data_mat = data_mat[np.newaxis, :]
-        n_flies, n_t = data_mat.shape
-        t = np.arange(n_t) * 5 / 60.0  # convert 5-min bins to hours
-
-        mean_amp = np.nanmean(data_mat, axis=0)
-
-        # Bootstrap CI
-        boot = np.empty((N_BOOTSTRAP, n_t))
-        for b in range(N_BOOTSTRAP):
-            idx = rng.integers(0, n_flies, size=n_flies)
-            boot[b] = np.nanmean(data_mat[idx], axis=0)
-        ci_lo = np.nanpercentile(boot, 2.5, axis=0)
-        ci_hi = np.nanpercentile(boot, 97.5, axis=0)
-
-        color = STATE_COLORS.get(state, "#333333")
-        r, g_c, b_c = tuple(int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
-
-        lg = str(state)
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=mean_amp,
-                mode="lines",
-                line=dict(color=color, width=2),
-                name=state,
-                legendgroup=lg,
-            ),
-            row=row,
-            col=1,
+    subtitles = []
+    for state in states:
+        band = (bands or {}).get(state)
+        subtitles.append(
+            f"{labels.get(state, state)}"
+            + (f" — {band[0]}-{band[1]} h band" if band else "")
         )
-        # SAME legendgroup as the mean so a legend click toggles both together.
-        x_fill = np.concatenate([t, t[::-1]])
-        y_fill = np.concatenate([ci_hi, ci_lo[::-1]])
+
+    fig = make_subplots(
+        rows=len(states),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=subtitles,
+    )
+
+    max_hours = 0.0
+    for row, state in enumerate(states, start=1):
+        mat = np.asarray(amplitude_dict[state], dtype=float)
+        if mat.ndim == 1:
+            mat = mat[np.newaxis, :]
+        keep = ~np.all(~np.isfinite(mat), axis=1)
+        mat = mat[keep]
+        if mat.size == 0:
+            continue
+        hours = np.arange(mat.shape[1]) * bin_size_min / 60.0
+        max_hours = max(max_hours, float(hours[-1]))
+        mean = np.nanmean(mat, axis=0)
+
+        if mat.shape[0] > 1:
+            boot = np.empty((n_bootstrap, mat.shape[1]))
+            for b in range(n_bootstrap):
+                boot[b] = np.nanmean(mat[rng.integers(0, mat.shape[0], mat.shape[0])], axis=0)
+            lo = np.nanpercentile(boot, 2.5, axis=0)
+            hi = np.nanpercentile(boot, 97.5, axis=0)
+        else:
+            lo = hi = mean
+
+        color = colors.get(state, "#333333")
         fig.add_trace(
             go.Scatter(
-                x=x_fill,
-                y=y_fill,
+                x=np.concatenate([hours, hours[::-1]]),
+                y=np.concatenate([hi, lo[::-1]]),
                 fill="toself",
-                fillcolor=f"rgba({r},{g_c},{b_c},0.2)",
+                fillcolor=_rgba(color, 0.22),
                 line=dict(color="rgba(0,0,0,0)"),
-                legendgroup=lg,
                 showlegend=False,
                 hoverinfo="skip",
             ),
             row=row,
             col=1,
         )
-        fig.update_yaxes(title_text="Ultradian power", row=row, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=hours,
+                y=mean,
+                mode="lines",
+                line=dict(color=color, width=1.8),
+                name=labels.get(state, state),
+                showlegend=False,
+                hovertemplate="%{x:.1f} h<br>%{y:.3f}<extra></extra>",
+            ),
+            row=row,
+            col=1,
+        )
+        fig.update_yaxes(title_text="Norm. amplitude", rangemode="tozero", row=row, col=1)
 
-    fig.update_xaxes(title_text="Time (hours)", row=n, col=1)
-    fig.update_layout(title=title, height=200 * n)
+    # Subjective day/night blocks across the whole recording, so the gating is
+    # readable rather than inferred from tick positions.
+    for row in range(1, len(states) + 1):
+        for day in range(int(np.ceil(max_hours / 24.0))):
+            fig.add_vrect(
+                x0=day * 24 + 12,
+                x1=min(day * 24 + 24, max_hours),
+                fillcolor="rgba(0,0,0,0.11)" if phase_label == "DD" else "rgba(0,0,0,0.16)",
+                line_width=0,
+                layer="below",
+                row=row,
+                col=1,
+            )
+
+    fig.update_xaxes(dtick=24, range=[0, max_hours])
+    fig.update_xaxes(
+        title_text=f"Hours since start of {'constant darkness' if phase_label == 'DD' else 'the light cycle'}",
+        row=len(states),
+        col=1,
+    )
+    fig.update_layout(title=title, height=185 * len(states) + 90)
+    return fig
+
+def chi_sq_periodogram_plot(
+    chi_ds,
+    states=("standard", "short", "intermediate", "long"),
+    title="Chi-squared periodogram of ultradian amplitude",
+):
+    """Per-fly adjusted chi-squared periodograms with the group mean — Figure 6B/D/F.
+
+    "Thin lines represent the periodogram results for each fly, and the thick
+    line displays the power for each period value, averaged over all the flies.
+    The red horizontal line at zero marks the critical value for statistical
+    significance."
+
+    The y quantity is **adjusted** power (Qp minus the significance threshold),
+    which is what puts the critical value at a flat zero instead of on a
+    period-dependent curve — see
+    ``periodograms.ultradian_rhythmicity_chi_sq``.
+
+    Parameters
+    ----------
+    chi_ds : xr.Dataset
+        Output of ``periodograms.ultradian_rhythmicity_chi_sq``.
+    """
+    from plotly.subplots import make_subplots
+
+    colors, labels = _state_palette()
+    present = [s for s in states if f"ultra_chisq_adjusted_{s}" in getattr(chi_ds, "data_vars", {})]
+    if not present:
+        return _empty("No chi-squared periodogram results available.")
+
+    fig = make_subplots(
+        rows=len(present),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=[labels.get(s, s) for s in present],
+    )
+
+    for row, state in enumerate(present, start=1):
+        da = chi_ds[f"ultra_chisq_adjusted_{state}"]
+        pdim = [d for d in da.dims if d != "id"][0]
+        periods = np.asarray(da[pdim].values, dtype=float)
+        values = np.asarray(da.transpose("id", pdim).values, dtype=float)
+        color = colors.get(state, "#333333")
+
+        for fly_row in values:
+            fig.add_trace(
+                go.Scatter(
+                    x=periods,
+                    y=fly_row,
+                    mode="lines",
+                    line=dict(color=_rgba(color, 0.16), width=1),
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=1,
+            )
+        fig.add_trace(
+            go.Scatter(
+                x=periods,
+                y=np.nanmean(values, axis=0),
+                mode="lines",
+                line=dict(color=color, width=2.5),
+                name=labels.get(state, state),
+                showlegend=False,
+                hovertemplate="%{x:.2f} h<br>adj. power %{y:.1f}<extra></extra>",
+            ),
+            row=row,
+            col=1,
+        )
+        fig.add_hline(
+            y=0,
+            line=dict(color="#D62728", width=1.4),
+            row=row,
+            col=1,
+        )
+        fig.add_vline(
+            x=24,
+            line=dict(color="rgba(120,120,120,0.7)", width=1, dash="dash"),
+            row=row,
+            col=1,
+        )
+        fig.update_yaxes(title_text="Adj. power", row=row, col=1)
+
+    fig.update_xaxes(dtick=4)
+    fig.update_xaxes(title_text="Period (h)", row=len(present), col=1)
+    fig.update_layout(title=title, height=180 * len(present) + 80)
     return fig
 
 
-# =============================================================================
-# Rhythmicity violin grid (Period Analysis page)
-# =============================================================================
 
-# Metadata about each algorithm's variables and display. Keep in sync with
-# rhythmicity_classification._ALGO_META.
 _RHYTH_VIOLIN_META = {
     "ls": {
         "label": "Lomb-Scargle",

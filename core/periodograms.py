@@ -3107,14 +3107,46 @@ def mesa_analysis(
 # ===========================================================================
 
 
+def _bin_offset(all_time, clean_time, bin_size):
+    """Index of a clean run's first bin on the shared binned grid.
+
+    Each fly is reduced to its longest continuous stretch, which may start well
+    after the epoch does. The group surface is accumulated on one grid derived
+    from the whole time axis, so every fly needs the offset of its own run —
+    without it a fly whose data begins on day 3 gets averaged into day 0.
+
+    Handles both time representations: relative integer minutes subtract
+    directly, datetimes go through a timedelta.
+    """
+    if len(clean_time) == 0:
+        return 0
+    start, first = np.asarray(all_time)[0], np.asarray(clean_time)[0]
+    if np.issubdtype(np.asarray(all_time).dtype, np.integer) or np.issubdtype(
+        np.asarray(all_time).dtype, np.floating
+    ):
+        minutes = float(first) - float(start)
+    else:
+        minutes = (
+            np.asarray(first, dtype="datetime64[s]")
+            - np.asarray(start, dtype="datetime64[s]")
+        ).astype("timedelta64[s]").astype(float) / 60.0
+    return max(0, int(round(minutes / bin_size)))
+
+
+# Bin width of the sleep-state CWT path, in minutes (STAR Methods).
+SLEEP_CWT_BIN_MINUTES = 5
+
+
 def sleep_cwt_analysis(
     ds,
     states=("standard", "short", "intermediate", "long"),
     circadian_range=(18, 30),
     ultradian_range_short_inter=(1, 4),
     ultradian_range_long=(2, 6),
-    full_range=None,
+    full_range=(1, 32),
     wavelet_name="cmor1.5-1.0",
+    rectify_scale_bias=True,
+    resolution=1 / 100,
     phase="auto",
     fly_ids=None,
     n_processes=None,
@@ -3127,9 +3159,53 @@ def sleep_cwt_analysis(
     intervals by summing (values 0-5), reducing sparsity.  CWT is computed using
     the Morlet wavelet.
 
-    Normalisation: each fly's 2D power matrix is divided by its mean cell value
-    (mean-of-matrix normalisation, Riggle et al. 2022).  This ensures equal
-    weighting across flies regardless of their overall sleep fraction.
+    Normalisation: each fly's 2D power matrix is divided by its mean cell value,
+    then the normalised surfaces are averaged across flies. That order matters
+    and it is the paper's: "we resolved each fly's timeseries in the
+    time-frequency domain and then normalized it to the average amplitude of the
+    surface. Next, we averaged the normalized surfaces across flies." It also
+    matches the authors' own Shiny implementation
+    (``phaseR/server.R``: ``power.norm[[i]] <- power.mat[[i]]/avg.power``,
+    then ``apply(power.array, c(1,2), mean)``).
+
+    Reference implementation
+    ------------------------
+    The paper's scalograms come from ``WaveletComp::analyze.wavelet``, called
+    with ``loess.span = 0`` (no detrending), ``dt = 1``, ``dj = 1/100``, a
+    single ``lowerPeriod``/``upperPeriod`` spanning the whole displayed range,
+    and reading its ``$Power``. Three consequences are baked into the defaults
+    here, each of which the previous defaults got wrong:
+
+    - **One pass over the full range.** ``full_range`` now defaults to
+      ``(1, 32)`` h, so the scalogram is the paper's Figure 5A surface — one
+      log-period axis from ultradian to circadian. Previously it defaulted to
+      ``None``, which ran two separate narrow-band CWTs (18-30 h and 1-4/2-6 h)
+      and normalised each by its OWN band mean. Those z-values cannot be
+      compared to the paper's 0-1.5 colour scale, or to each other, because
+      the divisor differed per band. Pass ``full_range=None`` for the old
+      split-band behaviour.
+    - **Scale-rectified power** (``rectify_scale_bias``). WaveletComp computes
+      ``Power = Mod(Wave)^2 / scale`` (Liu et al. 2007); a bare ``|W|^2`` is
+      biased toward long periods. Measured on a synthetic 24 h + 3 h signal of
+      EQUAL amplitude: unrectified reports the 24-h component 7.1x stronger
+      than the 3-h one and places its peak at 24.51 h, while rectified reports
+      them comparably (5.4 vs 4.8) and peaks at 24.00 h. Unrectified therefore
+      understates ultradian power by roughly an order of magnitude relative to
+      circadian — the ultradian:circadian ratio on that signal is 0.03
+      unrectified against 0.26 rectified, and the paper's Figure 5B sits near
+      the latter. See ``tests/test_sleep_cwt_truth.py``.
+    - **``dj = 1/100``** (``resolution``), matching WaveletComp rather than the
+      1/512 used before. 1/512 is five times finer at five times the cost and
+      buys nothing the printed figure resolves.
+
+    One documented difference remains: WaveletComp uses a Torrence & Compo
+    Morlet with omega0 = 6, while ``wavelet_name`` defaults to PyWavelets'
+    ``cmor1.5-1.0`` (omega0 = 2*pi ~ 6.28, bandwidth 1.5 against T&C's
+    equivalent 2.0). That is the convention every other CWT path in this
+    repo uses, and changing it would move existing period results, so it is
+    left alone; it slightly favours time resolution over period resolution.
+    WaveletComp also z-scores its input where this path only mean-centres,
+    which cancels exactly under the divide-by-surface-mean normalisation.
 
     Parameters
     ----------
@@ -3146,10 +3222,20 @@ def sleep_cwt_analysis(
     ultradian_range_long : tuple of float
         (min, max) period in hours for long sleep ultradian. Default (2, 6).
     full_range : tuple of float or None
-        If provided, e.g. (1, 30), run a single CWT spanning the full range
-        instead of separate circadian + ultradian passes. The scalogram covers
-        the entire range; ultradian amplitude is still extracted from the
-        ultradian sub-range of the full scalogram.
+        Run a single CWT spanning this period range (default ``(1, 32)`` h,
+        the paper's Figure 5A axis) instead of separate circadian + ultradian
+        passes. The scalogram covers the entire range; ultradian amplitude is
+        still extracted from the ultradian sub-range of the full scalogram.
+        ``None`` restores the two narrow-band passes — see the note above on
+        why their z-scales are not comparable to the paper's.
+    rectify_scale_bias : bool
+        Divide power by scale before normalising, as ``WaveletComp`` does
+        (Liu et al. 2007). Default True. Setting this False reproduces the
+        long-period bias described above and should only be used to reproduce
+        an older run.
+    resolution : float
+        1 / voices-per-octave for the log period grid. Default 1/100, matching
+        WaveletComp's ``dj = 1/100``.
     phase : str
         Phase selection: 'auto', 'DD', 'LD', or 'both'.
     fly_ids : array-like or None
@@ -3169,6 +3255,11 @@ def sleep_cwt_analysis(
           sleep_cwt_<state>_<range>_fly_power      (id, period) per-fly avg power spectrum
           sleep_cwt_<state>_ultradian_amplitude    (id, time) mean ultradian power per fly
     """
+    # 5-minute binning is fixed by the method, not a per-fly choice: "Sleep
+    # timeseries for all three states of sleep were binned in 5-min intervals
+    # and subjected to Continuous Wavelet Transforms."
+    bin_size = SLEEP_CWT_BIN_MINUTES
+
     var_map = {
         "standard": "sleep",
         "short": "sleep_short",
@@ -3217,39 +3308,86 @@ def sleep_cwt_analysis(
             min_p, max_p = period_range
             print(f"sleep_cwt_analysis: state={state}, range={range_name} ({min_p}-{max_p}h)")
 
-            # Process each fly
-            fly_surfaces = []  # list of (n_periods, n_timepoints) arrays
+            # Process each fly.
+            #
+            # The group-average surface is accumulated as a running SUM rather
+            # than by keeping every fly's surface and stacking at the end. A
+            # full-range surface is ~500 periods x ~2600 five-minute bins, so
+            # 190 flies of them is about a gigabyte per state held at once —
+            # enough to thrash a Streamlit worker. Nothing downstream needs the
+            # individual surfaces: the two per-fly outputs (a time-averaged
+            # spectrum and an ultradian amplitude trace) are both reductions
+            # that can be taken as each fly finishes.
+            #
+            # Flies are accumulated ONTO A SHARED TIME GRID at each fly's own
+            # offset, with a per-cell count, rather than being left-aligned and
+            # cropped to the shortest. Both halves of that matter:
+            #
+            # - Cropping to the shortest run threw away most of the recording.
+            #   On a real 31-fly group whose median clean run is 9 days, three
+            #   flies with 1.1-, 2.3- and 3.4-day runs cut the GROUP surface to
+            #   3.4 days. (Before each fly was reduced to its longest clean run
+            #   this never bit, because every fly then had the full time axis.)
+            # - Re-zeroing each run to t=0 misaligned them. A fly whose clean
+            #   stretch begins on day 3 would have its day-3 column averaged
+            #   into everyone else's day 0, smearing exactly the daily
+            #   structure these scalograms exist to show — and mislabelling the
+            #   "days since start" axis.
+            #
+            # A cell covered by no fly stays NaN rather than 0, so a partly
+            # covered surface reads as missing instead of as an absence of
+            # rhythm.
+            n_bins_total = max(1, len(time_vals) // bin_size)
+            surface_sum = None  # (n_periods, n_bins_total)
+            surface_count = None
             fly_period_axes = None
-            fly_ultradian_amps = []  # list of (n_timepoints,) arrays
+            fly_spectra = []  # per-fly time-averaged spectrum, or None
+            fly_ultradian_amps = []  # list of (offset, values) or None
 
             for fly_id in all_fly_ids:
                 fly_da = analysis_ds[var].sel(id=fly_id)
                 fly_arr = fly_da.values.astype(np.float32)
 
-                # Replace missing (-1) with 0 for CWT
-                fly_arr = np.where(fly_arr < 0, 0.0, fly_arr)
+                # Missing minutes reach this function in TWO representations and
+                # both have to become NaN before the extractor sees them: the
+                # masks as written by sleep_analysis carry -1, but a
+                # select_phase() view has already upcast them to float and put
+                # NaN in the out-of-phase minutes. The old `where(arr < 0, 0)`
+                # caught only the first, so a phase view fed NaN straight into
+                # the transform and the whole averaged surface came out NaN.
+                fly_arr = np.where(fly_arr < 0, np.nan, fly_arr)
+
+                # Restrict to the fly's longest continuous stretch of real data,
+                # as every other analysis in this module does. Without it the
+                # out-of-phase half of a phase view would be carried into the
+                # transform as a block of zeros, and the step at the epoch
+                # boundary would put broadband power across every period.
+                clean, clean_time, _ = _extract_longest_continuous_block(fly_arr, time_vals)
+                if clean is None or len(clean) < 2:
+                    fly_spectra.append(None)
+                    fly_ultradian_amps.append(None)
+                    continue
 
                 # Bin to 5-minute intervals by summing
-                bin_size = 5  # minutes
                 if time_is_int:
-                    n_bins = len(fly_arr) // bin_size
+                    n_bins = len(clean) // bin_size
                     if n_bins == 0:
-                        fly_surfaces.append(None)
+                        fly_spectra.append(None)
                         fly_ultradian_amps.append(None)
                         continue
-                    binned = fly_arr[: n_bins * bin_size].reshape(n_bins, bin_size).sum(axis=1)
+                    binned = clean[: n_bins * bin_size].reshape(n_bins, bin_size).sum(axis=1)
                     t_binned = np.arange(n_bins, dtype=np.int64) * bin_size
                 else:
                     import pandas as _pd
 
-                    df_tmp = _pd.DataFrame({"val": fly_arr}, index=_pd.to_datetime(time_vals))
+                    df_tmp = _pd.DataFrame({"val": clean}, index=_pd.to_datetime(clean_time))
                     df_binned = df_tmp.resample(f"{bin_size}min").sum()
                     binned = df_binned["val"].values.astype(np.float32)
                     t_binned = df_binned.index.values
                     n_bins = len(binned)
 
                 if n_bins < 10:
-                    fly_surfaces.append(None)
+                    fly_spectra.append(None)
                     fly_ultradian_amps.append(None)
                     continue
 
@@ -3257,34 +3395,60 @@ def sleep_cwt_analysis(
                 # the lightweight ridge mode.
                 # NOTE: resolution here is INTENTIONALLY independent of the
                 # circadian-period default (DEFAULT_CWT_RESOLUTION). This is the
-                # ultradian sleep-rhythm SURFACE path (page 10) — a finer grid is
-                # kept so the rendered scalogram surface is smooth across the wide
-                # ultradian [min_p, max_p] band. Not the period-analysis default;
-                # do not fold the two together.
+                # sleep-state SURFACE path, and its grid is pinned to
+                # WaveletComp's dj = 1/100 so the surface matches the paper's.
+                # Not the period-analysis default; do not fold the two together.
                 cwt_result = _preprocess_and_compute_cwt(
                     binned,
                     t_binned,
                     min_p,
                     max_p,
                     cwt_method="ridge",
-                    resolution=1 / 512,
+                    resolution=resolution,
                     wavelet=wavelet_name,
                 )
 
                 if cwt_result is None:
-                    fly_surfaces.append(None)
+                    fly_spectra.append(None)
                     fly_ultradian_amps.append(None)
                     continue
 
-                power = cwt_result["power"]  # (n_scales, n_timepoints)
+                power = cwt_result["power"].astype(np.float64)  # (n_scales, n_time)
+                fly_period_axes = cwt_result["periods_hours"]
 
-                # Mean-of-matrix normalisation (Riggle 2022)
+                if rectify_scale_bias:
+                    # WaveletComp: Power = Mod(Wave)^2 / scale (Liu et al. 2007).
+                    # `scales` are periods expressed in SAMPLES, and this path
+                    # samples every `bin_size` minutes — so convert the period
+                    # axis to samples rather than reusing hours, which would
+                    # rectify by a constant factor off the correct one.
+                    scales_samples = fly_period_axes * 60.0 / bin_size
+                    power = power / scales_samples[:, None]
+
+                # Normalise to the mean of this fly's own surface, THEN average
+                # across flies further down. Reversing those two steps weights
+                # flies by how much they slept.
                 mat_mean = np.mean(power)
                 if mat_mean > 0:
                     power = power / mat_mean
 
-                fly_surfaces.append(power)
-                fly_period_axes = cwt_result["periods_hours"]
+                power = power.astype(np.float32)
+
+                # Where this fly's clean run starts on the shared grid.
+                offset = _bin_offset(time_vals, clean_time, bin_size)
+                take = min(power.shape[1], n_bins_total - offset)
+                if take <= 0:
+                    fly_spectra.append(None)
+                    fly_ultradian_amps.append(None)
+                    continue
+
+                if surface_sum is None:
+                    surface_sum = np.zeros((power.shape[0], n_bins_total))
+                    surface_count = np.zeros(n_bins_total, dtype=np.int32)
+                surface_sum[:, offset : offset + take] += power[:, :take]
+                surface_count[offset : offset + take] += 1
+
+                fly_spectra.append(np.mean(power[:, :take], axis=1))
 
                 # Extract ultradian amplitude from ultradian sub-range
                 if range_name == "ultradian" or (
@@ -3293,7 +3457,11 @@ def sleep_cwt_analysis(
                     u_min, u_max = ultradian_range
                     u_mask = (fly_period_axes >= u_min) & (fly_period_axes <= u_max)
                     if np.any(u_mask):
-                        fly_ultradian_amps.append(np.mean(power[u_mask], axis=0))
+                        # Carry the offset so the per-fly traces line up on the
+                        # shared grid too, not just the averaged surface.
+                        fly_ultradian_amps.append(
+                            (offset, np.mean(power[u_mask, :take], axis=0))
+                        )
                     else:
                         fly_ultradian_amps.append(None)
                 else:
@@ -3304,15 +3472,27 @@ def sleep_cwt_analysis(
                     total_ops = n_flies * len(states) * len(ranges_to_run)
                     progress_callback(completed, total_ops)
 
-            # Group-average normalised surfaces
-            valid_surfaces = [s for s in fly_surfaces if s is not None]
-            if not valid_surfaces or fly_period_axes is None:
+            # Group-average normalised surfaces: per-cell mean over the flies
+            # that actually cover each time bin.
+            if surface_sum is None or fly_period_axes is None:
+                continue
+            if not surface_count.any():
                 continue
 
-            # Pad/crop to same time length (take minimum)
-            min_t = min(s.shape[1] for s in valid_surfaces)
-            valid_surfaces_arr = np.stack([s[:, :min_t] for s in valid_surfaces], axis=0)
-            avg_surface = np.mean(valid_surfaces_arr, axis=0)  # (n_periods, n_t)
+            with np.errstate(invalid="ignore"):
+                avg_surface = surface_sum / np.where(surface_count > 0, surface_count, np.nan)
+            avg_surface = avg_surface.astype(np.float32)
+
+            # Trim bins no fly covers off BOTH ends, so column 0 is the first
+            # minute anyone contributed. The shared grid spans the whole time
+            # axis, and a select_phase() view masks the out-of-phase epoch — on
+            # a DD view of a 6-day recording that is two empty leading days,
+            # which the scalogram would otherwise render as blank and label
+            # "days since start of constant darkness". Interior gaps stay NaN.
+            covered = np.flatnonzero(surface_count > 0)
+            lo, hi = int(covered[0]), int(covered[-1]) + 1
+            avg_surface = avg_surface[:, lo:hi]
+            trim_lo, min_t = lo, avg_surface.shape[1]
 
             surf_var = f"sleep_cwt_{state}_{range_name}_avg_surface"
             pax_var = f"sleep_cwt_{state}_{range_name}_period_axis"
@@ -3336,12 +3516,10 @@ def sleep_cwt_analysis(
             )
 
             # Per-fly time-averaged power spectra for bootstrap CI (Tab 2)
-            fly_power_spectra = []
-            for s in fly_surfaces:
-                if s is not None:
-                    fly_power_spectra.append(np.mean(s[:, :min_t], axis=1))
-                else:
-                    fly_power_spectra.append(np.full(len(fly_period_axes), np.nan))
+            fly_power_spectra = [
+                s if s is not None else np.full(len(fly_period_axes), np.nan)
+                for s in fly_spectra
+            ]
             result_vars[fpow_var] = xr.DataArray(
                 np.stack(fly_power_spectra, axis=0),
                 dims=["id", pdim],
@@ -3354,10 +3532,21 @@ def sleep_cwt_analysis(
             if has_ultradian:
                 amp_arrays = []
                 for amp in fly_ultradian_amps:
+                    row = np.full(min_t, np.nan)
                     if amp is not None:
-                        amp_arrays.append(amp[:min_t])
-                    else:
-                        amp_arrays.append(np.full(min_t, np.nan))
+                        # Written in at the fly's own offset, so a fly whose
+                        # clean run starts late leaves NaN before it rather
+                        # than shifting its trace to day 0.
+                        off, values = amp
+                        # Same trim as the surface, so the amplitude traces and
+                        # the scalogram share one x axis.
+                        off -= trim_lo
+                        start = max(0, off)
+                        src = max(0, -off)
+                        n = min(len(values) - src, min_t - start)
+                        if n > 0:
+                            row[start : start + n] = values[src : src + n]
+                    amp_arrays.append(row)
 
                 amp_tdim = f"cwt_tbin_{state}_ultradian"
                 if range_name == "full":
@@ -3498,5 +3687,173 @@ def ultradian_rhythmicity_ls(
         )
 
     if not result_vars:
+        return xr.Dataset()
+    return xr.Dataset(result_vars)
+
+
+def _chi_sq_periodogram(values, period_hours, sampling_min, alpha=0.05):
+    """Sokolove & Bushell chi-squared periodogram, with adjusted power.
+
+    Ported from ``zeitgebr::chi_sq_periodogram`` (rethomics), which is what the
+    paper's own ``phase::indPeriodogramSleep(method = "ChiSquare")`` calls, so
+    the numbers here are directly comparable to Figure 6B/D/F:
+
+        col_num  = round(period * sampling_rate)          # period in samples
+        Qp       = sum((col_means - grand_mean)^2) * N * (N / col_num)
+                   / sum((values - grand_mean)^2)
+
+    Two details are easy to get wrong and are the reason this is a port rather
+    than a fresh implementation:
+
+    - The number of cycles is **fractional** (``N / col_num``) and every sample
+      is used, rather than truncating to whole cycles.
+    - Degrees of freedom are ``col_num``, not ``col_num - 1``, and the
+      significance threshold carries a Sidak correction across the trial
+      periods: ``alpha' = 1 - (1 - alpha) ** (1 / n_periods)``.
+
+    Returns
+    -------
+    dict with ``period`` (hours), ``power`` (Qp), ``threshold``, and
+    ``adjusted`` = power - threshold. The paper plots ``adjusted``, which is
+    why its y axis is "Adjusted chi-squared periodogram power" and its
+    significance line sits at zero rather than at some period-dependent curve.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    periods = np.asarray(period_hours, dtype=float)
+    n = values.size
+    if n < 2 or periods.size == 0:
+        nan = np.full(periods.shape, np.nan)
+        return {"period": periods, "power": nan, "threshold": nan, "adjusted": nan}
+
+    grand = values.mean()
+    denom = float(((values - grand) ** 2).sum())
+    samples_per_hour = 60.0 / sampling_min
+
+    power = np.full(periods.shape, np.nan)
+    for i, p_h in enumerate(periods):
+        col_num = int(round(p_h * samples_per_hour))
+        if col_num < 1 or col_num > n or denom <= 0:
+            continue
+        cols = np.arange(n) % col_num
+        col_sums = np.bincount(cols, weights=values, minlength=col_num)
+        col_counts = np.bincount(cols, minlength=col_num)
+        col_means = col_sums / np.maximum(col_counts, 1)
+        power[i] = float(((col_means - grand) ** 2).sum()) * n * (n / col_num) / denom
+
+    from scipy.stats import chi2
+
+    corrected_alpha = 1.0 - (1.0 - alpha) ** (1.0 / len(periods))
+    dof = np.array([max(1, int(round(p * samples_per_hour))) for p in periods])
+    threshold = chi2.isf(corrected_alpha, dof)
+    return {
+        "period": periods,
+        "power": power,
+        "threshold": threshold,
+        "adjusted": power - threshold,
+    }
+
+
+def ultradian_rhythmicity_chi_sq(
+    ds,
+    states=("standard", "short", "intermediate", "long"),
+    period_range=(16, 32),
+    time_resolution_min=20,
+    alpha=0.05,
+    bin_size_min=5,
+):
+    """Chi-squared periodogram of each fly's ultradian-amplitude time course.
+
+    This is the test behind Figure 6B/D/F: "These amplitude time-courses were
+    then subjected to chi-squared periodogram analyses to test for rhythmicity
+    in ultradian rhythm amplitudes in each of the sleep states."
+
+    It sits alongside :func:`ultradian_rhythmicity_ls` rather than replacing
+    it. The Lomb-Scargle version is the better test on its merits — calibrated
+    false-alarm probabilities, tolerant of gaps — but it is NOT the paper's
+    test, so a Lomb-Scargle result cannot be checked against the paper's
+    printed periodograms or against Table S2. Both are available: use this one
+    to reproduce, that one to decide.
+
+    Defaults are the paper's, via ``phase``'s own defaults: periods 16-32 h at
+    20-minute resolution, alpha = 0.05. Figure 6's x axis is exactly 16-32 h.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Must contain ``sleep_cwt_<state>_ultradian_amplitude`` from
+        :func:`sleep_cwt_analysis`.
+    period_range, time_resolution_min, alpha
+        Passed to the periodogram; see above.
+    bin_size_min : int
+        Sampling interval of the amplitude series, i.e. the CWT bin width.
+        Must match ``sleep_cwt_analysis``'s 5-minute binning.
+
+    Returns
+    -------
+    xr.Dataset
+        Per state:
+          ``ultra_chisq_power_<state>``     (id, period) Qp
+          ``ultra_chisq_adjusted_<state>``  (id, period) Qp - threshold
+          ``ultra_chisq_peak_period_<state>`` (id,) period of maximum adjusted power
+          ``ultra_chisq_peak_adjusted_<state>`` (id,) that maximum
+          ``ultra_chisq_rhythmic_<state>``  (id,) 1 if any adjusted power > 0
+    """
+    periods = np.arange(
+        period_range[0], period_range[1] + 1e-9, time_resolution_min / 60.0
+    )
+    result_vars = {}
+
+    for state in states:
+        amp_var = f"sleep_cwt_{state}_ultradian_amplitude"
+        if amp_var not in ds.data_vars:
+            continue
+
+        amp_da = ds[amp_var]
+        fly_ids = amp_da["id"].values
+        time_dim = [d for d in amp_da.dims if d != "id"][0]
+        amps = amp_da.transpose("id", time_dim).values
+
+        powers, adjusted, peak_p, peak_a, rhythmic = [], [], [], [], []
+        for row in amps:
+            res = _chi_sq_periodogram(
+                row, periods, sampling_min=bin_size_min, alpha=alpha
+            )
+            powers.append(res["power"])
+            adjusted.append(res["adjusted"])
+            adj = res["adjusted"]
+            if np.all(~np.isfinite(adj)):
+                peak_p.append(np.nan)
+                peak_a.append(np.nan)
+                rhythmic.append(0)
+            else:
+                k = int(np.nanargmax(adj))
+                peak_p.append(float(periods[k]))
+                peak_a.append(float(adj[k]))
+                rhythmic.append(int(adj[k] > 0))
+
+        pdim = f"chisq_period_{state}"
+        coords = {"id": fly_ids, pdim: periods}
+        result_vars[f"ultra_chisq_power_{state}"] = xr.DataArray(
+            np.stack(powers), dims=["id", pdim], coords=coords
+        )
+        result_vars[f"ultra_chisq_adjusted_{state}"] = xr.DataArray(
+            np.stack(adjusted),
+            dims=["id", pdim],
+            coords=coords,
+            attrs={"note": "Qp minus Sidak-corrected chi-squared threshold; >0 is significant"},
+        )
+        result_vars[f"ultra_chisq_peak_period_{state}"] = xr.DataArray(
+            np.array(peak_p), dims=["id"], coords={"id": fly_ids}, attrs={"units": "hours"}
+        )
+        result_vars[f"ultra_chisq_peak_adjusted_{state}"] = xr.DataArray(
+            np.array(peak_a), dims=["id"], coords={"id": fly_ids}
+        )
+        result_vars[f"ultra_chisq_rhythmic_{state}"] = xr.DataArray(
+            np.array(rhythmic, dtype=np.int8), dims=["id"], coords={"id": fly_ids}
+        )
+
+    if not result_vars:
+        print("ultradian_rhythmicity_chi_sq: no ultradian amplitude variables found.")
         return xr.Dataset()
     return xr.Dataset(result_vars)

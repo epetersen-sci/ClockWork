@@ -17,9 +17,10 @@ They were triaged into these sections:
 one item is closed, so the section is gone. The letter is not reused, for the
 same reason item numbers are not.)
 
-**Every issue in this file is closed except one held decision (item 6).**
-Thirteen from the original triage, plus three found while fixing them (14, 15,
-16).
+**Every issue from the original triage is closed.** Thirteen of them, plus
+four found while fixing them (14, 15, 16, 17). Item 6 — the held decision on
+~1900 lines of unwired Abhilash sleep-state code — was settled in favour of
+building the page; item 17 is the part of it that deliberately stayed unwired.
 
 **Item numbers are original and stable.** They are referenced from the
 reorganization PR and from the commits that closed them, so they are not renumbered
@@ -30,12 +31,9 @@ number (14 and 15 were added this way), and never reuses a closed one.
 docstring. Item 12 is closed and that pointer is gone, so no code references this
 file any more.)
 
-**Line references** in the two remaining items have been re-checked against
-`d998b53`. One had moved and is fixed: item 6's phase-registry
-reference, `core/dam_utilities.py`, is now at line 1413 (was 1380). Item 13 cites
-no line numbers. Re-check any reference against `main` before trusting it — several
-drifted over the course of closing section A, and a wrong line number costs more
-than no line number.
+**Line references** drift. Re-check any reference against `main` before
+trusting it — several moved over the course of closing section A, and a wrong
+line number costs more than no line number.
 
 ---
 
@@ -67,53 +65,134 @@ covers what the fixtures do and do not imitate.
 
 # A. Ready to fix
 
-**Empty.** Every item triaged here has been closed — see [D. Done](#d-done).
-What remains is one held decision (item 6).
+One item: **17**, the remainder of item 6. Everything else triaged here has
+been closed — see [D. Done](#d-done).
 
 New issues go here as they are found, with the same shape the closed ones had:
 a Decision, a numbered Fix, and a Verify step that says what to check rather
 than "it works".
 
 
-# B. Held
+## 17. Four Abhilash renderers the new page deliberately does not use
 
-## 6. ~1900 lines of a complete, unwired feature
+Item 6 built `app/app_pages/sleep_states.py`, which wires eight of the twelve
+renderers in `core/plotting.py`'s `# Sleep State Analysis Plots` section plus
+`sleep_cwt_analysis`, `ultradian_rhythmicity_ls` and the new
+`ultradian_rhythmicity_chi_sq`. Four are still unreferenced outside tests:
 
-13 of the 26 public functions in `core/plotting.py` have no caller anywhere. Eleven sit
-inside one section — `# Sleep State Analysis Plots (Abhilash et al. 2026)`:
+| function | why it was left | 
+|---|---|
+| `rebound_bar_plot` | Paper Figure 4. Needs a deprivation experiment with matched undisturbed controls — a different experimental design, and `sleep_deprivation.py` already owns that workflow. |
+| `single_fly_scalogram_plotly` + `compute_single_fly_scalogram` | Per-fly scalograms. Useful for QC, but the paper's figures are all group averages and the page had no place for 190 of them. |
+| `group_ridge_density_plotly` | Not a figure in this paper. Survived item 7's refactor with a sane signature but no home. |
+| `rose_plot` | Superseded in practice by `rose_plot_with_activity`, which draws the paper's five-panel row. Kept because it is the single-panel building block and is what the rose-plot tests assert against. |
 
-`normalized_waveform_overlay`, `initiation_probability_plot`, `rebound_bar_plot`,
-`period_amplitude_plot`, `sleep_state_scalogram`, `single_fly_scalogram_plotly`,
-`group_ridge_density_plotly`, `rose_plot`, `rose_plot_with_activity`, `polar_gating_plot`,
-`ultradian_amplitude_plot`
+**Decision, not a cleanup**, and a smaller one than item 6: either give
+`rebound_bar_plot` a home on the sleep-deprivation page and the single-fly
+scalogram a QC expander, or delete all four. Do not leave them for another
+year — that is how item 6 happened.
 
-They pair exactly with two orphaned analysis functions in `core/periodograms.py` —
-`sleep_cwt_analysis` and `ultradian_rhythmicity_ls` — plus `compute_single_fly_scalogram`.
-There is even a phase-requirement registry entry for `sleep_cwt_analysis` at
-`core/dam_utilities.py:1413`, so some wiring was anticipated.
+Also still unused, and ordinary rot rather than a lost feature:
+`rhythmicity_violin_grid` and `rhythmicity_long_to_wide_csv`;
+`core/load_and_save_datasets.py`'s four flat exporters (`save_data_to_csv`,
+`save_data_to_excel`, `export_activity_to_csv`, `export_averaged_data_to_csv`);
+and `core/dam_utilities.py`'s `split_activity_dataframe` and
+`trim_first_dd_day`.
 
-**Re-verified at `d0a477c`: all of these still have zero real callers.** The only textual
-hits are docstrings, module-header lists and print strings.
 
-**This is a decision, not a cleanup.** It is a coherent, fully-built Abhilash sleep-state
-analysis that never got a UI. Either build the page it was written for, or delete it.
-Leaving ~1900 lines of dead scientific code in the tree is the worst of the three options.
-
-**Status: next in line.** Being tackled as its own piece of work, not as part of the
-category-A sweep.
-
-Also unused, but ordinary rot rather than a lost feature: `rhythmicity_violin_grid` and
-`rhythmicity_long_to_wide_csv`; `core/load_and_save_datasets.py`'s four flat exporters
-(`save_data_to_csv`, `save_data_to_excel`, `export_activity_to_csv`,
-`export_averaged_data_to_csv`); and `core/dam_utilities.py`'s `split_activity_dataframe`
-and `trim_first_dd_day`. These can go with whichever decision item 6 reaches.
-
----
 
 # D. Done
 
 Closed items, newest first. The full description of each lives in the commit that closed
 it — `git show <sha>` — rather than being kept here, so this section stays an index.
+
+## 6. ~1900 lines of a complete, unwired feature
+
+**Settled in favour of building.** The page is `app/app_pages/sleep_states.py`,
+five tabs against the paper's Figures 1, 2, 3, 5 and 6. Figure 4 (rebound) is
+out of scope by design — see item 17 for the four renderers left unwired.
+
+The diagnosis was not "it needed a UI". Three separate things were wrong, one
+per complaint:
+
+**1. There was no data layer at all.** Four docstrings in `plotting.py` named
+`sleep_state_metrics.compute_normalized_waveforms` and friends as their input.
+`core/sleep_state_metrics.py` did not exist, and nothing anywhere built
+`bout_times_df`, `activity_zt_counts`, `waveform_df`, `init_df` or `rebound_df`
+— those names appeared *only* inside `plotting.py`. The eleven renderers were
+unreachable by construction, not merely uncalled. That module is now written.
+
+**2. The rose plots showed the wrong quantity.** `rose_plot` binned sleep-bout
+INITIATION times. The paper's rose plots are profiles — "We calculated sleep
+time series, binned at 30-minute intervals... averaged over days and across
+flies" — and the authors' own `phase::rosePlotsSleep` is handed the binned
+series and never sees a bout table. Bout initiation is a different figure
+(Figure 2). Also fixed: the palette was Plotly's default cycle, which gave
+short sleep the paper's long-sleep blue and long sleep its activity red; no
+day/night shading; and `polar_gating_plot` derived gates from bout
+onset/offset rather than angular deviation about the centre of mass, drew
+every fly's arc at r = 1 instead of as concentric rings, and averaged phases
+arithmetically so any gate straddling midnight — long sleep under DD, the
+state the figure is about — landed on the far side of the clock.
+
+**3. The CWT could not be checked because nothing ever checked it.** Fixed by
+adding ground truth (`tests/test_sleep_cwt_truth.py`) and by correcting two
+defaults against `WaveletComp::analyze.wavelet`, which is what the paper used:
+
+- **Scale rectification was missing.** WaveletComp computes
+  `Power = Mod(Wave)^2 / scale` (Liu et al. 2007); ours returned a bare
+  `|W|^2`. On a synthetic 24 h + 3 h signal of EQUAL amplitude, unrectified
+  reports the 24-h component **7.1x** stronger and puts its peak at
+  **24.51 h**; rectified reports them comparably and peaks at **24.00 h**. So
+  ultradian power was understated by about an order of magnitude relative to
+  circadian — the entire subject of Figures 5 and 6.
+- **`full_range` defaulted to `None`**, which ran two separate narrow-band
+  CWTs (18-30 h and 1-4/2-6 h) and normalised each by its own band mean. Those
+  z-values are comparable neither to each other nor to the paper's fixed
+  0-1.5 colour scale. It now defaults to the paper's `(1, 32)` h single pass.
+
+Two further bugs surfaced while wiring it, neither in this file:
+
+- A `select_phase` view upcasts the int8 masks to float with NaN out of phase.
+  `sleep_cwt_analysis` guarded only `< 0`, so **every cell of the averaged
+  surface came back NaN**; and it was the one analysis in `periodograms.py`
+  that skipped `_extract_longest_continuous_block`, so the out-of-phase epoch
+  would have been carried in as a block of zeros.
+- `period_amplitude_plot` let `add_vline` attach its own `12-h`/`24-h` labels.
+  Shapes on a log axis take data units but annotations take log10 and are not
+  converted, so an annotation sat at 10^24 and autoranged the axis out 24
+  decades, flattening every curve against the left edge.
+
+Also replaced: `ultradian_rhythmicity_ls` is Lomb-Scargle, but the paper uses a
+chi-squared periodogram, so its numbers could not be checked against Figure 6
+or Table S2. `ultradian_rhythmicity_chi_sq` is a port of
+`zeitgebr::chi_sq_periodogram` (fractional cycle count, dof = period in
+samples, Sidak-corrected threshold, and the **adjusted** power the paper plots
+— which is why its critical line is a flat zero). Both are offered on the page.
+
+**Verified on real lab data** (189 flies, DD), the page reproduces the paper's
+findings rather than merely running: activity peaks at CT12 and P(long) spikes
+in the hour immediately after while P(short) peaks *with* the activity peak and
+P(inter.) is high pre-dawn (Figure 2's three claims); short sleep's circadian
+peak is ~40% of standard's and long's, with the ultradian shoulder ordered
+short > standard > long (Figure 5B); and the chi-squared test gives 11/12 flies
+rhythmic at 23.8-24.0 h against Table S2's 93-100% at 23.4-23.8 h.
+
+**Second and third passes** (`d5f5789`, `f7a7631`) added Figure 2's profile
+panels and Figure 1's LD-beside-DD layout, gated the tabs (all nineteen
+figures were computing for whichever single tab was open — 14 s to 3.6 s on
+189 flies), and fixed a bug the NaN fix above had introduced: reducing each
+fly to its longest clean run made per-fly lengths ragged, and the accumulator
+cropped to the running minimum while re-zeroing every run to t=0. On a real
+31-fly group whose median clean run is 9 days, three short flies cut the GROUP
+surface to 3.4 days, and any fly starting late had its data averaged into
+everyone else's day 0. Flies now land on a shared grid at their own offset
+with a per-cell count.
+
+Verified end to end in the running app on all 189 example flies: the
+chi-squared test reports 80-87% of flies rhythmic at 24.0-24.3 h, against the
+paper's Table S2 of 93-100% at 23.4-23.8 h — lower and slightly longer, as
+expected for Opa1/Ldh knockdowns rather than wild-type Canton-S.
 
 ## 16. The gap trim masked `(id, time)` variables on the wrong axis
 
@@ -171,9 +250,9 @@ safe. Re-importing from the raw DAM files is the only repair.
 `export_helpers.save_group_average_scalograms` now does. No deferred analysis
 imports remain in `plotting.py`, and it imports first in a clean interpreter.
 
-Note for whoever settles item 6: the rhythmic-filter inversion was inside
-`group_ridge_density_plotly`, which has no callers and is on item 6's unwired
-list. If that section is deleted, this part goes with it.
+Note for whoever settles item 17: the rhythmic-filter inversion was inside
+`group_ridge_density_plotly`, which item 6's page did not find a home for and
+which is still uncalled. If it is deleted, this part goes with it.
 
 ## 10. Surface the rest of the data-integrity report
 
