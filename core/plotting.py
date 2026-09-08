@@ -28,6 +28,7 @@ save_group_average_scalogram_png()   — Disk-saved per-group 2D averaged CWT
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.colors as pc
 import xarray as xr
 
 import dam_utilities
@@ -296,8 +297,20 @@ def daily_pattern_line(
     agg["zt_hours"] = dam_utilities.zt_bin_to_hours(agg["zt_bin_minute"], bin_size_minutes)
 
     fig = go.Figure()
-    for grp, sub in agg.groupby("group"):
-        grp_key = str(grp)
+    # Colours assigned EXPLICITLY, one per group, and the SEM band takes its
+    # group's own colour. Two things were wrong with leaving it to Plotly:
+    #
+    # - The band was a hardcoded blue, so every group's error region was blue
+    #   whatever colour its mean line happened to get.
+    # - Each group adds TWO traces, and plotly.js walks its colourway by trace
+    #   index, so the mean lines landed on every OTHER colour. With a 10-colour
+    #   cycle that means six groups wrap around and the sixth is drawn in the
+    #   first one's colour — two genotypes rendered identically.
+    groups_in_order = [str(g) for g in agg["group"].unique()]
+    palette = pc.qualitative.Plotly
+    for idx, grp_key in enumerate(groups_in_order):
+        sub = agg[agg["group"].astype(str) == grp_key]
+        color = palette[idx % len(palette)]
         fig.add_trace(
             go.Scatter(
                 x=sub["zt_hours"],
@@ -305,6 +318,7 @@ def daily_pattern_line(
                 mode="lines",
                 name=grp_key,
                 legendgroup=grp_key,
+                line=dict(color=color),
             )
         )
         # SEM shading — SAME legendgroup as the mean line so a legend click toggles
@@ -317,9 +331,10 @@ def daily_pattern_line(
                 ),
                 fill="toself",
                 line=dict(color="rgba(0,0,0,0)"),
-                fillcolor="rgba(0,0,255,0.15)",
+                fillcolor=_rgba(color, 0.15),
                 legendgroup=grp_key,
                 showlegend=False,
+                hoverinfo="skip",
             )
         )
 

@@ -520,14 +520,36 @@ if tab_rose.open:
 # a fragment rerun would refresh only its own tab.
 # ---------------------------------------------------------------------------
 
-# Session state holds the REQUEST (a small dict of fingerprint, genotype,
-# period range and epoch), never the result. The result itself lives in
-# `_cached_cwt` below, where Streamlit bounds it: one run of four states over a
-# ten-day recording is ~19 MB of averaged surface, so keeping a result per
-# genotype in session state would grow without limit as genotypes are browsed.
-# The request is what says "the user has asked for this one" — the surfaces are
-# far too expensive to compute on an unprompted rerun.
-CWT_REQUEST = "sleep_states_cwt_request"
+# Session state records WHICH RUNS EXIST — `{(fp, genotype, epoch): (min, max)}`,
+# the period range each genotype was last run at. Never the results themselves:
+# one run of four states over a ten-day recording is ~19 MB of averaged
+# surface, so holding one per genotype would grow without bound as genotypes
+# are browsed. The surfaces live in `_cached_cwt`, where Streamlit bounds them.
+#
+# A record per genotype, rather than one standing request, is what lets the
+# genotype selector switch the view on its own. Held as a single request, the
+# selector could only take effect on the next Run press — changing it appeared
+# to do nothing at all, because the figures went on showing the genotype that
+# had been selected when Run was last pressed.
+#
+# It is also what gives the Ultradian tab a selector without a Run button of
+# its own: the runs recorded here are exactly the genotypes it can show
+# instantly, and each record carries the range it was run at, so that tab never
+# has to read the period inputs from a tab that is not currently rendered.
+CWT_RUNS = "sleep_states_cwt_runs"
+
+
+def _cwt_runs():
+    return st.session_state.setdefault(CWT_RUNS, {})
+
+
+def _runs_here():
+    """Genotypes already run for this dataset and epoch, in run order."""
+    return [
+        group
+        for (run_fp, group, epoch) in _cwt_runs()
+        if run_fp == fp and epoch == phase_used
+    ]
 
 
 @st.cache_data(show_spinner=False, max_entries=3)
@@ -551,10 +573,18 @@ def _cached_cwt(fp, _ds, fly_ids, states, p_range, phase):
     the first cache hit: Streamlit replays the element calls a cached function
     made, and it cannot replay into a layout block that no longer exists.
     """
-    progress = st.progress(0.0, text="Running CWT…")
+    # The counter runs over fly x state steps, not flies. Left as a bare
+    # "103/124" on a 31-fly genotype it reads as though every fly in the
+    # dataset is being analysed, which is exactly the doubt the per-genotype
+    # run exists to remove — so it says what it is counting.
+    n_flies, n_states = len(fly_ids), len(states)
+    progress = st.progress(0.0, text=f"Running CWT on {n_flies} flies…")
 
     def _tick(done, total):
-        progress.progress(min(1.0, done / max(1, total)), text=f"CWT {done}/{total}")
+        progress.progress(
+            min(1.0, done / max(1, total)),
+            text=f"CWT {done}/{total} ({n_flies} flies x {n_states} states)",
+        )
 
     try:
         return sleep_cwt_analysis(
@@ -572,23 +602,15 @@ def _cached_cwt(fp, _ds, fly_ids, states, p_range, phase):
         progress.empty()
 
 
-def _cwt_request():
-    """The standing wavelet request, or None if it is not for this selection."""
-    req = st.session_state.get(CWT_REQUEST)
-    if not req or req.get("fp") != fp:
-        return None
-    return req
-
-
-def _cwt_for(req):
-    """The result for a request — instant on a cache hit."""
+def _cwt_for(group, p_range):
+    """One genotype's surfaces — instant on a cache hit."""
     return _cached_cwt(
-        req["fp"],
+        fp,
         phase_ds,
-        req["fly_ids"],
-        req["states"],
-        req["range"],
-        req["phase"],
+        _fly_ids_for(group),
+        tuple(states_present),
+        tuple(p_range),
+        phase_used,
     )
 
 
@@ -628,54 +650,68 @@ if tab_scal.open:
             "the flies are averaged. The colour range is pinned to 0-1.5, so "
             "the panels are comparable to each other."
         )
-        # ONE GENOTYPE PER RUN. The selector sits inside the form so changing it
-        # does not silently start a run: nothing recomputes until Submit.
-        with st.form("sleep_states_cwt_form"):
-            col_a, col_b = st.columns([1, 1])
-            with col_a:
-                cwt_group = st.selectbox(
-                    "Genotype",
-                    cwt_groups,
-                    help=(
-                        "The transforms are averaged across the flies included, "
-                        "so one genotype is run at a time — an average over "
-                        "several genotypes at once would not describe any of "
-                        "them. The last few runs are kept, so returning to a "
-                        "genotype you have already run is immediate."
-                    ),
-                )
-            with col_b:
-                p_min = st.number_input("Min period (h)", 0.5, 12.0, 1.0, 0.5)
-                p_max = st.number_input("Max period (h)", 12.0, 48.0, 32.0, 1.0)
-            run_cwt = st.form_submit_button(
-                "Run wavelet analysis", type="primary", icon=":material/play_arrow:"
+        # ONE GENOTYPE AT A TIME, and NOT inside a form. A form only submits on
+        # its button, so the genotype selector could not change what was on
+        # screen — the figures kept showing whichever genotype had been
+        # selected the last time Run was pressed, which reads as a selector
+        # that does nothing. Outside a form, changing it reruns the page, and
+        # an already-run genotype comes straight back from the cache.
+        #
+        # Nothing expensive happens on that rerun: a genotype that has not been
+        # run yet shows the prompt below rather than starting a transform.
+        #
+        # persist_state="page" because these tabs are DYNAMIC — an unrendered
+        # widget's keyed value is dropped by default, so without it every one
+        # of these controls would reset each time the tab was left.
+        cwt_group = st.selectbox(
+            "Genotype",
+            cwt_groups,
+            key="sleep_states_cwt_group",
+            persist_state="page",
+            help=(
+                "The transforms are averaged across the flies included, so one "
+                "genotype is run at a time — an average over several genotypes "
+                "at once would not describe any of them. Switching back to a "
+                "genotype you have already run is immediate."
+            ),
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            p_min = st.number_input(
+                "Min period (h)", 0.5, 12.0, 1.0, 0.5,
+                key="sleep_states_cwt_pmin", persist_state="page",
             )
+        with col_b:
+            p_max = st.number_input(
+                "Max period (h)", 12.0, 48.0, 32.0, 1.0,
+                key="sleep_states_cwt_pmax", persist_state="page",
+            )
+        run_cwt = st.button(
+            "Run wavelet analysis", type="primary", icon=":material/play_arrow:"
+        )
 
-        if run_cwt:
-            st.session_state[CWT_REQUEST] = {
-                "fp": fp,
-                "group": cwt_group,
-                "fly_ids": _fly_ids_for(cwt_group),
-                "states": tuple(states_present),
-                "range": (float(p_min), float(p_max)),
-                "phase": phase_used,
-            }
+        fly_ids = _fly_ids_for(cwt_group)
+        wanted_range = (float(p_min), float(p_max))
+        run_key = (fp, cwt_group, phase_used)
+        if run_cwt and fly_ids:
+            _cwt_runs()[run_key] = wanted_range
 
-        req = _cwt_request()
-        if req is None:
-            st.info("Press **Run wavelet analysis** to compute the scalograms.")
-        elif not req["fly_ids"]:
+        if not fly_ids:
             st.warning(
-                f"No flies of **{req['group']}** are in the current group selection."
+                f"No flies of **{cwt_group}** are in the current group selection."
+            )
+        elif _cwt_runs().get(run_key) != wanted_range:
+            st.info(
+                f"Press **Run wavelet analysis** to compute **{cwt_group}** at "
+                f"{wanted_range[0]:g}-{wanted_range[1]:g} h."
             )
         else:
-            with st.spinner(f"Computing wavelet transforms for {req['group']}…"):
-                cwt = _cwt_for(req)
+            with st.spinner(f"Computing wavelet transforms for {cwt_group}…"):
+                cwt = _cwt_for(cwt_group, wanted_range)
 
             st.caption(
-                f"{req['group']} · {len(req['fly_ids'])} flies · "
-                f"{req['range'][0]:g}-{req['range'][1]:g} h · "
-                f"{req['phase']} epoch"
+                f"{cwt_group} · {len(fly_ids)} flies · "
+                f"{wanted_range[0]:g}-{wanted_range[1]:g} h · {phase_used} epoch"
             )
             if not len(cwt.data_vars):
                 st.error(CWT_EMPTY_MESSAGE, icon=":material/error:")
@@ -698,8 +734,8 @@ if tab_scal.open:
                             surfaces,
                             axes,
                             bin_size_min=CWT_BIN_MIN,
-                            phase_label=req["phase"],
-                            title=f"Normalised average scalograms — {req['group']}",
+                            phase_label=phase_used,
+                            title=f"Normalised average scalograms — {cwt_group}",
                         ),
                         width="stretch",
                     )
@@ -708,7 +744,7 @@ if tab_scal.open:
                             spectra,
                             axes,
                             ultradian_band=bands,
-                            title=f"Period vs. amplitude — {req['group']}",
+                            title=f"Period vs. amplitude — {cwt_group}",
                         ),
                         width="stretch",
                     )
@@ -723,23 +759,43 @@ if tab_ultra.open:
             "means the strength of the ultradian rhythm itself waxes and wanes "
             "with the circadian day."
         )
-        # Reads the SAME request as the Scalograms tab, so the genotype chosen
-        # there is the genotype shown here — and a cache hit means no recompute.
-        req = _cwt_request()
+        # This tab gets its OWN genotype selector rather than inheriting one
+        # from the Scalograms tab. Its options are the genotypes already run,
+        # so switching is always immediate and can never start a transform from
+        # a tab that has no Run button; each run record carries the period
+        # range it was run at, so this tab never has to read the period inputs
+        # from a tab that is not currently rendered.
+        _available = _runs_here()
         cwt = None
-        if req and req["fly_ids"]:
+        req_group = None
+        if not _available:
+            st.info("Run the wavelet analysis on the **Scalograms** tab first.")
+        else:
+            req_group = st.selectbox(
+                "Genotype",
+                _available,
+                key="sleep_states_ultra_group",
+                persist_state="page",
+                help=(
+                    "The genotypes already run on the **Scalograms** tab. Run "
+                    "another one there to add it here."
+                ),
+            )
+            _range = _cwt_runs()[(fp, req_group, phase_used)]
+            _fly_ids = _fly_ids_for(req_group)
             # Usually a cache hit and instant. It can miss — the cache holds
             # only the last few runs — and then this recomputes, so say so.
-            with st.spinner(f"Loading wavelet results for {req['group']}…"):
-                cwt = _cwt_for(req)
+            with st.spinner(f"Loading wavelet results for {req_group}…"):
+                cwt = _cwt_for(req_group, _range)
+
         if cwt is None:
-            st.info("Run the wavelet analysis on the **Scalograms** tab first.")
+            pass  # the "run it first" message above is the whole story
         elif not len(cwt.data_vars):
             st.error(CWT_EMPTY_MESSAGE, icon=":material/error:")
         else:
             st.caption(
-                f"{req['group']} · {len(req['fly_ids'])} flies · "
-                f"{req['phase']} epoch"
+                f"{req_group} · {len(_fly_ids)} flies · "
+                f"{_range[0]:g}-{_range[1]:g} h · {phase_used} epoch"
             )
             amp = {
                 state: cwt[f"sleep_cwt_{state}_ultradian_amplitude"].values
@@ -771,8 +827,8 @@ if tab_ultra.open:
                             cropped,
                             cropped_axes,
                             bin_size_min=CWT_BIN_MIN,
-                            phase_label=req["phase"],
-                            title=f"Ultradian band only — {req['group']}",
+                            phase_label=phase_used,
+                            title=f"Ultradian band only — {req_group}",
                         ),
                         width="stretch",
                     )
@@ -780,9 +836,9 @@ if tab_ultra.open:
                     plotting.ultradian_amplitude_plot(
                         amp,
                         bin_size_min=CWT_BIN_MIN,
-                        phase_label=req["phase"],
+                        phase_label=phase_used,
                         bands={s: ULTRADIAN_BANDS.get(s, (1, 4)) for s in amp},
-                        title=f"Ultradian amplitude over time — {req['group']}",
+                        title=f"Ultradian amplitude over time — {req_group}",
                     ),
                     width="stretch",
                 )
@@ -855,7 +911,7 @@ if tab_ultra.open:
                             .to_csv(index=False)
                             .encode(),
                             file_name=(
-                                f"ultradian_ls_{req['group']}_{req['phase']}.csv"
+                                f"ultradian_ls_{req_group}_{phase_used}.csv"
                             ),
                             mime="text/csv",
                             icon=":material/download:",
@@ -864,7 +920,7 @@ if tab_ultra.open:
                         st.info("No Lomb-Scargle result could be computed.")
                 else:
                     chi = _cached_chi_sq(
-                        fp, req["group"], cwt, tuple(states_present)
+                        fp, req_group, cwt, tuple(states_present)
                     )
                     if not len(chi.data_vars):
                         st.info("No periodogram could be computed.")
@@ -875,7 +931,7 @@ if tab_ultra.open:
                                 states=tuple(states_present),
                                 title=(
                                     "Chi-squared periodogram of ultradian "
-                                    f"amplitude — {req['group']}"
+                                    f"amplitude — {req_group}"
                                 ),
                             ),
                             width="stretch",

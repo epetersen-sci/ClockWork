@@ -127,25 +127,79 @@ def test_sleep_states_wavelet_button_runs(app, states_ds):
     assert not at.exception, f"the wavelet run raised: {at.exception}"
     assert not at.error, f"the page reported an error: {[e.value for e in at.error]}"
     # AppTest's session_state is subscript-only — it has no .get().
-    assert "sleep_states_cwt_request" in at.session_state, "no request was recorded"
-    req = at.session_state["sleep_states_cwt_request"]
+    assert "sleep_states_cwt_runs" in at.session_state, "no run was recorded"
+    runs = at.session_state["sleep_states_cwt_runs"]
+    assert len(runs) == 1
+    (_fp, group, _epoch), _range = next(iter(runs.items()))
     # The run is scoped to ONE genotype — the transforms are averaged over the
     # flies passed, so a pooled run returns a genotype-blind mean surface.
-    groups = set(states_ds["group"].values.tolist())
-    assert req["group"] in groups
-    assert 0 < len(req["fly_ids"]) < states_ds.sizes["id"], (
-        "the run covered every fly, so it is not scoped to one genotype"
-    )
+    assert group in set(states_ds["group"].values.tolist())
     # The scalogram and the period-vs-amplitude figure.
     assert len(at.get("plotly_chart")) >= 2
 
-    # The Ultradian tab reads the same request and hits the same cache, which
-    # is why the run is not wrapped in a fragment.
+    # The Ultradian tab reads the same run record and hits the same cache,
+    # which is why the run is not wrapped in a fragment.
     at = _open_tab(at, "Ultradian")
     assert not at.exception
     assert len(at.get("plotly_chart")) >= 2, "the ultradian tab lost the results"
     # Lomb-Scargle is the default test, so its table renders without a click.
     assert at.session_state["sleep_states_rhythmicity_test"] == "Lomb-Scargle"
+    # And it has a genotype pulldown of its own, listing what has been run.
+    ultra = [b for b in at.selectbox if b.label == "Genotype"]
+    assert ultra, "the Ultradian tab has no genotype selector"
+    assert list(ultra[0].options) == [group]
+
+
+def test_sleep_states_genotype_selector_switches_the_view(app, states_ds):
+    """Changing the genotype must change what is on screen, on its own.
+
+    The selector used to live inside an st.form, which only submits on its own
+    button — so changing it did nothing visible and the figures went on showing
+    whichever genotype had been selected the last time Run was pressed. That
+    reads as a selector that is simply broken.
+    """
+    at = app(ds=states_ds, page="sleep_states")
+    at = _open_tab(at, "Scalograms")
+    groups = [str(g) for g in dict.fromkeys(states_ds["group"].values.tolist())]
+    assert len(groups) > 1
+
+    # Run the first genotype.
+    [b for b in at.button if "wavelet" in b.label.lower()][0].click()
+    at = _open_tab(at, "Scalograms")
+    first = _titles(at)
+    assert any(groups[0] in t for t in first), first
+
+    # Switch WITHOUT pressing Run: an un-run genotype prompts rather than
+    # silently starting an expensive transform, and says which one it means.
+    at.session_state["sleep_states_cwt_group"] = groups[1]
+    at = _open_tab(at, "Scalograms")
+    assert not at.exception
+    assert not _titles(at), "an un-run genotype should not draw the previous one"
+    assert any(groups[1] in i.value for i in at.info), [i.value for i in at.info]
+
+    # Run it, then switch BACK: the first genotype returns from cache with no
+    # Run press at all, which is the behaviour the form prevented.
+    [b for b in at.button if "wavelet" in b.label.lower()][0].click()
+    at = _open_tab(at, "Scalograms")
+    assert any(groups[1] in t for t in _titles(at))
+
+    at.session_state["sleep_states_cwt_group"] = groups[0]
+    at = _open_tab(at, "Scalograms")
+    back = _titles(at)
+    assert back and any(groups[0] in t for t in back), back
+    assert not any(groups[1] in t for t in back), back
+
+
+def _titles(at):
+    """Plotly figure titles on the page."""
+    import json
+
+    out = []
+    for el in at.get("plotly_chart"):
+        title = json.loads(el.proto.spec).get("layout", {}).get("title", {})
+        if isinstance(title, dict) and title.get("text"):
+            out.append(title["text"])
+    return out
 
 
 def test_sleep_states_wavelet_is_per_genotype(app, states_ds):
