@@ -234,3 +234,73 @@ class TestRidgeDensityTakesAFilteredDataset:
                 f"{gone} made the plot function run rhythmicity_classification; "
                 "the caller should pass an already-filtered dataset"
             )
+
+
+class TestCategoryTickAngle:
+    """Genotype names on an x axis have to stay readable.
+
+    Two figures already rotated their labels, but only above six groups. Count
+    alone is the wrong test: six labels like "dsOpa1(32358)+Ldhmut" overprint
+    each other into a smear at 0 degrees — the exact case rotation exists for —
+    while six labels like "ctrl" need none. The rule now also looks at how long
+    the longest label is.
+    """
+
+    REAL_GENOTYPES = [
+        "dsOpa1(32358)",
+        "dsOpa1(32358)+Ldhmut",
+        "dsOpa1(67159)",
+        "dsOpa1(67159)+Ldhmut",
+        "dsmcherry",
+        "dsmcherry+Ldhmut",
+    ]
+
+    def test_six_long_names_rotate(self):
+        """The reported case: six groups, so the old count-only rule said no."""
+        assert plotting.category_tickangle(self.REAL_GENOTYPES) < 0
+
+    def test_few_short_names_stay_flat(self):
+        assert plotting.category_tickangle(["ctrl-25C", "mut-25C"]) == 0
+        assert plotting.category_tickangle(["All Flies"]) == 0
+
+    def test_many_short_names_still_rotate(self):
+        assert plotting.category_tickangle([f"g{i}" for i in range(8)]) < 0
+
+    def test_stacked_labels_measure_the_widest_line(self):
+        """Some x labels stack two facts with <br>; the width is the widest
+        LINE, not the total string, or every stacked label would rotate."""
+        assert plotting.category_tickangle(["Short<br>ctrl", "Long<br>mut"]) == 0
+        assert (
+            plotting.category_tickangle(
+                ["Short sleep<br>dsOpa1(32358)+Ldhmut", "Long sleep<br>dsmcherry"]
+            )
+            < 0
+        )
+
+    def test_rotated_axes_claim_their_margin(self):
+        """Rotating without automargin trades an overlapped axis for a clipped
+        one — the label is drawn into whatever bottom margin already existed."""
+        import plotly.graph_objects as go
+
+        fig = plotting.apply_category_ticks(go.Figure(), self.REAL_GENOTYPES)
+        assert fig.layout.xaxis.tickangle < 0
+        assert fig.layout.xaxis.automargin is True
+
+    def test_every_group_axis_figure_uses_it(self):
+        """The rule is only worth having if it is applied everywhere, so this
+        pins the list of figures that put group names on an x axis."""
+        import inspect
+
+        source = inspect.getsource(plotting)
+        for fn in (
+            "sleep_state_totals_bars",
+            "summary_bars",
+            "rebound_bar_plot",
+            "rhythmicity_violin_grid",
+            "threshold_coupled_figure",
+        ):
+            body = source.split(f"def {fn}(", 1)[1].split("\ndef ", 1)[0]
+            assert "apply_category_ticks" in body, (
+                f"{fn} puts group names on its x axis but does not rotate them"
+            )
+

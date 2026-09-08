@@ -21,12 +21,19 @@ Provenance for every method used here — including where our defaults were
 wrong and how they were checked against the authors' own R code — is in
 ``core/sleep_state_metrics.py`` and ``periodograms.sleep_cwt_analysis``.
 
+Every figure here is faceted BY GENOTYPE — one panel per group, per tab —
+because the comparisons the paper makes (state against state, LD against DD)
+are within a genotype, and overlaying groups on shared axes stops being
+readable at more than two of them.
+
 Tabs are DYNAMIC (``on_change="rerun"``) and every body is guarded by
 ``tab.open``. Streamlit renders all tab content by default, so without the
 guard one visit to this page computed the waveforms, the initiation
 probabilities, six rose rows and six gating rings whether or not anyone looked
 at them — nineteen figures on 189 flies for the one the user was actually on.
-Measured on that dataset, the landing tab went from ~14 s to 3.6 s.
+Measured on that dataset, the landing tab went from ~14 s to 3.6 s. Faceting
+the waveforms by genotype does not undo that: the frame is computed once per
+epoch and sliced per group, so the extra cost is browser-side rendering only.
 
 The tradeoff: switching tabs now costs a rerun, so a click made while the page
 is already busy can be dropped and has to be repeated. That is inherent to
@@ -63,9 +70,16 @@ ds = require_dataset()
 
 # No st.title here — the router sets it from the st.Page title, as on every
 # other page.
+# The ONE reference to the source paper that the user sees. Everything on this
+# page used to carry its own aside on how the output compared to the printed
+# figures — which numbers matched, which conventions differed, where our
+# defaults had been wrong. That is provenance for whoever maintains the code,
+# not for whoever is reading their own data, and it belongs in the module
+# docstrings (where it still is) rather than beside every figure.
 st.caption(
-    "Abhilash, Evans & Shafer 2026, *Current Biology* 36:968-978 — "
-    "short (5-30 min), intermediate (30-60 min) and long (>60 min) sleep."
+    "Short (5-30 min), intermediate (30-60 min) and long (>60 min) sleep. "
+    "The methods here follow Abhilash, Evans & Shafer 2026, *Current Biology* "
+    "36:968-978 closely."
 )
 
 # ---------------------------------------------------------------------------
@@ -104,7 +118,14 @@ def _cached_circular(fp, _ds, bin_size_min, angle_doubling):
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def _cached_chi_sq(fp, _cwt, states):
+def _cached_chi_sq(fp, group, _cwt, states):
+    """`group` is in the key on purpose.
+
+    `_cwt` leads with an underscore, so it is not hashed — which was harmless
+    while one pooled wavelet result existed per dataset, and wrong the moment
+    the run became per genotype: without `group` the key is the same for every
+    genotype and the first one's periodogram is served for all of them.
+    """
     return ultradian_rhythmicity_chi_sq(_cwt, states=states)
 
 
@@ -124,9 +145,9 @@ phase = st.sidebar.radio(
     # widget id is generated and nothing can select the non-default epoch.
     key="sleep_states_phase",
     help=(
-        "The paper's circadian figures are under constant darkness, so DD is the "
-        "default. A dataset already stamped with a single epoch can only be shown "
-        "in that epoch."
+        "DD is the default because the circadian measures here are cleanest "
+        "without a light cycle driving them. A dataset already stamped with a "
+        "single epoch can only be shown in that epoch."
     ),
 )
 
@@ -134,16 +155,18 @@ bin_size_min = st.sidebar.select_slider(
     "Profile bin (minutes)",
     options=[10, 15, 20, 30, 60],
     value=30,
-    help="30 minutes is the paper's choice for the rose plots and profiles.",
+    help="Bin width for the profiles and rose plots. 30 minutes is a "
+    "compromise between resolving temporal structure and smoothing out noise.",
 )
 
 angle_doubling = st.sidebar.selectbox(
     "Angle doubling",
     ["auto", "never", "always"],
     help=(
-        "The paper applies an angle-doubling transform to clearly bimodal "
-        "profiles before computing circular statistics, judged by eye. 'auto' "
-        "decides per fly and state from the shape of the profile."
+        "Circular statistics on a clearly bimodal profile need an "
+        "angle-doubling transform first, or the mean phase lands between the "
+        "two peaks rather than on either. 'auto' decides per fly and state "
+        "from the shape of the profile."
     ),
 )
 
@@ -157,8 +180,8 @@ group_values, all_groups, selected_groups, phase_ds = group_filter_sidebar(
     phase_ds, key="sleep_states_groups", subset=True
 )
 
-states_present = ssm.available_states(phase_ds)
-if not states_present:
+states_declared = ssm.available_states(phase_ds)
+if not states_declared:
     st.warning(
         "This dataset has no sleep-state masks. Run **Sleep & activity → Sleep "
         f"analysis** on the {phase_used} epoch first — the states here come from "
@@ -166,7 +189,51 @@ if not states_present:
     )
     st.stop()
 
+# Carrying the masks is not the same as having values in THIS epoch. Sleep
+# analysis writes them over the whole time axis but marks every minute outside
+# the epoch it ran on as missing, so asking for the other epoch gives four
+# present-but-empty masks. Everything downstream then failed quietly and
+# differently: empty profile panels, zero-radius rose wedges, a wavelet run
+# that produced no surfaces — and initiation-probability bars that still had
+# data, because the per-bout table is dimensioned on `sleep_bout_number` and
+# phase selection never touches it. Catch it once, here, and say which epoch
+# the masks are actually for.
+states_present = ssm.states_with_data(phase_ds)
+if not states_present:
+    other = next(e for e in phase_options if e != phase_used)
+    other_has = []
+    try:
+        other_ds, other_used = select_phase(ds, phase=other)
+    except (ValueError, KeyError):
+        other_used = None
+    else:
+        other_has = ssm.states_with_data(other_ds)
+    hint = (
+        f"Its masks do carry the **{other_used}** epoch — switch **Phase** to "
+        f"{other_used} to see these figures, or re-run sleep analysis on "
+        f"{phase_used}."
+        if other_has
+        else f"Re-run it with **Phase = {phase_used}**."
+    )
+    st.warning(
+        f"Every sleep-state minute in the {phase_used} epoch of this dataset is "
+        "missing, so nothing on this page can be computed. Sleep detection is "
+        "per-epoch: **Sleep & activity → Sleep analysis** marks the minutes "
+        f"outside the epoch it ran on as missing, and it was not run on "
+        f"{phase_used}. " + hint,
+        icon=":material/warning:",
+    )
+    st.stop()
+
 fp = dataset_fingerprint(phase_ds)
+# Says which epoch is on screen in words, not just as a label on an axis. The
+# same line appears on the Sleep & activity page, which has the same choice.
+_other_epoch = next((e for e in phase_options if e != phase_used), None)
+if _other_epoch:
+    st.caption(
+        f"Data shown is from the **{phase_used}** dataset. To change to the "
+        f"**{_other_epoch}** dataset, use the selector in the sidebar."
+    )
 st.caption(
     f"{phase_ds.sizes['id']} flies · {phase_used} epoch · "
     f"states: {', '.join(states_present)}"
@@ -180,11 +247,11 @@ st.caption(
 # the only way a headless AppTest can open a tab — its Tab object is read-only.
 TAB_KEY = "sleep_states_tab"
 TAB_LABELS = [
-    "Waveforms (Fig 1)",
-    "Initiation (Fig 2)",
-    "Rose & gating (Fig 3)",
-    "Scalograms (Fig 5)",
-    "Ultradian (Fig 6)",
+    "Waveforms",
+    "Initiation",
+    "Rose & gating",
+    "Scalograms",
+    "Ultradian",
 ]
 tab_wave, tab_init, tab_rose, tab_scal, tab_ultra = st.tabs(
     TAB_LABELS, on_change="rerun", key=TAB_KEY
@@ -205,9 +272,9 @@ if tab_wave.open:
         st.markdown(
             "Each state's mean profile is divided by its own peak, so shapes can "
             "be compared between states that differ several-fold in absolute "
-            "amount. Flies are averaged **before** normalising, as the paper "
-            "specifies — the other order makes every fly's own peak 1.0 and "
-            "flattens between-fly differences in profile shape."
+            "amount. Flies are averaged **before** normalising: the other order "
+            "makes every fly's own peak 1.0 and flattens between-fly "
+            "differences in profile shape."
         )
         # Figure 1B prints LD and DD beside each other, because its claim is
         # that the waveform SHAPES survive the loss of the light cycle. Showing
@@ -224,9 +291,15 @@ if tab_wave.open:
             except (ValueError, KeyError):
                 continue  # this dataset holds only the one epoch
             try:
-                epochs[other_used] = other.sel(id=fly_ids)
+                other = other.sel(id=fly_ids)
             except KeyError:
                 continue
+            # Skip an epoch sleep analysis did not run on rather than binning
+            # 189 flies x 4 all-missing masks to produce a panel that gets
+            # filtered out below anyway.
+            if not ssm.states_with_data(other):
+                continue
+            epochs[other_used] = other
 
         panels = [(name, _cached_waveforms(dataset_fingerprint(sub), sub, bin_size_min))
                   for name, sub in epochs.items()]
@@ -235,21 +308,47 @@ if tab_wave.open:
         if not panels:
             st.info("No waveforms could be computed for the current selection.")
         else:
-            for column, (name, frame) in zip(st.columns(len(panels)), panels):
-                with column:
-                    st.plotly_chart(
-                        plotting.normalized_waveform_overlay(
-                            frame,
-                            phase_label=name,
-                            title=f"Normalised waveforms — {name}",
-                        ),
-                        width="stretch",
-                        key=f"waveform_{name}",
-                    )
+            # ONE FIGURE PER GENOTYPE, the way every other tab on this page is
+            # laid out. Overlaying the groups put four states x N groups on one
+            # pair of axes, distinguished only by dash style: on this dataset
+            # that is 24 solid-to-dashdot lines plus 24 SEM bands, and the
+            # legend ran off the bottom of the panel. The states within one
+            # genotype are the comparison Figure 1B actually makes; comparing
+            # genotypes is what putting the panels in a column is for.
+            #
+            # Still one epoch per column inside each genotype's row, because
+            # Figure 1B's claim is that the shapes survive the loss of the
+            # light cycle, which needs LD and DD side by side.
+            wave_groups = list(
+                dict.fromkeys(
+                    g for _, frame in panels for g in _groups_in(frame)
+                )
+            )
+            for group in wave_groups:
+                rows = [
+                    (name, frame[frame["group"] == group])
+                    for name, frame in panels
+                ]
+                rows = [(name, frame) for name, frame in rows if not frame.empty]
+                if not rows:
+                    continue
+                for column, (name, frame) in zip(st.columns(len(rows)), rows):
+                    with column:
+                        st.plotly_chart(
+                            plotting.normalized_waveform_overlay(
+                                frame,
+                                phase_label=name,
+                                # Group and epoch both in the FIGURE title, so
+                                # there is no second heading above it.
+                                title=f"{group} — {name}",
+                            ),
+                            width="stretch",
+                            key=f"waveform_{group}_{name}",
+                        )
             st.info(
-                "The paper's error band is between-RUN SEM across three "
-                "independent experiments. This dataset is one run, so the band "
-                "here is between-fly SEM within each group — a narrower claim.",
+                "The band is between-fly SEM within each group. It describes "
+                "the spread among these flies, not the reproducibility of the "
+                "result across independent experiments.",
                 icon=":material/info:",
             )
             # Every panel shown, tagged by epoch, so the CSV matches the figure
@@ -277,9 +376,9 @@ if tab_init.open:
             "Left: the daily profile of each state with standard sleep behind it "
             "in grey. Right: for each fly and state, the bouts starting in each "
             "1-hour window divided by that fly's own total bouts of that state, "
-            "with the activity profile overlaid in red. The paper's point is "
-            "that long sleep is initiated in the hour *following* the day's "
-            "largest bout of wakefulness."
+            "with the activity profile overlaid in red. Each fly's curve sums "
+            "to 1, so a fly that slept little counts as much as one that slept "
+            "a lot."
         )
         profiles = _cached_profiles(fp, phase_ds, bin_size_min)
         prof_stats = ssm.group_profiles(profiles)
@@ -300,15 +399,20 @@ if tab_init.open:
             if init_stats is None:
                 st.info("No sleep bouts were detected for the current selection.")
 
+        # The group goes in each FIGURE's title rather than in a heading above
+        # the pair. `title=None` used to suppress the figure title so the
+        # heading could carry the group, but Plotly serialises a None title as
+        # an empty title object, whose `text` is undefined — so both panels
+        # printed the literal word "undefined" where the title belongs.
         for group in groups:
-            if len(groups) > 1:
-                st.markdown(f"**{group}**")
             g_prof = prof_stats[prof_stats["group"] == group]
             left, right = st.columns(2)
             with left:
                 st.plotly_chart(
                     plotting.state_profile_plot(
-                        g_prof, phase_label=phase_used, title=None
+                        g_prof,
+                        phase_label=phase_used,
+                        title=f"Daily profiles — {group}",
                     ),
                     width="stretch",
                     key=f"prof_{group}",
@@ -322,7 +426,7 @@ if tab_init.open:
                             init_stats[init_stats["group"] == group],
                             activity_stats=g_prof[g_prof["state"] == "activity"],
                             phase_label=phase_used,
-                            title=None,
+                            title=f"Bout initiation — {group}",
                         ),
                         width="stretch",
                         key=f"init_{group}",
@@ -352,8 +456,10 @@ if tab_rose.open:
         profiles = _cached_profiles(fp, phase_ds, bin_size_min)
         prof_stats = ssm.group_profiles(profiles)
         groups = _groups_in(profiles)
+        # No st.markdown heading here: rose_plot_with_activity already prints
+        # "Temporal organisation of sleep states — <group>" as the figure
+        # title, so the heading repeated the group label directly above it.
         for group in groups:
-            st.markdown(f"**{group}**")
             st.plotly_chart(
                 plotting.rose_plot_with_activity(
                     prof_stats[prof_stats["group"] == group],
@@ -369,10 +475,10 @@ if tab_rose.open:
         st.subheader("Circadian gating")
         st.markdown(
             "Each fly's centre of mass gives a mean phase; the angular deviation "
-            "about it stands in for gate width, the paper's proxy in the absence "
-            "of an objective phase marker for a sleep state's onset. Inner rings "
-            "are individual flies, the thick outer arcs are group means. Gates "
-            "may overlap even though the states themselves cannot co-occur."
+            "about it stands in for gate width, there being no objective phase "
+            "marker for the onset of a sleep state. Inner rings are individual "
+            "flies, the thick outer arcs are group means. Gates may overlap "
+            "even though the states themselves cannot co-occur."
         )
         circular = _cached_circular(fp, phase_ds, bin_size_min, angle_doubling)
         if circular.empty:
@@ -383,13 +489,12 @@ if tab_rose.open:
                 g_stats = circular[circular["group"] == group]
                 if g_stats.empty:
                     continue
-                if len(groups) > 1:
-                    st.markdown(f"**{group}**")
                 st.plotly_chart(
                     plotting.polar_gating_plot(
                         g_stats,
                         gates[gates["group"] == group],
                         phase_label=phase_used,
+                        title=f"Circadian gating — {group}",
                     ),
                     width="stretch",
                     key=f"gate_{group}",
@@ -410,32 +515,130 @@ if tab_rose.open:
             )
 
 # ---------------------------------------------------------------------------
-# Fig 5 / 6 — the CWT. Expensive, so it runs on request and its result lives in
-# session state, which is also why it is not an st.fragment: both the
-# Scalograms and the Ultradian tab read it, and a fragment rerun would refresh
-# only its own tab.
+# The CWT, shared by the Scalograms and Ultradian tabs. Expensive, so it runs
+# only on request, and it is not an st.fragment for that same sharing reason:
+# a fragment rerun would refresh only its own tab.
 # ---------------------------------------------------------------------------
 
-CWT_KEY = "sleep_states_cwt"
-CWT_META = "sleep_states_cwt_meta"
+# Session state records WHICH RUNS EXIST — `{(fp, genotype, epoch): (min, max)}`,
+# the period range each genotype was last run at. Never the results themselves:
+# one run of four states over a ten-day recording is ~19 MB of averaged
+# surface, so holding one per genotype would grow without bound as genotypes
+# are browsed. The surfaces live in `_cached_cwt`, where Streamlit bounds them.
+#
+# A record per genotype, rather than one standing request, is what lets the
+# genotype selector switch the view on its own. Held as a single request, the
+# selector could only take effect on the next Run press — changing it appeared
+# to do nothing at all, because the figures went on showing the genotype that
+# had been selected when Run was last pressed.
+#
+# It is also what gives the Ultradian tab a selector without a Run button of
+# its own: the runs recorded here are exactly the genotypes it can show
+# instantly, and each record carries the range it was run at, so that tab never
+# has to read the period inputs from a tab that is not currently rendered.
+CWT_RUNS = "sleep_states_cwt_runs"
 
 
-def _cwt_results():
-    """(dataset, meta, is_current) for whatever the last wavelet run produced."""
-    result = st.session_state.get(CWT_KEY)
-    meta = st.session_state.get(CWT_META)
-    if result is None or not len(getattr(result, "data_vars", {})):
-        return None, None, False
-    return result, meta, bool(meta and meta.get("fp") == fp)
+def _cwt_runs():
+    return st.session_state.setdefault(CWT_RUNS, {})
 
 
-def _stale_warning(is_current):
-    if not is_current:
-        st.warning(
-            "These wavelet results were computed for a different dataset or "
-            "selection. Re-run them on the **Scalograms** tab to refresh.",
-            icon=":material/warning:",
+def _runs_here():
+    """Genotypes already run for this dataset and epoch, in run order."""
+    return [
+        group
+        for (run_fp, group, epoch) in _cwt_runs()
+        if run_fp == fp and epoch == phase_used
+    ]
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
+def _cached_cwt(fp, _ds, fly_ids, states, p_range, phase):
+    """One genotype's wavelet run.
+
+    ``fly_ids`` is the genotype's flies and NOT a detail: the transforms are
+    averaged across whatever flies are passed, so running the whole dataset at
+    once produced a single surface per state with every genotype averaged into
+    it. That is not a comparison anyone asked for — it is a genotype-blind mean
+    that a two-genotype experiment makes meaningless — and it was the only
+    thing these two tabs could show.
+
+    Per-genotype costs no more in total than the pooled run did: the work is
+    one transform per fly either way, and each fly belongs to one genotype.
+    ``max_entries=3`` bounds the memory a held result can take (~19 MB of
+    averaged surface for four states over a ten-day recording).
+
+    The progress bar is created INSIDE the function on purpose. A callback
+    closing over a bar created by the caller raises CacheReplayClosureError on
+    the first cache hit: Streamlit replays the element calls a cached function
+    made, and it cannot replay into a layout block that no longer exists.
+    """
+    # The counter runs over fly x state steps, not flies. Left as a bare
+    # "103/124" on a 31-fly genotype it reads as though every fly in the
+    # dataset is being analysed, which is exactly the doubt the per-genotype
+    # run exists to remove — so it says what it is counting.
+    n_flies, n_states = len(fly_ids), len(states)
+    progress = st.progress(0.0, text=f"Running CWT on {n_flies} flies…")
+
+    def _tick(done, total):
+        progress.progress(
+            min(1.0, done / max(1, total)),
+            text=f"CWT {done}/{total} ({n_flies} flies x {n_states} states)",
         )
+
+    try:
+        return sleep_cwt_analysis(
+            _ds,
+            states=tuple(states),
+            fly_ids=list(fly_ids),
+            full_range=tuple(p_range),
+            # _ds is already this epoch's masked view; re-requesting the SAME
+            # phase is idempotent, and it must not be "both", which the
+            # period-analysis phase guard rejects outright.
+            phase=phase,
+            progress_callback=_tick,
+        )
+    finally:
+        progress.empty()
+
+
+def _cwt_for(group, p_range):
+    """One genotype's surfaces — instant on a cache hit."""
+    return _cached_cwt(
+        fp,
+        phase_ds,
+        _fly_ids_for(group),
+        tuple(states_present),
+        tuple(p_range),
+        phase_used,
+    )
+
+
+CWT_EMPTY_MESSAGE = (
+    "The wavelet run finished but produced no surfaces. Every fly's state "
+    "series was too short or too gappy to transform: the CWT needs one "
+    "continuous run of at least 50 minutes (ten 5-minute bins) per fly, and "
+    "missing minutes break a run. Check that sleep analysis was run on this "
+    "epoch and that the flies in this selection have a usable stretch of it."
+)
+
+# Genotypes offered to the wavelet tabs, in dataset order.
+cwt_groups = (
+    list(dict.fromkeys(str(g) for g in phase_ds["group"].values))
+    if "group" in phase_ds.coords
+    else ["All Flies"]
+)
+
+
+def _fly_ids_for(group):
+    """The flies of one genotype, as a tuple so it can key a cache."""
+    if "group" not in phase_ds.coords:
+        return tuple(str(i) for i in phase_ds["id"].values)
+    return tuple(
+        str(i)
+        for i, g in zip(phase_ds["id"].values, phase_ds["group"].values)
+        if str(g) == group
+    )
 
 
 if tab_scal.open:
@@ -444,87 +647,107 @@ if tab_scal.open:
         st.markdown(
             "Continuous wavelet transforms of the 5-minute-binned state series, "
             "one surface per fly, each normalised to its own surface mean before "
-            "the flies are averaged. The colour range is pinned to 0-1.5, as in "
-            "the paper, so panels are comparable to each other and to the "
-            "printed figure."
+            "the flies are averaged. The colour range is pinned to 0-1.5, so "
+            "the panels are comparable to each other."
         )
-        with st.form("sleep_states_cwt_form"):
-            col_a, col_b = st.columns([1, 2])
-            with col_a:
-                p_min = st.number_input("Min period (h)", 0.5, 12.0, 1.0, 0.5)
-                p_max = st.number_input("Max period (h)", 12.0, 48.0, 32.0, 1.0)
-            with col_b:
-                st.markdown(
-                    "The default 1-32 h span is the paper's Figure 5A axis. "
-                    "Running two narrow bands separately — as this code used to "
-                    "by default — normalises each by its own band mean, which "
-                    "makes the z values incomparable between bands and to the "
-                    "paper."
-                )
-                run_cwt = st.form_submit_button(
-                    "Run wavelet analysis", type="primary", icon=":material/play_arrow:"
-                )
+        # ONE GENOTYPE AT A TIME, and NOT inside a form. A form only submits on
+        # its button, so the genotype selector could not change what was on
+        # screen — the figures kept showing whichever genotype had been
+        # selected the last time Run was pressed, which reads as a selector
+        # that does nothing. Outside a form, changing it reruns the page, and
+        # an already-run genotype comes straight back from the cache.
+        #
+        # Nothing expensive happens on that rerun: a genotype that has not been
+        # run yet shows the prompt below rather than starting a transform.
+        #
+        # persist_state="page" because these tabs are DYNAMIC — an unrendered
+        # widget's keyed value is dropped by default, so without it every one
+        # of these controls would reset each time the tab was left.
+        cwt_group = st.selectbox(
+            "Genotype",
+            cwt_groups,
+            key="sleep_states_cwt_group",
+            persist_state="page",
+            help=(
+                "The transforms are averaged across the flies included, so one "
+                "genotype is run at a time — an average over several genotypes "
+                "at once would not describe any of them. Switching back to a "
+                "genotype you have already run is immediate."
+            ),
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            p_min = st.number_input(
+                "Min period (h)", 0.5, 12.0, 1.0, 0.5,
+                key="sleep_states_cwt_pmin", persist_state="page",
+            )
+        with col_b:
+            p_max = st.number_input(
+                "Max period (h)", 12.0, 48.0, 32.0, 1.0,
+                key="sleep_states_cwt_pmax", persist_state="page",
+            )
+        run_cwt = st.button(
+            "Run wavelet analysis", type="primary", icon=":material/play_arrow:"
+        )
 
-        if run_cwt:
-            progress = st.progress(0.0, text="Running CWT…")
+        fly_ids = _fly_ids_for(cwt_group)
+        wanted_range = (float(p_min), float(p_max))
+        run_key = (fp, cwt_group, phase_used)
+        if run_cwt and fly_ids:
+            _cwt_runs()[run_key] = wanted_range
 
-            def _tick(done, total):
-                progress.progress(
-                    min(1.0, done / max(1, total)), text=f"CWT {done}/{total}"
-                )
-
-            with st.spinner("Computing wavelet transforms…"):
-                result = sleep_cwt_analysis(
-                    phase_ds,
-                    states=tuple(states_present),
-                    full_range=(float(p_min), float(p_max)),
-                    # phase_ds is already this epoch's masked view; re-requesting
-                    # the SAME phase is idempotent, and it must not be "both",
-                    # which the period-analysis phase guard rejects outright.
-                    phase=phase_used,
-                    progress_callback=_tick,
-                )
-            progress.empty()
-            st.session_state[CWT_KEY] = result
-            st.session_state[CWT_META] = {
-                "fp": fp,
-                "range": (p_min, p_max),
-                "phase": phase_used,
-            }
-
-        cwt, meta, is_current = _cwt_results()
-        if cwt is None:
-            st.info("Press **Run wavelet analysis** to compute the scalograms.")
+        if not fly_ids:
+            st.warning(
+                f"No flies of **{cwt_group}** are in the current group selection."
+            )
+        elif _cwt_runs().get(run_key) != wanted_range:
+            st.info(
+                f"Press **Run wavelet analysis** to compute **{cwt_group}** at "
+                f"{wanted_range[0]:g}-{wanted_range[1]:g} h."
+            )
         else:
-            _stale_warning(is_current)
-            surfaces, axes, spectra, bands = {}, {}, {}, {}
-            for state in states_present:
-                key = f"sleep_cwt_{state}_full_avg_surface"
-                if key not in cwt.data_vars:
-                    continue
-                surfaces[state] = cwt[key].values
-                axes[state] = cwt[f"sleep_cwt_{state}_full_period_axis"].values
-                spectra[state] = cwt[f"sleep_cwt_{state}_full_fly_power"].values
-                bands[state] = ULTRADIAN_BANDS.get(state, (1, 4))
+            with st.spinner(f"Computing wavelet transforms for {cwt_group}…"):
+                cwt = _cwt_for(cwt_group, wanted_range)
 
-            if not surfaces:
-                st.info("The wavelet run produced no surfaces for these states.")
+            st.caption(
+                f"{cwt_group} · {len(fly_ids)} flies · "
+                f"{wanted_range[0]:g}-{wanted_range[1]:g} h · {phase_used} epoch"
+            )
+            if not len(cwt.data_vars):
+                st.error(CWT_EMPTY_MESSAGE, icon=":material/error:")
             else:
-                st.plotly_chart(
-                    plotting.sleep_state_scalogram(
-                        surfaces,
-                        axes,
-                        bin_size_min=CWT_BIN_MIN,
-                        phase_label=meta.get("phase", phase_used) if meta else phase_used,
-                    ),
-                    width="stretch",
-                )
-                st.plotly_chart(
-                    plotting.period_amplitude_plot(
-                        spectra, axes, ultradian_band=bands
-                    ),
-                    width="stretch",
-                )
+                surfaces, axes, spectra, bands = {}, {}, {}, {}
+                for state in states_present:
+                    key = f"sleep_cwt_{state}_full_avg_surface"
+                    if key not in cwt.data_vars:
+                        continue
+                    surfaces[state] = cwt[key].values
+                    axes[state] = cwt[f"sleep_cwt_{state}_full_period_axis"].values
+                    spectra[state] = cwt[f"sleep_cwt_{state}_full_fly_power"].values
+                    bands[state] = ULTRADIAN_BANDS.get(state, (1, 4))
+
+                if not surfaces:
+                    st.info("The wavelet run produced no surfaces for these states.")
+                else:
+                    st.plotly_chart(
+                        plotting.sleep_state_scalogram(
+                            surfaces,
+                            axes,
+                            bin_size_min=CWT_BIN_MIN,
+                            phase_label=phase_used,
+                            title=f"Normalised average scalograms — {cwt_group}",
+                        ),
+                        width="stretch",
+                    )
+                    st.plotly_chart(
+                        plotting.period_amplitude_plot(
+                            spectra,
+                            axes,
+                            ultradian_band=bands,
+                            title=f"Period vs. amplitude — {cwt_group}",
+                        ),
+                        width="stretch",
+                    )
 
 if tab_ultra.open:
     with tab_ultra:
@@ -536,11 +759,44 @@ if tab_ultra.open:
             "means the strength of the ultradian rhythm itself waxes and wanes "
             "with the circadian day."
         )
-        cwt, meta, is_current = _cwt_results()
-        if cwt is None:
+        # This tab gets its OWN genotype selector rather than inheriting one
+        # from the Scalograms tab. Its options are the genotypes already run,
+        # so switching is always immediate and can never start a transform from
+        # a tab that has no Run button; each run record carries the period
+        # range it was run at, so this tab never has to read the period inputs
+        # from a tab that is not currently rendered.
+        _available = _runs_here()
+        cwt = None
+        req_group = None
+        if not _available:
             st.info("Run the wavelet analysis on the **Scalograms** tab first.")
         else:
-            _stale_warning(is_current)
+            req_group = st.selectbox(
+                "Genotype",
+                _available,
+                key="sleep_states_ultra_group",
+                persist_state="page",
+                help=(
+                    "The genotypes already run on the **Scalograms** tab. Run "
+                    "another one there to add it here."
+                ),
+            )
+            _range = _cwt_runs()[(fp, req_group, phase_used)]
+            _fly_ids = _fly_ids_for(req_group)
+            # Usually a cache hit and instant. It can miss — the cache holds
+            # only the last few runs — and then this recomputes, so say so.
+            with st.spinner(f"Loading wavelet results for {req_group}…"):
+                cwt = _cwt_for(req_group, _range)
+
+        if cwt is None:
+            pass  # the "run it first" message above is the whole story
+        elif not len(cwt.data_vars):
+            st.error(CWT_EMPTY_MESSAGE, icon=":material/error:")
+        else:
+            st.caption(
+                f"{req_group} · {len(_fly_ids)} flies · "
+                f"{_range[0]:g}-{_range[1]:g} h · {phase_used} epoch"
+            )
             amp = {
                 state: cwt[f"sleep_cwt_{state}_ultradian_amplitude"].values
                 for state in states_present
@@ -549,10 +805,10 @@ if tab_ultra.open:
             if not amp:
                 st.info("No ultradian amplitude series available.")
             else:
-                # Figure 6A/C/E puts the scalogram CROPPED to each state's
-                # ultradian band directly above the amplitude trace, so the
-                # trace can be read as the band average it is. Same surfaces as
-                # the Scalograms tab, just sliced to the band's rows.
+                # The scalogram CROPPED to each state's ultradian band sits
+                # directly above the amplitude trace, so the trace can be read
+                # as the band average it is. Same surfaces as the Scalograms
+                # tab, just sliced to the band's rows.
                 cropped, cropped_axes = {}, {}
                 for state in amp:
                     surf_key = f"sleep_cwt_{state}_full_avg_surface"
@@ -571,10 +827,8 @@ if tab_ultra.open:
                             cropped,
                             cropped_axes,
                             bin_size_min=CWT_BIN_MIN,
-                            phase_label=meta.get("phase", phase_used)
-                            if meta
-                            else phase_used,
-                            title="Ultradian band only",
+                            phase_label=phase_used,
+                            title=f"Ultradian band only — {req_group}",
                         ),
                         width="stretch",
                     )
@@ -582,23 +836,33 @@ if tab_ultra.open:
                     plotting.ultradian_amplitude_plot(
                         amp,
                         bin_size_min=CWT_BIN_MIN,
-                        phase_label=meta.get("phase", phase_used) if meta else phase_used,
+                        phase_label=phase_used,
                         bands={s: ULTRADIAN_BANDS.get(s, (1, 4)) for s in amp},
+                        title=f"Ultradian amplitude over time — {req_group}",
                     ),
                     width="stretch",
                 )
                 st.divider()
+                # Lomb-Scargle leads and is the default: it gives calibrated
+                # false-alarm probabilities and tolerates the gaps a real
+                # recording has, neither of which the chi-squared periodogram
+                # does. Chi-squared stays available because its numbers are the
+                # ones comparable to previously published results.
+                #
+                # Key renamed alongside the option labels — a session that
+                # hot-reloads this file would otherwise still hold
+                # "Chi-squared (as published)", which is no longer an option.
                 test = st.segmented_control(
                     "Rhythmicity test",
-                    ["Chi-squared (as published)", "Lomb-Scargle"],
-                    default="Chi-squared (as published)",
+                    ["Lomb-Scargle", "Chi-squared"],
+                    default="Lomb-Scargle",
+                    key="sleep_states_rhythmicity_test",
                     help=(
-                        "The paper uses a chi-squared periodogram, so that is the "
-                        "one whose numbers can be checked against its Figure 6 "
-                        "and Table S2. Lomb-Scargle is the better test on its "
-                        "merits — calibrated false-alarm probabilities, tolerant "
-                        "of gaps — but its values are not comparable to the "
-                        "published ones."
+                        "Lomb-Scargle is the better test on its merits: "
+                        "calibrated false-alarm probabilities and tolerant of "
+                        "gaps. Chi-squared reports a per-fly periodogram and "
+                        "a % rhythmic, and its values are the ones comparable "
+                        "to older published numbers."
                     ),
                 )
                 if test == "Lomb-Scargle":
@@ -623,17 +887,52 @@ if tab_ultra.open:
                         if f"ultra_ls_period_{state}" in ls.data_vars
                     ]
                     if rows:
+                        st.markdown(
+                            "Dominant period of each state's ultradian-amplitude "
+                            "series, and the fraction of flies whose peak is "
+                            "significant at a false-alarm probability below 0.05."
+                        )
                         st.dataframe(rows, width="stretch", hide_index=True)
+                        st.download_button(
+                            "Download per-fly Lomb-Scargle results (CSV)",
+                            pd.DataFrame(
+                                {
+                                    "id": ls["id"].values,
+                                    **{
+                                        f"{quantity}_{state}": ls[
+                                            f"ultra_ls_{quantity}_{state}"
+                                        ].values
+                                        for state in states_present
+                                        for quantity in ("period", "power", "fap")
+                                        if f"ultra_ls_{quantity}_{state}" in ls.data_vars
+                                    },
+                                }
+                            )
+                            .to_csv(index=False)
+                            .encode(),
+                            file_name=(
+                                f"ultradian_ls_{req_group}_{phase_used}.csv"
+                            ),
+                            mime="text/csv",
+                            icon=":material/download:",
+                        )
                     else:
                         st.info("No Lomb-Scargle result could be computed.")
                 else:
-                    chi = _cached_chi_sq(fp, cwt, tuple(states_present))
+                    chi = _cached_chi_sq(
+                        fp, req_group, cwt, tuple(states_present)
+                    )
                     if not len(chi.data_vars):
                         st.info("No periodogram could be computed.")
                     else:
                         st.plotly_chart(
                             plotting.chi_sq_periodogram_plot(
-                                chi, states=tuple(states_present)
+                                chi,
+                                states=tuple(states_present),
+                                title=(
+                                    "Chi-squared periodogram of ultradian "
+                                    f"amplitude — {req_group}"
+                                ),
                             ),
                             width="stretch",
                         )
@@ -671,9 +970,4 @@ if tab_ultra.open:
                                 }
                             )
                         if rows:
-                            st.markdown(
-                                "Comparable to the paper's Table S2, which "
-                                "reports 93-100% rhythmic at 23.4-23.8 h for "
-                                "wild-type flies."
-                            )
                             st.dataframe(rows, width="stretch", hide_index=True)

@@ -99,3 +99,83 @@ def test_bout_dimension_is_rebuilt_not_appended(analysed_ds):
         "a stricter threshold should not produce more bout slots than the looser "
         "run it replaced — the old dimension is leaking through"
     )
+
+
+class TestOtherAnalysesDimensions:
+    """The bout dimension was never the only one.
+
+    ``to_dataframe()`` broadcasts a Dataset over the UNION of its dimensions,
+    so ANY variable another analysis left on a dimension of its own multiplies
+    the per-fly frame the same way the bout dimension used to. Dropping the
+    previous SLEEP run's variables does not touch those.
+
+    A user hit this after running the periodograms: sleep analysis asked for a
+    ``(1, 17281, 600, 4321)`` float32 array — 167 GiB — and could not be run at
+    all, on every phase setting. Where the product is small enough to allocate
+    it is worse than the error, because the detector then sees a time axis with
+    every timestamp repeated and returns nonsense rather than failing.
+    """
+
+    @pytest.fixture
+    def with_other_analyses(self, master_ds):
+        """Shaped like a dataset that has been through the periodogram pages:
+        a 2-D surface on two dimensions of its own, and a per-fly spectrum on a
+        third. Names mirror what ``sleep_cwt_analysis`` writes."""
+        ds = master_ds.copy()
+        ds["cwt_surface"] = (
+            ("cwt_period_long_full", "cwt_tbin_long_full"),
+            np.zeros((4, 3), dtype=np.float32),
+        )
+        ds["chisq_power"] = (
+            ("id", "chisq_period_long"),
+            np.zeros((ds.sizes["id"], 5), dtype=np.float32),
+        )
+        return ds
+
+    def test_result_matches_a_dataset_without_them(self, master_ds, with_other_analyses):
+        clean = sa.sleep_analysis(master_ds, phase="both")
+        out = sa.sleep_analysis(with_other_analyses, phase="both")
+        for var in SLEEP_MASKS:
+            assert np.array_equal(clean[var].values, out[var].values), (
+                f"{var} differs — another analysis's dimensions changed the result"
+            )
+        assert out.sizes[BOUT_DIM] == clean.sizes[BOUT_DIM]
+
+    @pytest.mark.parametrize("phase", ["LD", "DD", "both"])
+    def test_every_phase_runs(self, with_other_analyses, phase):
+        """The user saw this on all three settings, so all three are asserted."""
+        out = sa.sleep_analysis(with_other_analyses, phase=phase)
+        assert "sleep" in out.data_vars
+        assert int((out["sleep"].values >= 0).sum()) > 0
+
+    def test_the_other_analyses_survive(self, with_other_analyses):
+        """Reducing the detector's input must not delete anything from the
+        dataset it returns — those results are somebody else's page."""
+        out = sa.sleep_analysis(with_other_analyses, phase="both")
+        assert "cwt_surface" in out.data_vars
+        assert "chisq_power" in out.data_vars
+        for dim in ("cwt_period_long_full", "cwt_tbin_long_full", "chisq_period_long"):
+            assert dim in out.dims, f"{dim} was dropped from the dataset"
+
+    def test_no_per_fly_frame_is_broadcast(self, with_other_analyses, monkeypatch):
+        """Guard the mechanism, as the bout-dimension test does: no per-fly
+        frame may be longer than the time axis, whatever else is in scope."""
+        seen = []
+        real_to_dataframe = xr.Dataset.to_dataframe
+
+        def spy(self, *args, **kwargs):
+            df = real_to_dataframe(self, *args, **kwargs)
+            if "time" in self.dims:
+                seen.append((len(df), self.sizes["time"]))
+            return df
+
+        monkeypatch.setattr(xr.Dataset, "to_dataframe", spy)
+        sa.sleep_analysis(with_other_analyses, phase="both")
+
+        assert seen, "expected the per-fly loop to build dataframes"
+        for n_rows, n_time in seen:
+            assert n_rows <= n_time, (
+                f"a per-fly frame had {n_rows} rows for {n_time} timepoints — "
+                "another analysis's dimensions are being broadcast against time"
+            )
+

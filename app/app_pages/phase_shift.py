@@ -573,6 +573,7 @@ else:
                     )
                 )
             fig.add_hline(y=0, line_dash="dot", line_color="gray")
+            plotting.apply_category_ticks(fig, groups)
             fig.update_layout(
                 title="Phase shift by group (positive = delay, negative = advance)",
                 yaxis_title="phase shift (hours)",

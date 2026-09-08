@@ -75,20 +75,41 @@ if _ds_phase in (PHASE_LD, PHASE_DD):
         f"({len(_sleep_ds['id'])} flies, {len(_sleep_ds['time'])} timepoints)."
     )
 elif _split_applied:
+    # "Both" is the default because sleep detection is PER-EPOCH: choosing a
+    # single epoch here writes masks that are missing everywhere else, and every
+    # downstream page then shows blank figures for the other epoch until this
+    # page is re-run. Analysing both once makes the epoch a VIEWING choice in
+    # each page's own sidebar, which is where it belongs.
+    #
+    # Detection itself has no phase-dependent parameter, so "both" is not a
+    # different method — the only difference from two separate runs is that a
+    # bout straddling the LD/DD boundary stays one bout instead of being cut in
+    # two at it, which is the more faithful reading of the fly's behaviour.
     sleep_phase = st.radio(
         "Data phase for sleep analysis",
-        ["LD (recommended)", "DD"],
+        ["Both (LD + DD)", "LD only", "DD only"],
         index=0,
         horizontal=True,
-        help="Sleep analysis is typically performed on LD data where "
-        "the light-dark cycle drives consolidated sleep/wake patterns. "
-        "DD is an explicit request for constant-darkness sleep.",
-        key="sleep_phase_radio",
+        help=(
+            "Both analyses the whole recording, so every page downstream can "
+            "switch between LD and DD from its own sidebar without coming back "
+            "here. Pick a single epoch only to restrict the analysis to it "
+            "deliberately — the other epoch's minutes are then recorded as "
+            "missing and its figures will be empty."
+        ),
+        # Key renamed with the options: a session that hot-reloads this file
+        # would otherwise still hold "LD (recommended)", which is no longer an
+        # option, and Streamlit raises rather than falling back.
+        key="sleep_phase_choice",
     )
-    _sleep_phase = "LD" if "LD" in sleep_phase else "DD"
     # Feed the whole (unsplit) master + explicit phase — not dataset_LD/DD.
     _sleep_ds = ds
-    _sleep_phase_arg = _sleep_phase
+    if sleep_phase.startswith("Both"):
+        _sleep_phase = "LD+DD"
+        _sleep_phase_arg = "both"
+    else:
+        _sleep_phase = "LD" if sleep_phase.startswith("LD") else "DD"
+        _sleep_phase_arg = _sleep_phase
     st.info(
         f"Computing **{_sleep_phase}** sleep from the full dataset "
         f"({len(ds['id'])} flies, {len(ds['time'])} timepoints)."

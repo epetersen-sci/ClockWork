@@ -7,6 +7,19 @@ Every chart has a matching group-level and per-fly CSV export.
 
 Read-only with respect to the dataset: everything here renders results that the
 **Sleep analysis** page computed. That page is where the 5-minute rule runs.
+
+ONE EPOCH AT A TIME, chosen in the sidebar and defaulting to LD. This page used
+to bin the whole recording onto a single ZT axis with no epoch selection at
+all — harmless only while sleep could be computed for one epoch at a time,
+because the other epoch was then all missing minutes and dropped out of its
+own accord. Once sleep analysis could run on both, that silently became an
+average of entrained and free-running days: under DD a fly runs at its own
+period, so its subjective day drifts against the 24 h axis, smearing the DD
+structure across the clock AND diluting the LD profile it was averaged into.
+The more DD days in the record, the flatter the result, for the wrong reason.
+
+There is deliberately no pooled option. The epoch is a viewing choice, and
+"both at once" is not a meaningful average of the two.
 """
 
 
@@ -19,6 +32,7 @@ import export_helpers as ex
 import plotting
 import sleep_analysis
 from analysis_detection import detect_analyses
+from dam_utilities import select_phase
 from dataset_meta import (
     PHASE_DD,
     PHASE_LD,
@@ -176,6 +190,57 @@ def _summary_csv(tbl):
 # dropped deselected flies for good. That block is now its own page.
 analyses = detect_analyses(ds)
 
+# ---------------------------------------------------------------------------
+# Epoch selection. First in the sidebar because it governs everything below it,
+# and applied before the group filter so the fingerprint the caches key on
+# already reflects the epoch.
+#
+# A dataset stamped with a single epoch can only be shown in that epoch, and
+# one with no LD/DD boundary has no epochs to choose between — neither gets a
+# control it cannot honour.
+# ---------------------------------------------------------------------------
+_stamped = dataset_phase(ds)
+_has_epochs = ("split_minute" in ds.coords) or ("first_DD_day" in ds.coords)
+
+if _stamped in (PHASE_LD, PHASE_DD):
+    phase_used = _stamped
+    st.sidebar.caption(f"Phase: **{phase_used}** (this dataset holds only that epoch).")
+elif not _has_epochs:
+    phase_used = None  # nothing to select; the record is one undivided block
+else:
+    _options = [PHASE_LD, PHASE_DD]
+    _phase = st.sidebar.radio(
+        "Phase",
+        _options,
+        index=0,  # LD: sleep is conventionally read under the light cycle
+        key="sleep_activity_phase",
+        help=(
+            "Which epoch these figures cover. Sleep is conventionally read "
+            "under LD, so that is the default; DD shows the same measures on "
+            "subjective time. There is no combined option — averaging "
+            "entrained and free-running days onto one 24 h axis describes "
+            "neither."
+        ),
+    )
+    try:
+        ds, phase_used = select_phase(ds, phase=_phase)
+    except (ValueError, KeyError) as exc:
+        st.error(f"Cannot show the {_phase} epoch of this dataset: {exc}")
+        st.stop()
+
+if phase_used is None:
+    st.caption(
+        "This dataset has no LD/DD boundary, so these figures cover the whole "
+        "recording. Apply the split on **Data → Curate & split** to choose an "
+        "epoch here."
+    )
+else:
+    _other = PHASE_DD if phase_used == PHASE_LD else PHASE_LD
+    st.caption(
+        f"Data shown is from the **{phase_used}** dataset. To change to the "
+        f"**{_other}** dataset, use the selector in the sidebar."
+    )
+
 # The unified group axis: filter on the single `group` coord defined by the
 # metadata columns chosen at import, not on separate per-genotype /
 # per-temperature axes. Selecting a subset narrows every plot below.
@@ -215,7 +280,7 @@ with tab_profiles:
             "Daily Activity Pattern",
             tuple(selected_genotypes) if selected_genotypes else None,
             tuple(selected_temperatures) if selected_temperatures else None,
-            dataset_phase(ds),
+            phase_used or dataset_phase(ds),
             bin_size,
         )
         # theme=None: let the figure's own styling (black text, transparent bg) drive both
@@ -282,7 +347,7 @@ with tab_profiles:
             "Daily Sleep Pattern",
             tuple(selected_genotypes) if selected_genotypes else None,
             tuple(selected_temperatures) if selected_temperatures else None,
-            dataset_phase(ds),
+            phase_used or dataset_phase(ds),
             bin_size,
         )
         # theme=None: the figure's black-text / transparent-bg styling drives screen + PNG.
@@ -453,7 +518,7 @@ with tab_totals:
     # ============================================================
     # Summary Bars
     # ============================================================
-    _ds_phase_label = dataset_phase(ds)
+    _ds_phase_label = phase_used or dataset_phase(ds)
     _summary_subhead_suffix = (
         " (DD — subjective time)"
         if _ds_phase_label == PHASE_DD
