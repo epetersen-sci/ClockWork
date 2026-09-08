@@ -505,6 +505,7 @@ def sleep_state_totals_bars(
         yaxis_title=ylab,
         legend_title="Sleep state",
     )
+    apply_category_ticks(fig, groups)
     return fig, stat
 
 
@@ -863,6 +864,7 @@ def summary_bars(
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
+    apply_category_ticks(fig, list(summary_df["group"]))
     return fig
 
 
@@ -879,6 +881,47 @@ def _state_palette():
     from sleep_state_metrics import STATE_COLORS, STATE_LABELS
 
     return STATE_COLORS, STATE_LABELS
+
+
+CATEGORY_TICKANGLE = -40
+
+
+def category_tickangle(labels, angle=CATEGORY_TICKANGLE):
+    """Tick angle for genotype/group category labels: diagonal unless they are
+    both few AND short.
+
+    Two figures already rotated, but only above six groups. Group COUNT is the
+    wrong test on its own: six labels like "dsOpa1(32358)+Ldhmut" overprinted
+    each other into an unreadable smear at 0 degrees — exactly the case the
+    rotation exists for — while six labels like "ctrl" need no rotation at all.
+    What decides it is the room each label needs, so the longest one is part of
+    the test.
+
+    Lines are measured separately because some x labels stack two facts with a
+    ``<br>`` (state over group, group over day); the label's width is its
+    widest line, not its total length.
+    """
+    lines = [
+        line
+        for label in labels
+        for line in str(label).split("<br>")
+    ]
+    if len(labels) <= 1:
+        return 0
+    return angle if (len(labels) > 6 or max(map(len, lines), default=0) > 8) else 0
+
+
+def apply_category_ticks(fig, labels, **kwargs):
+    """Rotate a categorical x axis, and let it claim the margin it needs.
+
+    ``automargin`` matters as much as the angle: without it a rotated label is
+    drawn into whatever bottom margin the figure already had and is clipped
+    rather than overlapped, which trades one unreadable axis for another.
+    """
+    fig.update_xaxes(
+        tickangle=category_tickangle(labels), automargin=True, **kwargs
+    )
+    return fig
 
 
 def _rgba(hex_color, alpha):
@@ -1526,6 +1569,7 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
 
     fig = go.Figure()
     annotations = []
+    x_labels = []
 
     for g_idx, group in enumerate(groups):
         gdf = rebound_df[rebound_df["group"] == group]
@@ -1539,6 +1583,7 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
             mean_val = sdf.mean()
             sem_val = sdf.std(ddof=1) / np.sqrt(len(sdf)) if len(sdf) > 1 else 0.0
             label = f"{state}<br>{group}" if len(groups) > 1 else state
+            x_labels.append(label)
 
             # Bar
             fig.add_trace(
@@ -1593,6 +1638,9 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
         barmode="group",
         annotations=annotations,
     )
+    # Each label stacks the state over the group, so it is the GROUP half that
+    # runs long here.
+    apply_category_ticks(fig, x_labels)
     return fig
 
 
@@ -3495,7 +3543,7 @@ def rhythmicity_violin_grid(
         legend=dict(title="Group"),
     )
     for col_idx in range(1, n_cols + 1):
-        fig.update_xaxes(tickangle=-45 if n_groups > 6 else 0, row=1, col=col_idx)
+        apply_category_ticks(fig, groups_present, row=1, col=col_idx)
     return fig, long_df, stats_by_alg
 
 
@@ -3812,20 +3860,11 @@ def threshold_coupled_figure(
         )
 
     ticks = list(range(len(groups_present)))
-    fig.update_xaxes(
-        tickvals=ticks,
-        ticktext=groups_present,
-        tickangle=-40 if len(groups_present) > 6 else 0,
-        row=1,
-        col=1,
-    )
-    fig.update_xaxes(
-        tickvals=ticks,
-        ticktext=groups_present,
-        tickangle=-40 if len(groups_present) > 6 else 0,
-        row=1,
-        col=2,
-    )
+    for _col in (1, 2):
+        apply_category_ticks(
+            fig, groups_present, tickvals=ticks, ticktext=groups_present,
+            row=1, col=_col,
+        )
     # period panel y-range: scale to the RANGE OF THE PLOTTED (rhythmic-called)
     # periods, NOT the full search window — a tight ~24 h cluster is dwarfed by an
     # empty [16, 36] h axis. Only when no fly is called rhythmic (nothing to scale

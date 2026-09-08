@@ -11,6 +11,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 import dam_utilities
+import plotting
 import sleep_deprivation as sd_module
 from analysis_detection import detect_analyses
 from ui import status
@@ -459,6 +460,7 @@ with tab_bars:
                 marker_color="navy",
             )
         )
+        plotting.apply_category_ticks(fig_bar, bar_x)
         fig_bar.update_layout(
             barmode="group",
             yaxis_title="Total Sleep (minutes)",
@@ -473,12 +475,14 @@ with tab_bars:
         st.warning("No rebound data available.")
     else:
         fig_reb = go.Figure()
+        all_reb_labels = []
         for phase in rebound_pct["phase"].unique():
             ph_data = rebound_pct[rebound_pct["phase"] == phase]
             x_labels = [
                 f"{row['group']}<br>Recovery Day {row['recovery_day']}"
                 for _, row in ph_data.iterrows()
             ]
+            all_reb_labels.extend(x_labels)
             fig_reb.add_trace(
                 go.Bar(
                     name=phase,
@@ -488,6 +492,7 @@ with tab_bars:
                 )
             )
         fig_reb.add_hline(y=0, line_dash="dot", line_color="gray")
+        plotting.apply_category_ticks(fig_reb, all_reb_labels)
         fig_reb.update_layout(
             barmode="group",
             yaxis_title="Sleep Rebound (%)",
