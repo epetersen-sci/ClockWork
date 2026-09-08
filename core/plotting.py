@@ -1306,7 +1306,9 @@ def state_profile_plot(
         row=len(rows),
         col=1,
     )
-    fig.update_layout(title=title, height=175 * len(rows) + 90, showlegend=False)
+    # `title or ""` for the same reason as in rose_plot_with_activity: a None
+    # title renders as the word "undefined", not as no title.
+    fig.update_layout(title=title or "", height=175 * len(rows) + 90, showlegend=False)
     # Colour each panel label by its state, the way the paper prints them —
     # with a grey reference line in every sleep panel, the label is what tells
     # you which trace is the subject.
@@ -1464,7 +1466,7 @@ def initiation_probability_plot(
         row=len(states),
         col=1,
     )
-    fig.update_layout(title=title, height=185 * len(states) + 90, bargap=0.12)
+    fig.update_layout(title=title or "", height=185 * len(states) + 90, bargap=0.12)
     return fig
 
 
@@ -2572,7 +2574,10 @@ def rose_plot_with_activity(
         )
 
     fig.update_layout(
-        title=title or (f"Temporal organisation of sleep states — {group}" if group else None),
+        # "" not None: a None title serialises to an empty title OBJECT, whose
+        # `text` is undefined, and plotly.js renders that as the word
+        # "undefined" where the title belongs.
+        title=title or (f"Temporal organisation of sleep states — {group}" if group else ""),
         showlegend=False,
         height=380,
         margin=dict(t=110, b=30),

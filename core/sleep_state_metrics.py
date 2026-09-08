@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from dam_utilities import get_zt_binned_dataframe
+from sleep_analysis import bouts_in_view, relative_minutes_of
 
 # The paper's colour assignments, read off Figures 1-6. These are load-bearing
 # for a reader comparing our output to the printed figures, so they live here
@@ -76,22 +77,43 @@ def available_states(ds, states=STATE_ORDER):
     return [s for s in states if STATE_VARS.get(s) in ds.data_vars]
 
 
+def states_with_data(ds, states=STATE_ORDER):
+    """Which of ``states`` carry at least one MEASURED minute in ``ds``.
+
+    :func:`available_states` only says the variable is there, which is not the
+    same question. Sleep detection is per-epoch: ``sleep_analysis`` writes its
+    masks across the WHOLE time axis but marks every minute outside the epoch
+    it ran on as missing (``-1``), and a ``select_phase`` view turns those into
+    NaN. So a dataset whose sleep was computed on LD still carries all four
+    masks when you ask for DD — with nothing measured in any of them.
+
+    That is what an all-blank sleep-states page looks like from the inside, and
+    nothing downstream could tell it from "this fly never slept": the profiles
+    came out empty, the rose panels drew zero-radius wedges, and the wavelet
+    run found no continuous block in any fly and produced no surfaces at all.
+    Meanwhile the per-bout table is dimensioned on ``sleep_bout_number``, not
+    ``time``, so phase selection does not touch it and the initiation panels
+    happily kept showing the OTHER epoch's bouts under this epoch's axis.
+
+    A state whose mask is measured but never 1 is kept: "no long sleep here"
+    is a result, not a gap.
+    """
+    present = []
+    for state in available_states(ds, states):
+        # NaN >= 0 is False, so this rejects both representations of missing
+        # (the -1 sentinel and a phase view's NaN) in one comparison.
+        if bool(np.any(ds[STATE_VARS[state]].values >= 0)):
+            present.append(state)
+    return present
+
+
 def _zt_minutes_of(ds, values):
     """ZT/CT minute-of-day for bout timestamps, in either time representation.
 
-    ``start_time`` carries whatever the ``time`` coord uses — relative integer
-    minutes for a normal import, datetime64 for an absolute-time dataset — so
-    both have to reduce to the same 0-1439 minute-of-day used by the profiles.
+    Both representations reduce to the same 0-1439 minute-of-day used by the
+    profiles.
     """
-    values = np.asarray(values)
-    if np.issubdtype(values.dtype, np.integer) or np.issubdtype(values.dtype, np.floating):
-        return values.astype(float) % MINUTES_PER_DAY
-    # Select by dimension name rather than a bare [0]: this is the first fly's
-    # start, and `get_zt_binned_dataframe` uses the same reference so absolute-
-    # time datasets bin identically here and there.
-    ref_start = pd.to_datetime(ds["start_datetime"].isel(id=0).values)
-    deltas = (pd.to_datetime(values) - ref_start).total_seconds() / 60.0
-    return np.asarray(deltas, dtype=float) % MINUTES_PER_DAY
+    return relative_minutes_of(ds, values) % MINUTES_PER_DAY
 
 
 def _group_lookup(ds):
@@ -237,7 +259,14 @@ def compute_normalized_waveforms(ds, bin_size_min=30, states=STATE_ORDER):
     rows = []
     for (group, state), sdf in stats.groupby(["group", "state"], sort=False):
         sdf = sdf.sort_values("zt_bin_minute")
-        peak = float(np.nanmax(sdf["mean"].values)) if len(sdf) else np.nan
+        # Max over the FINITE values rather than np.nanmax, which warns on an
+        # all-NaN slice. A whole (group, state) profile is all-NaN whenever the
+        # mask carries no measured minute in this epoch — the normal state of
+        # the epoch sleep analysis did not run on — and that is a case to skip
+        # quietly, not to warn about once per group per state.
+        means = np.asarray(sdf["mean"].values, dtype=float)
+        finite = means[np.isfinite(means)]
+        peak = float(finite.max()) if finite.size else np.nan
         if not np.isfinite(peak) or peak <= 0:
             # A state with no sleep at all has no maximum to normalise to.
             # Emitting zeros would draw a flat line at 0 that looks like data;
@@ -308,6 +337,10 @@ def compute_initiation_probability(ds, bin_hours=1, states=STATE_ORDER):
         return empty
 
     bouts["id"] = bouts["id"].astype(str)
+    # Scope the bouts to the epoch this view covers before anything counts them.
+    bouts = bouts_in_view(ds, bouts)
+    if bouts.empty:
+        return empty
     bouts["zt_minute"] = _zt_minutes_of(ds, bouts["start_time"].values)
     n_bins = int(round(24 / bin_hours))
     bin_width = bin_hours * 60.0

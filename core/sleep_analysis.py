@@ -201,8 +201,22 @@ def sleep_analysis(
     # `data` so the output is dimensioned on the whole time axis.
     from dam_utilities import resolve_phase
 
+    # ONLY the movement variable goes to the detector. `to_dataframe()`
+    # broadcasts a Dataset over the UNION of its dimensions, so every variable
+    # some OTHER analysis left on a dimension of its own multiplies the per-fly
+    # frame. Dropping the previous sleep run's variables above is not enough:
+    # on a dataset that had also been through the periodograms, one fly asked
+    # for a (1, 17281, 600, 4321) float32 array — 167 GiB — and sleep analysis
+    # could not be run at all. Where the product is small enough to allocate it
+    # is worse than an error: every timestamp appears once per cell of the other
+    # dimensions, so the bout detector sees a time axis with duplicates and
+    # returns nonsense.
+    #
+    # Selecting the one variable needed is the form of this fix that does not
+    # have to be revisited each time an analysis is added — a deny-list of
+    # known dimensions would have to be.
     analysis_ds, phase_used = resolve_phase(
-        data,
+        data[[mov_column]],
         phase,
         default="LD",
         allowed=("LD", "DD", "both"),
@@ -442,6 +456,74 @@ def _filter_ds_by_group(ds, selected_genotypes=None, selected_temperatures=None)
     return ds.sel(id=filtered_ids)
 
 
+def relative_minutes_of(ds, values):
+    """Timestamps as elapsed minutes from the recording start, either dtype.
+
+    ``start_time`` and the ``time`` coord carry whatever representation the
+    import produced — relative integer minutes normally, datetime64 for an
+    absolute-time dataset — so anything that compares them has to put both on
+    one scale first.
+    """
+    values = np.asarray(values)
+    if np.issubdtype(values.dtype, np.integer) or np.issubdtype(values.dtype, np.floating):
+        return values.astype(float)
+    # The FIRST fly's start, selected by dimension name rather than a bare [0]:
+    # `get_zt_binned_dataframe` uses the same reference, so absolute-time
+    # datasets land on the same scale here and there.
+    ref_start = pd.to_datetime(ds["start_datetime"].isel(id=0).values)
+    deltas = (pd.to_datetime(values) - ref_start).total_seconds() / 60.0
+    return np.asarray(deltas, dtype=float)
+
+
+def bouts_in_view(ds, bouts):
+    """Drop bouts that start outside the epoch ``ds`` is a view of.
+
+    Phase selection acts on the ``time`` axis. The bout table does not live on
+    it — it is dimensioned on ``sleep_bout_number`` — so ``select_phase``
+    leaves it completely untouched, and an LD view carries every DD bout as
+    well. Any page that shows bouts beside a phase-selected profile will
+    otherwise disagree with itself: the profile covers one epoch and the bout
+    counts beside it cover the whole recording, under one epoch's label.
+
+    The window comes from the standard sleep mask rather than from
+    ``split_minute``, so it follows whatever the view actually masked —
+    including ``discard_first_dd_day``, which moves the DD boundary a day
+    later than ``split_minute`` records.
+
+    A dataset that is not a phase view (nothing masked out) is returned
+    untouched, so this is a no-op wherever there is no epoch to scope to.
+    """
+    if ds is None or "sleep" not in ds.data_vars or "time" not in ds.coords:
+        return bouts
+    if bouts is None or bouts.empty or "start_time" not in bouts.columns:
+        return bouts
+    mask = ds["sleep"]
+    if set(mask.dims) != {"id", "time"}:
+        return bouts
+    # NaN >= 0 is False, so this rejects both representations of missing (the
+    # -1 sentinel and a phase view's NaN) in one comparison.
+    measured = np.asarray((mask >= 0).transpose("id", "time").values)
+    if measured.all():
+        return bouts  # nothing masked out: not a phase view
+
+    times = relative_minutes_of(ds, ds["time"].values)
+    lo, hi = {}, {}
+    for row, fly in enumerate(str(i) for i in ds["id"].values):
+        got = np.flatnonzero(measured[row])
+        if got.size:
+            # First and last MEASURED minute, so a real gap inside the epoch
+            # does not shrink the window — a bout cannot start in a gap anyway.
+            lo[fly], hi[fly] = times[got[0]], times[got[-1]]
+
+    starts = relative_minutes_of(ds, bouts["start_time"].values)
+    ids = bouts["id"].astype(str)
+    low = ids.map(lo).to_numpy(dtype=float, na_value=np.nan)
+    high = ids.map(hi).to_numpy(dtype=float, na_value=np.nan)
+    with np.errstate(invalid="ignore"):
+        keep = (starts >= low) & (starts <= high)
+    return bouts[keep]
+
+
 def raw_bout_dataframe(ds, selected_genotypes=None, selected_temperatures=None):
     """
     Tidy per-bout table: one row per detected sleep bout, across all flies.
@@ -469,6 +551,12 @@ def raw_bout_dataframe(ds, selected_genotypes=None, selected_temperatures=None):
         v for v in ("duration", "sleep_state", "start_time", "end_time") if v in ds.data_vars
     ]
     df = ds[bout_vars].to_dataframe().reset_index().dropna(subset=["duration"])
+    # Scope to the epoch `ds` is a view of. This is the single source of truth
+    # for every bout curve, summary and CSV on the Sleep & activity page, so
+    # scoping here is what makes that page's phase selector reach the bout
+    # tabs at all — the alternative is a Bouts tab silently covering the whole
+    # recording while the profiles beside it cover one epoch.
+    df = bouts_in_view(ds, df)
     if df.empty:
         return empty
 

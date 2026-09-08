@@ -5,6 +5,7 @@ a page is a top-level script, so a NameError in a branch nobody clicked still
 takes the page down at import time. `at.exception` is empty on a healthy run.
 """
 
+import numpy as np
 import pytest
 
 PAGES = [
@@ -73,27 +74,35 @@ def test_sleep_states_tabs_are_gated(app, states_ds):
     st.tabs renders every tab's content by default, so this page used to draw
     all nineteen figures — waveforms, six initiation rows, six rose rows, six
     gating rings — on 189 flies for whichever single tab the user was looking
-    at. With on_change="rerun" plus `tab.open` guards, the landing tab draws
-    one figure.
+    at. With on_change="rerun" plus `tab.open` guards, only the open tab's
+    figures render.
+
+    The count is asserted EXACTLY rather than as an upper bound. Every tab is
+    faceted by genotype, so a bound like "at most two" both stopped being true
+    when the waveforms were split per group and would have gone on passing if
+    a second tab leaked one extra figure through. An exact count is what
+    actually says no other tab rendered.
     """
+    n_groups = len(set(states_ds["group"].values.tolist()))
     at = app(ds=states_ds, page="sleep_states")
     assert not at.exception
+    # The Waveforms tab draws one panel per genotype per epoch present — this
+    # fixture spans LD and DD, and Figure 1B prints them side by side.
     landing = len(at.get("plotly_chart"))
-    # The Waveforms tab draws one panel per epoch present (Figure 1B prints LD
-    # beside DD), so at most two. Anything more means another tab's figures
-    # rendered too.
-    assert landing <= 2, (
-        f"the Waveforms tab drew {landing} figures — at most two epochs are "
-        "expected, so the tab guards are not holding"
+    assert landing == 2 * n_groups, (
+        f"the Waveforms tab drew {landing} figures, expected {2 * n_groups} "
+        f"({n_groups} genotypes x 2 epochs) — either the facet layout changed "
+        "or another tab's figures rendered too"
     )
 
     # Selecting a tab through its key is the only route a headless AppTest has;
     # its Tab objects are read-only.
-    at = _open_tab(at, "Rose & gating (Fig 3)")
+    at = _open_tab(at, "Rose & gating")
     assert not at.exception
-    # One rose row and one gating ring per group, so strictly more than the
-    # waveform tab drew — and proof the guard lets the OPEN tab through.
-    assert len(at.get("plotly_chart")) > landing, "the rose tab drew nothing"
+    # One rose row and one gating ring per genotype, and nothing else.
+    assert len(at.get("plotly_chart")) == 2 * n_groups, (
+        "the rose tab did not draw one rose row and one gating ring per genotype"
+    )
 
 
 def test_sleep_states_wavelet_button_runs(app, states_ds):
@@ -108,21 +117,65 @@ def test_sleep_states_wavelet_button_runs(app, states_ds):
     into NaN.
     """
     at = app(ds=states_ds, page="sleep_states")
-    at = _open_tab(at, "Scalograms (Fig 5)")
+    at = _open_tab(at, "Scalograms")
 
     buttons = [b for b in at.button if "wavelet" in b.label.lower()]
     assert buttons, "the wavelet run button is missing"
 
     buttons[0].click()
-    at = _open_tab(at, "Scalograms (Fig 5)")
+    at = _open_tab(at, "Scalograms")
     assert not at.exception, f"the wavelet run raised: {at.exception}"
     assert not at.error, f"the page reported an error: {[e.value for e in at.error]}"
-    assert "sleep_states_cwt" in at.session_state, "no results were stored"
+    # AppTest's session_state is subscript-only — it has no .get().
+    assert "sleep_states_cwt_request" in at.session_state, "no request was recorded"
+    req = at.session_state["sleep_states_cwt_request"]
+    # The run is scoped to ONE genotype — the transforms are averaged over the
+    # flies passed, so a pooled run returns a genotype-blind mean surface.
+    groups = set(states_ds["group"].values.tolist())
+    assert req["group"] in groups
+    assert 0 < len(req["fly_ids"]) < states_ds.sizes["id"], (
+        "the run covered every fly, so it is not scoped to one genotype"
+    )
     # The scalogram and the period-vs-amplitude figure.
     assert len(at.get("plotly_chart")) >= 2
 
-    # The Ultradian tab reads the same session-state results, which is why the
-    # run is not wrapped in a fragment.
-    at = _open_tab(at, "Ultradian (Fig 6)")
+    # The Ultradian tab reads the same request and hits the same cache, which
+    # is why the run is not wrapped in a fragment.
+    at = _open_tab(at, "Ultradian")
     assert not at.exception
     assert len(at.get("plotly_chart")) >= 2, "the ultradian tab lost the results"
+    # Lomb-Scargle is the default test, so its table renders without a click.
+    assert at.session_state["sleep_states_rhythmicity_test"] == "Lomb-Scargle"
+
+
+def test_sleep_states_wavelet_is_per_genotype(app, states_ds):
+    """Each genotype must get its own surfaces, not a shared pooled one.
+
+    ``sleep_cwt_analysis`` averages the per-fly transforms across whatever
+    flies it is handed, so running the whole dataset produced ONE surface per
+    state with every genotype averaged into it — the only thing these two tabs
+    could show, and not a description of any genotype in the experiment.
+    """
+    from periodograms import sleep_cwt_analysis
+
+    from dam_utilities import select_phase
+
+    view, used = select_phase(states_ds, phase="DD")
+    ids = [str(i) for i in view["id"].values]
+    labels = [str(g) for g in view["group"].values]
+    groups = list(dict.fromkeys(labels))
+    assert len(groups) > 1, "this fixture needs several genotypes to prove anything"
+
+    surfaces = {}
+    for group in groups[:2]:
+        fly_ids = [i for i, g in zip(ids, labels) if g == group]
+        out = sleep_cwt_analysis(
+            view, states=("standard",), fly_ids=fly_ids, full_range=(1.0, 32.0), phase=used
+        )
+        surfaces[group] = out["sleep_cwt_standard_full_avg_surface"].values
+
+    a, b = (surfaces[g] for g in groups[:2])
+    assert a.shape == b.shape
+    assert not np.allclose(a, b, equal_nan=True), (
+        "two genotypes produced identical surfaces — fly_ids is not scoping the run"
+    )

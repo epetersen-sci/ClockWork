@@ -194,7 +194,7 @@ class TestPageWithDegenerateData:
         )
         at = app(ds=stripped, page="sleep_states")
         assert not at.exception
-        at.session_state["sleep_states_tab"] = "Initiation (Fig 2)"
+        at.session_state["sleep_states_tab"] = "Initiation"
         at = at.run()
         assert not at.exception, "the initiation tab needs the bout table but must not crash"
         assert at.warning, "it should say why initiation probability is unavailable"
@@ -218,7 +218,100 @@ class TestPageWithDegenerateData:
     def test_ld_epoch_renders_every_tab(self, app, states_ds):
         at = app(ds=states_ds, page="sleep_states")
         at.session_state["sleep_states_phase"] = "LD"
-        for tab in ("Initiation (Fig 2)", "Rose & gating (Fig 3)"):
+        for tab in ("Initiation", "Rose & gating"):
             at.session_state["sleep_states_tab"] = tab
             at = at.run()
             assert not at.exception, f"{tab} raised on LD: {at.exception}"
+
+
+class TestEpochWithoutMasks:
+    """Sleep detection is PER-EPOCH, so a mask can be present and still say
+    nothing about the epoch you are looking at.
+
+    ``sleep_analysis`` writes its masks across the whole time axis but marks
+    every minute outside the epoch it ran on as missing, so a dataset whose
+    sleep was computed on LD carries all four masks under DD with nothing
+    measured in any of them. That is exactly what a user gets by running sleep
+    analysis on LD and then opening this page, whose Phase default is DD — and
+    it used to fail silently and inconsistently: blank profile panels,
+    zero-radius rose wedges, a wavelet run that produced no surfaces, and
+    initiation-probability bars that DID have data, because the per-bout table
+    is dimensioned on ``sleep_bout_number`` and phase selection never touches
+    it. Four different wrong answers, none of them saying why.
+    """
+
+    @pytest.fixture(scope="class")
+    def ld_only_ds(self):
+        """Sleep computed on LD only, over a dataset that also spans DD."""
+        import sleep_analysis
+        from conftest import _build_with_sleep_structure
+
+        return sleep_analysis.sleep_analysis(
+            _build_with_sleep_structure(), phase="LD", sleep_threshold_sec=300
+        )
+
+    def test_masks_are_present_but_unmeasured(self, ld_only_ds):
+        from dam_utilities import select_phase
+
+        dd, _ = select_phase(ld_only_ds, phase="DD")
+        # Present: every figure's input variable is there to be found.
+        assert ssm.available_states(dd) == list(STATES)
+        # Measured: none of it is.
+        assert ssm.states_with_data(dd) == []
+        # The epoch it WAS run on is unaffected.
+        ld, _ = select_phase(ld_only_ds, phase="LD")
+        assert ssm.states_with_data(ld) == list(STATES)
+
+    def test_a_state_that_is_always_zero_still_counts_as_data(self, states_ds):
+        """"This fly never slept long" is a result, not a gap."""
+        zeroed = states_ds.copy()
+        zeroed["sleep_long"] = zeroed["sleep_long"] * 0
+        assert "long" in ssm.states_with_data(zeroed)
+
+    def test_page_says_which_epoch_the_masks_are_for(self, app, ld_only_ds):
+        at = app(ds=ld_only_ds, page="sleep_states")
+        assert not at.exception
+        warnings = " ".join(w.value for w in at.warning)
+        assert warnings, "an all-missing epoch has to be announced, not drawn blank"
+        assert "LD" in warnings, (
+            "the warning has to name the epoch the masks DO cover, since "
+            f"switching Phase is the fix: {warnings!r}"
+        )
+        # And nothing is drawn from the empty masks.
+        assert not at.get("plotly_chart")
+
+    def test_the_epoch_it_ran_on_still_works(self, app, ld_only_ds):
+        at = app(ds=ld_only_ds, page="sleep_states")
+        at.session_state["sleep_states_phase"] = "LD"
+        at = at.run()
+        assert not at.exception
+        assert at.get("plotly_chart"), "LD is the epoch sleep was computed on"
+
+
+def test_initiation_bouts_are_scoped_to_the_epoch(states_ds):
+    """The bout table is dimensioned on ``sleep_bout_number``, not ``time``, so
+    phase selection cannot touch it — every epoch view carries every bout.
+
+    Where sleep ran on ONE epoch that stayed hidden (the other epoch's masks
+    are empty and the page stops). Where it ran on ``both`` it did not: the
+    initiation panel counted the whole recording's bouts next to a profile
+    panel drawn from one epoch's minutes, under an axis labelled for that one
+    epoch. The two epochs must PARTITION the bouts — no bout counted twice, and
+    none dropped.
+    """
+    from dam_utilities import select_phase
+
+    def counted(phase):
+        view, _ = select_phase(states_ds, phase=phase)
+        init = ssm.compute_initiation_probability(view)
+        # n_bouts is each fly's own denominator, so one row per fly is the count.
+        std = init[init["state"] == "standard"].groupby("id")["n_bouts"].first()
+        return int(std.sum())
+
+    whole, ld, dd = counted("both"), counted("LD"), counted("DD")
+    assert ld and dd, "this fixture has to have bouts in both epochs to prove anything"
+    assert ld + dd == whole, (
+        f"LD ({ld}) + DD ({dd}) != the whole recording ({whole}) — the epoch "
+        "views are double-counting or dropping bouts"
+    )
+
