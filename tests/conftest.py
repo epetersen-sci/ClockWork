@@ -251,3 +251,90 @@ def states_ds():
     return sleep_analysis.sleep_analysis(
         _build_with_sleep_structure(), phase="both", sleep_threshold_sec=300
     )
+
+
+# The phase-shift cohort is built to a KNOWN design, so the analysis can be checked
+# against a right answer rather than against itself. Two genotypes that differ in
+# baseline phase by PULSE_BASELINE_GAP_H, each with a pulsed and an unpulsed arm, and
+# the pulsed arms delayed by PULSE_SHIFT_H from the first DD day onward.
+#
+# The baseline gap is the point: referring every group to ONE control reports it as
+# part of the shift, which is what the matched pairing and the rebasing exist to stop.
+PULSE_DD_DAY = 3
+PULSE_ZT_HOUR = 15.0
+PULSE_SHIFT_H = 1.5
+PULSE_BASELINE_GAP_H = 2.0
+PULSE_BASE_PHASE = {"A": 12.0, "B": 12.0 + PULSE_BASELINE_GAP_H}
+
+
+def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
+    """Two genotypes x (pulsed, unpulsed), with a designed phase delay after the pulse.
+
+    Each fly's activity is one Gaussian bump per day centred on its group's peak
+    hour — sharp enough to survive the 12 h low-pass filter the peak method applies,
+    which a Poisson trace like ``_build``'s is not. The pulsed arms sit in one flybox
+    and the controls in another, so ``describe_by`` has something real to report.
+    """
+    rng = np.random.default_rng(seed)
+    ids, genotypes, conditions, boxes, zt = [], [], [], [], []
+    for gene in ("A", "B"):
+        for cond in ("LP", "noLP"):
+            for k in range(n_per_arm):
+                ids.append(f"{gene}_{cond}_{k}")
+                genotypes.append(gene)
+                conditions.append(cond)
+                boxes.append("bun" if cond == "LP" else "pie")
+                # Blank for the unpulsed arm, which is what an unpulsed cohort's
+                # metadata really looks like, and must survive as NaN.
+                zt.append(PULSE_ZT_HOUR if cond == "LP" else np.nan)
+
+    n_id = len(ids)
+    time = np.arange(n_days * MINUTES_PER_DAY)
+    activity = np.zeros((time.size, n_id))
+    for j in range(n_id):
+        for day in range(n_days):
+            # The pulse is given late on the last entrained day and moves the peak
+            # from the first DD day onward — see dam_utilities._derive_pulse_minute.
+            shifted = conditions[j] == "LP" and day >= PULSE_DD_DAY
+            hour = PULSE_BASE_PHASE[genotypes[j]] + (PULSE_SHIFT_H if shifted else 0.0)
+            centre = day * MINUTES_PER_DAY + hour * 60.0
+            activity[:, j] += 20 * np.exp(-0.5 * ((time - centre) / 120.0) ** 2)
+    activity += rng.normal(0, 0.05, activity.shape).clip(0)
+
+    start = np.datetime64("2025-01-15T09:00:00")
+    return xr.Dataset(
+        {"activity": (("time", "id"), activity)},
+        coords={
+            "id": ids,
+            "time": time.astype(np.int64),
+            "genotype": ("id", np.array(genotypes)),
+            "condition": ("id", np.array(conditions)),
+            "flybox": ("id", np.array(boxes)),
+            "pulse_zt_hour": ("id", np.array(zt, dtype=float)),
+            "start_datetime": ("id", np.array([start] * n_id)),
+            "first_DD_day": (
+                "id",
+                np.array(
+                    [start + np.timedelta64(PULSE_DD_DAY * MINUTES_PER_DAY, "m")] * n_id
+                ),
+            ),
+        },
+        attrs={
+            "time_is_relative_minutes": 1,
+            "phase": "full",
+            "split_applied": 1,
+            "group_columns": "genotype,condition",
+            # create_xarray_dataset writes one attr per metadata column; that is what
+            # group_defining_coords reads to tell metadata coords from derived ones,
+            # and the page's grouping picker is built from it.
+            "genotype": ["A", "B"],
+            "condition": ["LP", "noLP"],
+            "flybox": ["bun", "pie"],
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def pulse_ds():
+    """The known-design phase-shift cohort (see :func:`_build_pulse_cohort`)."""
+    return _build_pulse_cohort()

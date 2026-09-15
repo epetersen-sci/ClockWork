@@ -30,6 +30,35 @@ import dam_utilities
 MINUTES_PER_DAY = 1440
 
 
+def dd_onset_days(ds):
+    """The distinct days of the recording on which flies are released into DD.
+
+    ``[3]`` for one cohort released on day 3; ``[]`` when the dataset carries no
+    boundary at all. **More than one entry is the signature of a combined dataset**
+    — two runs whose boxes went into DD on different days of their own recordings.
+    That case matters in two places: the day picker cannot number days from a
+    boundary that is not single, and the phase-shift page has to count days from
+    each group's own onset or the two runs are compared at different free-running
+    ages.
+
+    Derived from the per-fly ``split_minute``, attached from ``first_DD_day`` if it
+    has not been already.
+    """
+    if "split_minute" not in ds.coords and "first_DD_day" not in ds.coords:
+        return []
+    try:
+        split = (
+            ds["split_minute"].values
+            if "split_minute" in ds.coords
+            else dam_utilities.add_phase_metadata(ds)["split_minute"].values
+        )
+    except Exception:
+        return []
+    vals = np.asarray(split, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    return sorted({int(round(v / MINUTES_PER_DAY)) for v in vals})
+
+
 def day_table(ds, *, warn=None):
     """``(DataFrame, dd_day)`` — one row per complete day of the recording.
 
@@ -46,25 +75,14 @@ def day_table(ds, *, warn=None):
     minutes = np.asarray(ds["time"].values, dtype=float)
     n_days_total = int(np.floor((minutes[-1] + 1) / MINUTES_PER_DAY)) if minutes.size else 0
 
-    dd_day = None
-    if "split_minute" in ds.coords or "first_DD_day" in ds.coords:
-        try:
-            split = (
-                ds["split_minute"].values
-                if "split_minute" in ds.coords
-                else dam_utilities.add_phase_metadata(ds)["split_minute"].values
-            )
-            dd_days = {int(round(float(s) / MINUTES_PER_DAY)) for s in np.asarray(split)}
-            if len(dd_days) == 1:
-                dd_day = dd_days.pop()
-            elif warn is not None:
-                warn(
-                    "Flies enter DD on different days of this dataset's time axis "
-                    f"({sorted(dd_days)}), so there is no single LD→DD transition to "
-                    "number days from and the whole record is labelled LD."
-                )
-        except Exception:
-            dd_day = None
+    onsets = dd_onset_days(ds)
+    dd_day = onsets[0] if len(onsets) == 1 else None
+    if len(onsets) > 1 and warn is not None:
+        warn(
+            "Flies enter DD on different days of this dataset's time axis "
+            f"({onsets}), so there is no single LD→DD transition to "
+            "number days from and the whole record is labelled LD."
+        )
 
     rows = []
     for d in range(n_days_total):

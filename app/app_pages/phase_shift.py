@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import dam_utilities
+import export_helpers
 import phase_shift as ps_module
 import plotting
 from calibrations import (
@@ -25,7 +26,7 @@ from calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
-from ui import charts, status
+from ui import charts, days, status
 from ui.guards import require_dataset
 
 st.caption(
@@ -166,19 +167,250 @@ if reference == "control":
     method = "peak"
     st.caption("Peak matching, as in `peakphaseplot.m`.")
 
-    _labels, _cols = ps_module.group_labels(ds_pulse, ("genotype", "condition"))
+    # Which metadata factors define a group. Splitting by sex as well as genotype and
+    # condition is the usual reason to change this — the lab plots the sexes apart.
+    #
+    # Via group_defining_coords rather than a blocklist of the coords analyses attach:
+    # it answers "which coords came from the metadata" from provenance, so nothing a
+    # later analysis adds can appear here and there is no list to keep in step with
+    # core/. The same question Groups & subsets, Actograms and Sleep (SCAMP) ask.
+    _coord_opts = dam_utilities.group_defining_coords(ds_pulse)
+    if not _coord_opts:
+        st.error("This dataset has no categorical metadata coordinates to group by.")
+        st.stop()
+    _grp_default = [c for c in ("genotype", "condition") if c in _coord_opts]
+    group_by = st.multiselect(
+        "Group-defining columns",
+        _coord_opts,
+        default=_grp_default or _coord_opts[:1],
+        help="A group is one combination of these. Add `sex` to compare males and "
+        "females separately rather than pooled.",
+    )
+    if not group_by:
+        st.error("Pick at least one column to define the groups.")
+        st.stop()
+    group_by = tuple(group_by)
+
+    _labels, _cols = ps_module.group_labels(ds_pulse, group_by)
     _groups = sorted(set(_labels))
-    # Default to whatever looks like the unpulsed arm, so the common case is one click.
-    _guess = next(
-        (g for g in _groups if any(t in g.lower() for t in ("nolp", "no_lp", "control"))),
-        _groups[0],
+
+    def _looks_unpulsed(text):
+        return any(t in str(text).lower() for t in ("nolp", "no_lp", "no lp", "control"))
+
+    # Values of each grouping column, for the matched-control pickers below.
+    _col_values = {c: sorted(set(np.asarray(ds_pulse[c].values).astype(str))) for c in _cols}
+    _cond_col = "condition" if "condition" in _cols else _cols[-1]
+    # Genotype-matched pairing only means anything with more than one genotype, so make
+    # it the default exactly then.
+    _match_default = [c for c in _cols if c != _cond_col]
+    _n_match_keys = (
+        len(set(zip(*[np.asarray(ds_pulse[c].values).astype(str) for c in _match_default])))
+        if _match_default
+        else 1
     )
-    control_group = st.selectbox(
-        "Unpulsed control group (the phase reference)",
-        _groups,
-        index=_groups.index(_guess),
-        help="Every other group's daily peak time is reported relative to this one.",
+
+    # Which apparatus each group's flies sat in, named without grouping on it. Asked of
+    # core's own group_extras — the same function that records it on the result — so
+    # this preview cannot disagree with what the analysis then reports.
+    describe_by = tuple(
+        c for c in ("flybox", "Monitor") if c in ds_pulse.coords and c not in group_by
     )
+    _extras_now = ps_module.group_extras(ds_pulse, _labels, _groups, describe_by)
+    _desc_col = describe_by[0] if describe_by else None
+
+    def _box_of(grp):
+        """``'cake'`` / ``'bun+tart'`` — the box(es) behind one group, or ``''``."""
+        if grp is None or _desc_col is None:
+            return ""
+        return "+".join((_extras_now.get(grp) or {}).get(_desc_col) or [])
+
+    PAIRING_LABELS = {
+        "Matched control within genotype": "matched",
+        "One control group for the whole experiment": "single",
+    }
+    pairing_label = st.radio(
+        "Which control is each group compared against?",
+        list(PAIRING_LABELS.keys()),
+        index=0 if _n_match_keys > 1 else 1,
+        horizontal=True,
+        help="Genotypes differ in baseline phase, so referring every group to a single "
+        "cohort folds that genotype difference into the reported shift.",
+    )
+    pairing = PAIRING_LABELS[pairing_label]
+
+    if pairing == "matched":
+        st.caption(
+            "Each group is compared against the unpulsed group of its **own** genotype, so "
+            "an `Hr38` light-pulse arm is measured against `Hr38 noLP` rather than against "
+            "another genotype's control."
+        )
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            control_on = st.selectbox(
+                "Column marking the control arm",
+                _cols,
+                index=_cols.index(_cond_col),
+                help="The column whose value separates unpulsed from pulsed groups.",
+            )
+            _cond_vals = _col_values[control_on]
+            _cond_idx = _cond_vals.index(
+                next((v for v in _cond_vals if _looks_unpulsed(v)), _cond_vals[0])
+            )
+            control_value = st.selectbox(
+                "Value marking the control arm", _cond_vals, index=_cond_idx
+            )
+        with mc2:
+            _match_opts = [c for c in _cols if c != control_on]
+            match_on = st.multiselect(
+                "Match the control on",
+                _match_opts,
+                default=_match_opts,
+                help="The control must share these values with the group it references. "
+                "`genotype` gives the within-genotype comparison.",
+            )
+        if not match_on:
+            st.error("Pick at least one column to match the control on.")
+            st.stop()
+        try:
+            control_group = ps_module.build_matched_control_map(
+                ds_pulse,
+                control_value,
+                group_by=group_by,
+                control_on=control_on,
+                match_on=match_on,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
+
+        # n is shown because it is the cheapest tell that a condition label covers two
+        # sub-experiments: a group holding twice the flies you expect is pooling them.
+        _n_by_group = {g: int((_labels == g).sum()) for g in _groups}
+        _pairs = pd.DataFrame(
+            [
+                {
+                    "group": g,
+                    "n": _n_by_group[g],
+                    (_desc_col or "source"): _box_of(g),
+                    "compared against": control_group.get(g) or "— none —",
+                    "n in control": _n_by_group.get(control_group.get(g), 0),
+                    "control " + (_desc_col or "source"): _box_of(control_group.get(g)),
+                }
+                for g in _groups
+                if control_group.get(g) != g
+            ]
+        )
+        _orphans = [g for g in _groups if control_group.get(g) is None]
+        with st.expander(
+            f"Pairings ({len(_pairs) - len(_orphans)} of {len(_pairs)} groups matched)",
+            expanded=bool(_orphans),
+        ):
+            st.dataframe(_pairs, width="stretch", hide_index=True)
+        if _orphans:
+            st.warning(
+                "No matching control for: "
+                + ", ".join(f"`{g}`" for g in _orphans)
+                + f". These have no `{control_value}` arm sharing their {', '.join(match_on)}, "
+                "so their phase difference is reported as blank rather than measured "
+                "against a different genotype."
+            )
+    else:
+        # Default to whatever looks like the unpulsed arm, so the common case is one click.
+        _guess = next((g for g in _groups if _looks_unpulsed(g)), _groups[0])
+        control_group = st.selectbox(
+            "Unpulsed control group (the phase reference)",
+            _groups,
+            index=_groups.index(_guess),
+            help="Every other group's daily peak time is reported relative to this one.",
+        )
+        if _n_match_keys > 1:
+            st.caption(
+                "All groups — including the other genotypes — are referred to this one "
+                "cohort, so a baseline phase difference between genotypes will appear in "
+                "the result alongside any real shift."
+            )
+
+    st.markdown("**Days and direction**")
+
+    # A control from another run only lines up if the days are counted from the LD→DD
+    # boundary rather than from each run's own start, so offer that here. More than one
+    # onset day is the signature of a combined dataset — see ui.days.dd_onset_days.
+    _dd_days = days.dd_onset_days(ds_pulse)
+    _mixed_dd = len(_dd_days) > 1
+
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        ORIGIN_LABELS = {
+            "First DD day (aligns runs)": "dd_onset",
+            "Recording start": "recording_start",
+        }
+        origin_label = st.radio(
+            "Count days from",
+            list(ORIGIN_LABELS.keys()),
+            index=0 if _mixed_dd else 1,
+            help="Needed when the control comes from a different experiment. Two runs "
+            "released into DD on different days of their recording line up only if day 0 "
+            "is the first DD day in both; otherwise the control has free-run a day longer "
+            "than the group it references and that drift lands in the difference.",
+        )
+        day_origin = ORIGIN_LABELS[origin_label]
+    with dc2:
+        SIGN_LABELS = {
+            "noLP − LP (delay reads negative)": "control_minus_group",
+            "LP − noLP (delay reads positive)": "group_minus_control",
+        }
+        sign_label = st.radio(
+            "Difference direction",
+            list(SIGN_LABELS.keys()),
+            index=0,
+            help="Which way round the subtraction reads. `noLP − LP` is the lab's "
+            "plotting convention.",
+        )
+        difference_sign = SIGN_LABELS[sign_label]
+
+    if _mixed_dd:
+        st.info(
+            "Flies in this dataset are released into DD on different days of their "
+            f"recording (day {', '.join(str(d) for d in _dd_days)}) — the signature of "
+            "a combined dataset. Counting days from the first DD day is preselected so "
+            "the runs are compared at the same free-running age. Under this origin the "
+            "light pulse always falls on day −1."
+        )
+
+    # Two cohorts are rarely at the same phase before the pulse. Rebasing removes that
+    # constant so the plot shows the change the pulse produced, not change plus offset.
+    # Zero every group on the LAST DAY THE PULSE HAS NOT TOUCHED. The pulse is given
+    # late on the last entrained day and only moves the NEXT day's peak (the same
+    # reasoning that puts the pulse marker BETWEEN two days, below), so that entrained
+    # day is the last clean one — and being adjacent to the pulse it is the tightest
+    # possible reference for the offset the boxes already carried. Under dd_onset it is
+    # always day -1; counting from the recording start it is the axis day the pulse
+    # falls on.
+    _baseline_default = (
+        -1 if day_origin == "dd_onset" else (_pulse_days[0] if _pulse_days else 0)
+    )
+    rebase = st.checkbox(
+        "Take out the starting offset (set one day to zero)",
+        value=True,
+        help="Subtracts each group's difference on the chosen day from all of its days. "
+        "Without it, a flybox-to-flybox phase offset present before the pulse is carried "
+        "through every later day.",
+    )
+    baseline_day = None
+    if rebase:
+        baseline_day = st.number_input(
+            "Day to set to zero",
+            min_value=-int(n_days),
+            max_value=int(n_days),
+            value=int(_baseline_default),
+            step=1,
+            help="Defaults to the last entrained day — the day of the pulse, whose own "
+            "peak still precedes it — so every group starts from zero immediately "
+            "before the pulse and the curve shows only what the pulse did. Pick an "
+            "earlier day to average out a noisy one, but avoid the first recorded day: "
+            "its peak sits on the filter edge.",
+        )
+
 else:
     METHOD_LABELS = {
         "Peak matching (default)": "peak",
@@ -313,7 +545,12 @@ with st.expander("Detection and fitting parameters"):
 if reference == "control":
     params = dict(
         control_group=control_group,
-        group_by=("genotype", "condition"),
+        group_by=group_by,
+        # Label each comparison with the apparatus it came from, without grouping on it.
+        describe_by=describe_by,
+        day_origin=day_origin,
+        baseline_day=baseline_day,
+        difference_sign=difference_sign,
         filter_hours=float(filter_hours),
         peak_prominence_frac=float(peak_prominence_frac),
         peak_distance_hours=float(peak_distance_hours),
@@ -344,7 +581,17 @@ if reference == "control":
                 gres = ps_module.compute_group_phase_difference(ds_pulse, **params)
                 st.session_state.phase_shift_group_results = gres
                 ds.attrs["phase_shift_method"] = "group_peak_vs_control"
-                ds.attrs["phase_shift_control_group"] = str(control_group)
+                # attrs must survive a netCDF round-trip, so a per-group mapping is
+                # recorded as text rather than as a dict.
+                ds.attrs["phase_shift_control_group"] = (
+                    "; ".join(
+                        f"{g}->{c}"
+                        for g, c in sorted(gres["control_map"].items())
+                        if c is not None
+                    )
+                    if isinstance(control_group, dict)
+                    else str(control_group)
+                )
                 ds.attrs["phase_shift_filter_hours"] = float(filter_hours)
                 st.session_state.dataset = ds
                 status.refresh(ds)
@@ -360,71 +607,630 @@ if reference == "control":
 
     gres = st.session_state.phase_shift_group_results
     per_day = gres["per_day"]
+    control_map = gres.get("control_map") or {}
+    single_control = gres["control_group"] if isinstance(gres["control_group"], str) else None
 
     st.subheader("Results")
+    if single_control:
+        st.caption(
+            "Phase difference = each group's daily peak time against "
+            f"**{single_control}**'s on the same day."
+        )
+    else:
+        st.caption(
+            "Phase difference = each group's daily peak time minus **its own matched "
+            "control**'s on the same day (the `control_group` column names it)."
+        )
+    _sign_note = gres["params"].get("difference_sign", "group_minus_control")
     st.caption(
-        f"Phase difference = each group's daily peak time minus **{gres['control_group']}**'s. "
-        "Positive = later (delayed) than the control."
+        "Reported as **noLP − LP**, so a delay reads negative and an advance positive."
+        if _sign_note == "control_minus_group"
+        else "Reported as **LP − noLP**, so a delay reads positive and an advance negative."
     )
 
     tab_plot, tab_table = st.tabs(["Phase Difference by Day", "Table & Export"])
 
     with tab_plot:
-        fig = go.Figure()
-        others = [g for g in sorted(per_day["group"].unique()) if g != gres["control_group"]]
-        palette = [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
+        _params = gres["params"]
+        _origin = _params.get("day_origin", "recording_start")
+        _gvals = gres.get("group_values") or {}
+        _gcols = list(_params.get("group_by", []))
+
+        # A group is its own reference (difference 0 by construction) — nothing to plot.
+        others = [
+            g
+            for g in sorted(per_day["group"].unique())
+            if control_map.get(g) not in (g, None)
         ]
-        for i, grp in enumerate(others):
-            sub = per_day[per_day["group"] == grp].sort_values("day_index")
-            fig.add_trace(
-                go.Scatter(
-                    x=sub["day_index"],
-                    y=sub["phase_difference_hours"],
-                    mode="lines+markers",
-                    name=grp,
-                    line=dict(color=palette[i % len(palette)]),
+
+        _extras = gres.get("group_extras") or {}
+        _desc = (gres["params"].get("describe_by") or [None])[0]
+
+        def _boxes(grp):
+            """Which apparatus a group's flies sat in, as 'cake' or 'cake+croissant'."""
+            vals = (_extras.get(grp) or {}).get(_desc) if _desc else None
+            return "+".join(vals) if vals else ""
+
+        def _box_set(grp):
+            """The individual boxes behind a group — a group can span more than one."""
+            vals = (_extras.get(grp) or {}).get(_desc) if _desc else None
+            return set(vals) if vals else set()
+
+        def _include_boxes(label, values, key, *, per_row=6):
+            """A row of tick boxes, all on by default. Returns the ticked values."""
+            state_key = f"_ps_inc_{key}"
+            saved = st.session_state.setdefault(state_key, {})
+            for v in values:
+                saved.setdefault(v, True)
+            st.markdown(f"**{label}**")
+            for start in range(0, len(values), per_row):
+                chunk = values[start : start + per_row]
+                cols = st.columns(per_row)
+                for col, v in zip(cols, chunk):
+                    saved[v] = col.checkbox(str(v), value=saved[v], key=f"ps_inc_{key}_{v}")
+            return [v for v in values if saved[v]]
+
+        # Every grouping column gets its own row of tick boxes, plus the box the
+        # flies sat in. Everything starts ticked, so the default view is unchanged.
+        _PLURAL = {
+            "genotype": "Genotypes",
+            "condition": "Conditions",
+            "sex": "Sexes",
+            "flybox": "Flyboxes",
+            "block": "Blocks",
+        }
+
+        def _pretty(col):
+            return _PLURAL.get(col, str(col).replace("_", " ").capitalize())
+
+        # Values are taken from the plottable groups only: the control-only groups are
+        # already excluded, so e.g. "noLP" never shows up as a condition to untick.
+        _incl_values = {}
+        for c in _gcols:
+            vals = sorted({str(_gvals.get(g, {}).get(c, "")) for g in others} - {""})
+            if len(vals) > 1:  # a column with one value filters nothing
+                _incl_values[c] = vals
+        _all_boxes = sorted({b for g in others for b in _box_set(g)})
+
+        keep_boxes = None
+        if _incl_values or len(_all_boxes) > 1:
+            with st.expander("Include in graphs", expanded=False):
+                st.caption(
+                    "Untick to leave a value out of the figures, the exports and the "
+                    "plotted table. The underlying comparison is not recomputed — only "
+                    "what gets drawn changes. A factor with just one value is not shown."
                 )
+                _keep = {}
+                for c, vals in _incl_values.items():
+                    _keep[c] = _include_boxes(_pretty(c), vals, c)
+                keep_boxes = (
+                    _include_boxes(_pretty(_desc or "flybox"), _all_boxes, "box")
+                    if len(_all_boxes) > 1
+                    else None
+                )
+
+            _before = len(others)
+            for c, picked in _keep.items():
+                others = [
+                    g for g in others if str(_gvals.get(g, {}).get(c, "")) in set(picked)
+                ]
+            if keep_boxes is not None:
+                # a group spanning several boxes stays as long as one is ticked
+                others = [
+                    g for g in others if not _box_set(g) or (_box_set(g) & set(keep_boxes))
+                ]
+            if not others:
+                st.warning("Nothing ticked — every group has been filtered out.")
+                st.stop()
+            if len(others) < _before:
+                st.caption(f"Showing **{len(others)} of {_before}** groups.")
+
+        # One figure per light-pulse condition, one line per genotype — the lab's layout.
+        # Whichever column carries the series becomes the legend; the rest split figures.
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            _series_default = (
+                "genotype" if "genotype" in _gcols else (_gcols[0] if _gcols else "")
             )
-        fig.add_hline(y=0, line_dash="dot", line_color="gray")
-        _pulse_day = _pulse_days[0] if _pulse_days else None
-        if _pulse_day is not None:
-            fig.add_vline(
-                x=_pulse_day,
-                line_dash="dash",
-                line_color="goldenrod",
-                annotation_text="pulse",
+            series_col = st.selectbox(
+                "One line per",
+                _gcols,
+                index=_gcols.index(_series_default) if _series_default in _gcols else 0,
+                help="The factor compared within each figure. The legend shows its values.",
             )
-        fig.update_layout(
-            title=f"Phase difference vs {gres['control_group']}",
-            xaxis_title="day",
-            yaxis_title="phase difference (hours)",
-            height=460,
+        with pc2:
+            _facet_opts = [c for c in _gcols if c != series_col]
+            facet_cols = st.multiselect(
+                "One figure per",
+                _facet_opts,
+                default=_facet_opts,
+                help="Each combination of these gets its own figure — e.g. condition and "
+                "sex gives one chart per pulse dose per sex.",
+            )
+
+        # Error bars. The plotted point is the peak of the group's MEAN trace, so
+        # there is no per-fly spread to average into a SEM — the uncertainty has to
+        # come from resampling the flies and re-running the whole pipeline.
+        eb1, eb2, eb3 = st.columns([2, 1, 1])
+        with eb1:
+            show_err = st.checkbox(
+                "Error bars (bootstrap over flies)",
+                value=False,
+                key="ps_err_on",
+                help="Resamples the flies of every group with replacement and repeats "
+                "the whole analysis, so the interval covers the control arm as well "
+                "as the pulsed one. Takes a few seconds to a minute; the result is "
+                "cached until the comparison is re-run.",
+            )
+        with eb2:
+            err_kind = st.selectbox(
+                "Bars show", ["95% CI", "±1 SE"], key="ps_err_kind", disabled=not show_err
+            )
+        with eb3:
+            n_boot = st.selectbox(
+                "Resamples", [50, 100, 200, 500], index=1, key="ps_err_nboot",
+                disabled=not show_err,
+            )
+
+        boot = None
+        if show_err:
+            _sig = (
+                repr(sorted(gres["params"].items())),
+                int(n_boot),
+                repr(sorted(control_map.items())),
+            )
+            _cache = st.session_state.get("_ps_boot") or {}
+            if _cache.get("key") == _sig:
+                boot = _cache["df"]
+            else:
+                _bar = st.progress(0.0, text=f"Resampling flies ({n_boot} draws)…")
+                try:
+                    boot = ps_module.bootstrap_group_phase_difference(
+                        ds_pulse,
+                        control_map,
+                        n_boot=int(n_boot),
+                        seed=0,
+                        progress_callback=lambda f: _bar.progress(
+                            min(1.0, f), text=f"Resampling flies ({n_boot} draws)…"
+                        ),
+                        **{
+                            k: v
+                            for k, v in gres["params"].items()
+                            if k
+                            in (
+                                "group_by",
+                                "describe_by",
+                                "day_origin",
+                                "baseline_day",
+                                "difference_sign",
+                                "filter_hours",
+                                "peak_prominence_frac",
+                                "peak_distance_hours",
+                                "search_half_width_hours",
+                            )
+                        },
+                    )
+                    st.session_state["_ps_boot"] = {"key": _sig, "df": boot}
+                except Exception as exc:
+                    st.warning(f"Could not compute error bars: {exc}")
+                    boot = None
+                finally:
+                    _bar.empty()
+            st.session_state["_ps_boot_df"] = boot
+
+        _rebased = _params.get("baseline_day") is not None
+        y_col = (
+            "phase_difference_from_baseline_hours" if _rebased else "phase_difference_hours"
         )
-        charts.plotly_chart(fig, width="stretch")
+        _sign = _params.get("difference_sign", "group_minus_control")
+        # Just the quantity. Spelling out the sign convention and the rebasing day here
+        # made a y-title long enough to be clipped out of the exported PNG, and it is
+        # not a property of the axis anyway — both are set on this page, travel with
+        # the figure in the workbook export, and are restated in the caption below.
+        _y_title = "Phase difference (h)"
+        _axis_note = ("noLP − LP" if _sign == "control_minus_group" else "LP − noLP") + (
+            f", relative to day {_params['baseline_day']}" if _rebased else ""
+        )
+        # The pulse is given on the last entrained day and shows up in the NEXT day's
+        # peak, so the marker belongs between the two days, not on one of them.
+        _pulse_day = -1 if _origin == "dd_onset" else (_pulse_days[0] if _pulse_days else None)
+        _pulse_x = None if _pulse_day is None else _pulse_day + 0.5
+
+        palette = [
+            "#E8722C", "#16A085", "#E86FA0", "#3B76AF", "#8E6BBF",
+            "#B5892B", "#5B8C3E", "#C0453B", "#7F8C8D", "#00838F",
+        ]
+        _series_vals = sorted({str(_gvals.get(g, {}).get(series_col, g)) for g in others})
+        _colour = {v: palette[i % len(palette)] for i, v in enumerate(_series_vals)}
+
+        def _facet_key(grp):
+            return tuple(str(_gvals.get(grp, {}).get(c, "")) for c in facet_cols)
+
+        _facets = {}
+        for g in others:
+            _facets.setdefault(_facet_key(g), []).append(g)
+
+        # The range has to cover the error bars too, or the widest ones get clipped
+        # at the axis edge and read as though they stopped there.
+        _plot_rows = per_day[per_day["group"].isin(others)]
+        _extent = [np.asarray(_plot_rows[y_col], dtype=float)]
+        if boot is not None and not _plot_rows.empty:
+            _st = y_col.replace("_hours", "")
+            _b = _plot_rows.merge(boot, on=["group", "day_index"], how="left")
+            _yv = np.asarray(_b[y_col], dtype=float)
+            if err_kind == "±1 SE":
+                _sd = np.asarray(_b[f"{_st}_boot_sd"], dtype=float)
+                _extent += [_yv - _sd, _yv + _sd]
+            else:
+                _extent += [
+                    np.asarray(_b[f"{_st}_lo"], dtype=float),
+                    np.asarray(_b[f"{_st}_hi"], dtype=float),
+                ]
+        _y_all = np.concatenate([a.ravel() for a in _extent]) if _extent else np.array([])
+        _y_all = _y_all[np.isfinite(_y_all)]
+        if len(_y_all):
+            _pad = max(0.35, 0.08 * (float(_y_all.max()) - float(_y_all.min())))
+            _y_range = [float(_y_all.min()) - _pad, float(_y_all.max()) + _pad]
+        else:
+            _y_range = None
+
+        _n_of = (
+            per_day.drop_duplicates("group").set_index("group")["n_flies"].to_dict()
+            if "n_flies" in per_day.columns
+            else {}
+        )
+
+        def _n(grp):
+            n = _n_of.get(grp)
+            return int(n) if n is not None and np.isfinite(n) else None
+
+        def _boxes_or(grp, fallback="—"):
+            return _boxes(grp) or fallback
+
+        def _control_tag(grp):
+            """What the control arm is called, read off whichever column separates the
+            two groups — 'noLP' here, but whatever the control value happens to be."""
+            ctrl = control_map.get(grp)
+            a, b = _gvals.get(grp, {}), _gvals.get(ctrl, {})
+            diff = [c for c in _gcols if a.get(c) != b.get(c)]
+            return "/".join(str(b[c]) for c in diff) if diff else "control"
+
+        def _arms(grp):
+            """'bun-LP vs pie-noLP' — which box got the pulse and which is the reference."""
+            lp, ct = _boxes(grp), _boxes(control_map.get(grp))
+            if not lp:
+                return str(control_map.get(grp))
+            return f"{lp}-LP vs {ct}-{_control_tag(grp)}"
+
+        _stem = y_col.replace("_hours", "")
+
+        def _err_arrays(sub, grp):
+            """(below, above) distances for one group's days, or (None, None)."""
+            if boot is None or sub.empty:
+                return None, None
+            b = boot[boot["group"] == grp].set_index("day_index")
+            if b.empty:
+                return None, None
+            y = sub[y_col].to_numpy(dtype=float)
+            days_idx = sub["day_index"].to_numpy()
+            if err_kind == "±1 SE":
+                sd = b[f"{_stem}_boot_sd"].reindex(days_idx).to_numpy(dtype=float)
+                return sd, sd
+            lo = b[f"{_stem}_lo"].reindex(days_idx).to_numpy(dtype=float)
+            hi = b[f"{_stem}_hi"].reindex(days_idx).to_numpy(dtype=float)
+            # plotly wants distances from the point, never absolute bounds
+            return np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)
+
+        def _union_boxes(groups):
+            """Every box behind a set of groups, as 'bun+tart'."""
+            out = set()
+            for g in groups:
+                out |= _box_set(g)
+            return "+".join(sorted(out))
+
+        for key in sorted(_facets):
+            # Facet VALUES only — the column names ("condition ZT15…") were three
+            # quarters of the title and said nothing the values do not.
+            title = " · ".join(str(v) for v in key) or "All groups"
+            # The apparatus goes in BOTH places, always: the title names the pairing
+            # for the figure as a whole, and every legend entry names the box(es)
+            # behind its own line. They used to be alternatives — the title carried it
+            # only when every line shared one pairing, and the legend only when they
+            # did not — so two figures side by side disagreed about where to look.
+            # When the arms differ between lines the title shows the union, which the
+            # legend then breaks down line by line.
+            _grps = sorted(_facets[key])
+            _arm_labels = {_arms(g) for g in _grps}
+            if len(_arm_labels) == 1:
+                _arm_title = next(iter(_arm_labels))
+            else:
+                _lp = _union_boxes(_grps)
+                _ct = _union_boxes({control_map.get(g) for g in _grps} - {None})
+                _tags = {_control_tag(g) for g in _grps}
+                _tag = next(iter(_tags)) if len(_tags) == 1 else "control"
+                _arm_title = f"{_lp}-LP vs {_ct}-{_tag}" if _lp else ""
+            if _arm_title:
+                title += f"  —  {_arm_title}"
+            fig = go.Figure()
+            for grp in _grps:
+                sub = per_day[per_day["group"] == grp].sort_values("day_index")
+                name = str(_gvals.get(grp, {}).get(series_col, grp))
+                pair = _arms(grp)
+                _elo, _ehi = _err_arrays(sub, grp)
+                fig.add_trace(
+                    go.Scatter(
+                        x=sub["day_index"],
+                        y=sub[y_col],
+                        mode="lines+markers",
+                        name=(
+                            f"{name} ({_boxes(grp)}-LP, n={_n(grp)})"
+                            if _boxes(grp)
+                            else f"{name} (n={_n(grp)})"
+                        ),
+                        line=dict(color=_colour.get(name), width=2.5),
+                        marker=dict(size=8),
+                        error_y=(
+                            None
+                            if _elo is None
+                            else dict(
+                                type="data",
+                                symmetric=False,
+                                array=_ehi,
+                                arrayminus=_elo,
+                                thickness=1.4,
+                                width=4,
+                                color=_colour.get(name),
+                            )
+                        ),
+                        hovertemplate=(
+                            "day %{x}<br>%{y:.2f} h<br>"
+                            + pair
+                            + "<br>vs "
+                            + str(control_map.get(grp))
+                            + "<extra>"
+                            + name
+                            + "</extra>"
+                        ),
+                    )
+                )
+            fig.add_hline(y=0, line_color="gray", line_width=1)
+            if _pulse_x is not None:
+                fig.add_vline(
+                    x=_pulse_x,
+                    line_dash="dash",
+                    line_color="#555555",
+                    annotation_text="light pulse",
+                    annotation_position="top",
+                )
+            fig.update_layout(
+                title=dict(text=title, font=dict(size=21)),
+                xaxis_title=("days from first DD day" if _origin == "dd_onset" else "day"),
+                yaxis_title=_y_title,
+                # An explicit width is what the PNG export uses; without it kaleido
+                # falls back to 700 px, and since the legend needs a fixed ~300 px for
+                # "Hr38_OE_guide (n=29)" it swallowed nearly half the image and left
+                # the plot squeezed into the rest. On screen Streamlit overrides the
+                # width, so this only sizes the saved file.
+                width=1250,
+                height=560,
+                # Base size for ticks and the "light pulse" annotation. The legend is
+                # pinned SMALLER on purpose: its entries are the longest text on the
+                # figure (genotype + boxes + n), so growing it with everything else
+                # is what eats the plot area.
+                font=dict(size=15),
+                legend=dict(
+                    title=dict(text=series_col, font=dict(size=13)),
+                    font=dict(size=12),
+                ),
+                margin=dict(t=70, l=100, r=30, b=80),
+            )
+            # zeroline=False: plotly draws a vertical rule at x=0, which on this axis
+            # is the first DD day — a second, unlabelled marker sitting right beside
+            # the dashed light-pulse line and easily read as part of the protocol.
+            fig.update_xaxes(
+                dtick=1, zeroline=False, title_font=dict(size=17), tickfont=dict(size=15)
+            )
+            fig.update_yaxes(title_font=dict(size=17), tickfont=dict(size=15))
+            if _y_range:
+                # A shared y-range across figures keeps the doses visually comparable.
+                fig.update_yaxes(range=_y_range)
+            charts.plotly_chart(fig, filename=f"phase_shift_{title}", width="stretch")
+            # The axis names only the quantity; which way round the subtraction goes
+            # and which day was zeroed are choices made above, so they are stated
+            # here rather than crammed into the label.
+            st.caption(f"Difference direction: {_axis_note}.")
+
+            # Spell the pairing out per line. Which box each arm sat in decides how
+            # much of a difference can be read as the pulse rather than the
+            # apparatus, and the legend has no room to say it for both arms.
+            _note = []
+            for grp in _grps:
+                _ctrl = control_map.get(grp)
+                _nm = str(_gvals.get(grp, {}).get(series_col, grp))
+                _note.append(
+                    f"- **{_nm}** — pulsed in **{_boxes_or(grp)}** "
+                    f"(n={_n(grp)}) vs **{_boxes_or(_ctrl)}** "
+                    f"{_control_tag(grp)} (n={_n(_ctrl)})"
+                    + (
+                        "  ·  *same box, so no box effect*"
+                        if _boxes(grp) and _boxes(grp) == _boxes(_ctrl)
+                        else ""
+                    )
+                )
+            if _note:
+                st.markdown("**What is compared with what**\n\n" + "\n".join(_note))
+
+        # what actually got drawn, for the workbook in the table tab
+        st.session_state["_ps_plotted_groups"] = list(others)
+        st.session_state["_ps_y_col"] = y_col
+        st.session_state["_ps_y_title"] = _y_title
+
+        if _rebased:
+            st.caption(
+                f"Every group is set to zero on day {_params['baseline_day']}, so what each "
+                "line shows is the change from that day — the phase offset the two cohorts "
+                "started with has been taken out. The raw differences are in the table tab."
+            )
+        _unmatched = [
+            g for g in sorted(per_day["group"].unique()) if control_map.get(g) is None
+        ]
+        if _unmatched:
+            st.caption(
+                "Not plotted (no matching control): "
+                + ", ".join(f"`{g}`" for g in _unmatched)
+                + "."
+            )
         st.caption(
-            "Day 0 is flagged `filter_edge`: the smoothing filter pads the start of the "
-            "record, so the first day's peak rests partly on synthetic padding and its "
-            "position is not well determined. It is a pre-pulse baseline day and carries no "
-            "shift information — read the trend from day 1 on."
+            "Rows flagged `filter_edge` are each group's first and last recorded day: the "
+            "smoothing filter pads the ends of the record, so those peaks rest partly on "
+            "synthetic padding and their positions are not well determined. The first one is "
+            "a pre-pulse baseline day and carries no shift information — read the trend from "
+            "the day after it."
         )
 
     with tab_table:
-        st.dataframe(per_day, width="stretch")
+        # Flybox is not a grouping column — flies from several boxes are pooled into
+        # one group on purpose — so the box cannot come from the group id itself. Tag
+        # it on for display instead, keeping the raw ids in their own columns so
+        # nothing that keys off them is lost.
+        def _boxed(grp):
+            """'Mito-gfp_noLP_pie', or '..._bun+pie' when a group pools two boxes."""
+            if grp is None:
+                return grp
+            b = _boxes(grp)
+            return f"{grp}_{b}" if b else str(grp)
+
+        def _label_frame(df):
+            out = df.copy()
+            if "group" in out.columns:
+                out.insert(0, "group_id", out["group"])
+                out["group"] = out["group"].map(_boxed)
+            if "control_group" in out.columns:
+                out.insert(2, "control_group_id", out["control_group"])
+                out["control_group"] = out["control_group"].map(_boxed)
+            return out
+
+        per_day_labelled = _label_frame(per_day)
+        st.dataframe(per_day_labelled, width="stretch")
+        if _desc:
+            st.caption(
+                f"`group` and `control_group` carry the {_desc} they came from; "
+                "`group_id` and `control_group_id` are the raw ids the analysis keys on."
+            )
+
+        def _phase_workbook_sheets():
+            """The sheets of the per-day workbook.
+
+            Passed to save_excel_button as a CALLABLE, so it runs on the click rather
+            than on every rerun — it merges the bootstrap frame and pivots a matrix,
+            which is real work to do for a button nobody has pressed.
+            """
+            _plotted = st.session_state.get("_ps_plotted_groups") or []
+            _ycol = st.session_state.get("_ps_y_col", "phase_difference_hours")
+            _boot = st.session_state.get("_ps_boot_df")
+
+            def _with_boot(df):
+                """Attach the bootstrap interval when error bars were computed."""
+                if _boot is None or df.empty:
+                    return df
+                return df.merge(_boot, on=["group", "day_index"], how="left")
+
+            sheets = [("per_day", _label_frame(_with_boot(per_day)))]
+            if _plotted:
+                sub = per_day[per_day["group"].isin(_plotted)].copy()
+                sheets.append(("per_day_plotted", _label_frame(_with_boot(sub))))
+                # A day-by-group grid: the layout to read a shift off by eye, and the
+                # one that pastes straight into a figure or a stats package.
+                if not sub.empty:
+                    _mat = sub.copy()
+                    _mat["group"] = _mat["group"].map(_boxed)
+                    sheets.append((
+                        "matrix",
+                        _mat.pivot_table(
+                            index="day_index", columns="group", values=_ycol, aggfunc="mean"
+                        ).reset_index(),
+                    ))
+            sheets.append((
+                "controls",
+                pd.DataFrame(
+                    [
+                        {
+                            "group": _boxed(g),
+                            "compared against": _boxed(c) or "— none —",
+                            "group_id": g,
+                            "control_group_id": c or "",
+                        }
+                        for g, c in sorted(control_map.items())
+                    ]
+                ),
+            ))
+            sheets.append((
+                "parameters",
+                pd.DataFrame(
+                    [{"parameter": k, "value": str(v)} for k, v in sorted(gres["params"].items())]
+                ),
+            ))
+            _sign_txt = (
+                "noLP - LP (a delay reads negative)"
+                if _sign_note == "control_minus_group"
+                else "LP - noLP (a delay reads positive)"
+            )
+            sheets.append((
+                "notes",
+                pd.DataFrame(
+                    [
+                        {
+                            "field": "value column",
+                            "value": st.session_state.get("_ps_y_title", _ycol),
+                        },
+                        {"field": "difference", "value": _sign_txt},
+                        {"field": "day origin", "value": str(gres["params"].get("day_origin"))},
+                        {
+                            "field": "baseline day",
+                            "value": str(gres["params"].get("baseline_day")),
+                        },
+                        {
+                            "field": "filter_edge rows",
+                            "value": "each group's first and last recorded day; the "
+                            "smoothing filter pads the ends, so those peak positions are "
+                            "not well determined",
+                        },
+                        {
+                            "field": "groups plotted",
+                            "value": ", ".join(_boxed(g) for g in _plotted)
+                            if _plotted
+                            else "(figures not built yet)",
+                        },
+                    ]
+                ),
+            ))
+            return sheets
+
+        export_helpers.save_excel_button(
+            "Save workbook to working folder (.xlsx)",
+            _phase_workbook_sheets,
+            ds,
+            "phase_difference_per_day.xlsx",
+            key="ps_xlsx",
+            help="per_day (every group), per_day_plotted (only what the figures show), "
+            "matrix (day x group grid), controls, parameters, notes.",
+        )
         st.download_button(
-            "Download per-day phase differences (CSV)",
-            per_day.to_csv(index=False).encode("utf-8"),
+            "Download per-day (CSV)",
+            per_day_labelled.to_csv(index=False).encode("utf-8"),
             file_name="phase_difference_vs_control_per_day.csv",
             mime="text/csv",
+        )
+        st.markdown("**Reference used**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"group": _boxed(g), "compared against": _boxed(c) or "— none —"}
+                    for g, c in sorted(control_map.items())
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
         )
         st.markdown("**Parameters used**")
         st.json({k: (list(v) if isinstance(v, tuple) else v) for k, v in gres["params"].items()})
