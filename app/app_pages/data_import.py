@@ -21,7 +21,7 @@ from dataset_meta import (
     stamp_phase,
 )
 from load_and_save_datasets import load_dataset_from_netcdf
-from ui import path_picker, status
+from ui import file_dialogs, status
 from ui.state import clear_dataset_state
 
 
@@ -64,15 +64,20 @@ tab_fresh, tab_netcdf, tab_combine = st.tabs(
 with tab_fresh:
     st.subheader("Import Raw DAM Data")
 
-    # Above the two text inputs on purpose: the "Use this..." buttons write into
-    # their session-state keys, and Streamlit only permits that before the widget
-    # for a key is created on the same run.
-    with st.expander("Browse for the folder and metadata file"):
-        path_picker.browse(
-            "load",
-            start=st.session_state.get("working_dir"),
-            dir_target="data_dir_input",
-            file_target="metadata_path_input",
+    # Above the two text inputs on purpose: these buttons write into the inputs'
+    # session-state keys, and Streamlit only permits that before the widget for a
+    # key is created on the same run.
+    _browse_meta, _browse_dir = st.columns(2)
+    with _browse_meta:
+        file_dialogs.browse_metadata_file(
+            initial=st.session_state.get("working_dir"),
+            metadata_target="metadata_path_input",
+            data_dir_target="data_dir_input",
+        )
+    with _browse_dir:
+        file_dialogs.browse_data_folder(
+            initial=st.session_state.get("working_dir"),
+            data_dir_target="data_dir_input",
         )
 
     data_dir = st.text_input(
@@ -361,14 +366,10 @@ with tab_fresh:
 with tab_netcdf:
     st.subheader("Load Existing NetCDF File")
 
-    with st.expander("Browse for the .nc file"):
-        path_picker.browse(
-            "nc",
-            start=st.session_state.get("working_dir"),
-            file_extensions=(".nc",),
-            file_target="nc_path_input",
-            file_label="NetCDF file",
-        )
+    file_dialogs.browse_netcdf_file(
+        initial=st.session_state.get("working_dir"),
+        nc_target="nc_path_input",
+    )
 
     nc_path = st.text_input(
         "Path to NetCDF file (.nc)",
