@@ -138,6 +138,11 @@ if __name__ == "__main__":
                     icon=":material/stacked_line_chart:",
                 ),
                 st.Page(
+                    "app_pages/sleep_scamp.py",
+                    title="Sleep (SCAMP)",
+                    icon=":material/table_chart:",
+                ),
+                st.Page(
                     "app_pages/sleep_states.py",
                     title="Sleep states",
                     icon=":material/bar_chart:",
@@ -171,7 +176,7 @@ if __name__ == "__main__":
                 ),
             ],
         },
-        # 17 pages. Without this the menu collapses to ten with a "View 7 more"
+        # 18 pages. Without this the menu collapses to ten with a "View 8 more"
         # button, which hides a whole section behind a click.
         expanded=True,
     )

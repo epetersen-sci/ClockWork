@@ -20,6 +20,7 @@ PAGES = [
     "phase_shift",
     "sleep_detection",
     "sleep_activity",
+    "sleep_scamp",
     "sleep_states",
     "sleep_deprivation",
     "hmm_model_selection",

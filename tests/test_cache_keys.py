@@ -23,6 +23,7 @@ CACHED_HELPERS = [
     ("app_pages.sleep_activity", "_cached_bout_duration_lines"),
     ("app_pages.periodograms", "_curves_by_group"),
     ("app_pages.rhythmicity", "_build_period_summary_df"),
+    ("app_pages.sleep_scamp", "_score_sleep"),
 ]
 
 
