@@ -15,7 +15,7 @@ env/
 
 # Analysis output. Both land inside the working folder you choose, which is
 # normally your data folder — but ignore them in case you point it at the repo.
-Graph Exports/
+Graph Exports*/
 Averaged Scalograms/
 
 # Your own recordings. The committed example is re-included below; keep every

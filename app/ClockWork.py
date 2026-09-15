@@ -54,9 +54,16 @@ if __name__ == "__main__":
         initial_sidebar_state="expanded",
     )
 
+    from ui import charts
     from ui.state import init_session_state
 
     init_session_state()
+
+    # Start this rerun's figure collection. Here rather than in each page because
+    # this is the one place that runs exactly once per rerun, before any page body:
+    # ui.charts.plotly_chart records what it draws, and the button rendered after
+    # page.run() offers the lot as PNGs.
+    charts.begin_run()
 
     # Sections are the "folders" in the sidebar. st.navigation supports exactly
     # one level of them — a dict of section label -> pages — so this is as nested
@@ -167,3 +174,8 @@ if __name__ == "__main__":
     # The router owns the page title, so pages carry no st.header of their own.
     st.title(page.title, icon=page.icon)
     page.run()
+
+    # After the body, so it has seen every figure the page drew — and so the offer
+    # appears in the same place on every page instead of each one placing its own.
+    # Renders nothing when the page drew no figures.
+    charts.save_figures_button()

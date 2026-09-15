@@ -109,3 +109,104 @@ def test_kaleido_is_available():
     """Named so a broken environment reports the cause rather than failing inside
     an unrelated export test."""
     pytest.importorskip("kaleido")
+
+
+class TestCollectingWhatWasDrawn:
+    """The page-level button exports what actually rendered, once each."""
+
+    def test_a_page_with_charts_offers_the_button(self, app, master_ds):
+        at = app(ds=master_ds, page="sleep_activity")
+        assert any("as PNG" in b.label for b in at.button), (
+            "a page that drew figures should offer to save them"
+        )
+
+    def test_the_label_counts_the_figures(self, app, master_ds):
+        at = app(ds=master_ds, page="sleep_activity")
+        label = next(b.label for b in at.button if "as PNG" in b.label)
+        drawn = len(at.session_state["_figures_drawn_this_run"])
+        assert f"Save {drawn} figure" in label
+
+    def test_a_page_without_charts_offers_nothing(self, app, master_ds):
+        """hmm_analysis has CSV exports and no plotly charts, so a PNG button there
+        would be permanently disabled furniture."""
+        at = app(ds=master_ds, page="hmm_analysis")
+        assert not any("as PNG" in b.label for b in at.button)
+
+    def test_figures_do_not_accumulate_across_reruns(self, app, master_ds):
+        """begin_run resets the collection every rerun. Without it each rerun would
+        append the page's figures again and the export would write duplicates."""
+        at = app(ds=master_ds, page="sleep_activity")
+        first = len(at.session_state["_figures_drawn_this_run"])
+        at.run()
+        assert len(at.session_state["_figures_drawn_this_run"]) == first
+
+    def test_filenames_are_unique_within_a_run(self, app, master_ds):
+        """Two charts can share a title — the same plot for LD and DD. Identical
+        filenames would have the second overwrite the first."""
+        at = app(ds=master_ds, page="sleep_activity")
+        names = [name for name, _ in at.session_state["_figures_drawn_this_run"]]
+        assert len(names) == len(set(names))
+
+    def test_every_recorded_entry_is_a_png_and_a_figure(self, app, master_ds):
+        at = app(ds=master_ds, page="sleep_activity")
+        for name, fig in at.session_state["_figures_drawn_this_run"]:
+            assert name.endswith(".png")
+            assert hasattr(fig, "to_image"), f"{name} is not a plotly figure"
+
+
+class TestTheButtonReallyWritesFiles:
+    """End to end through the page: click it, and PNGs appear on disk.
+
+    The rest of this module checks the pieces. This checks the thing the user
+    does — and it is where the two halves meet, since the folder it writes into
+    is named by the experiment on the dataset.
+    """
+
+    def _loaded(self, master_ds, tmp_path, name="exp8"):
+        ds = master_ds.copy()
+        ds.attrs["source_data_dir"] = str(tmp_path)
+        ds.attrs["experiment_name"] = name
+        return ds
+
+    def test_clicking_it_writes_a_png_per_figure(self, app, master_ds, tmp_path):
+        from pathlib import Path
+
+        at = app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
+        expected = [name for name, _ in at.session_state["_figures_drawn_this_run"]]
+        assert expected, "fixture drew no figures, so this test proves nothing"
+
+        at.button(key="save_page_figures").click().run()
+
+        out = Path(tmp_path) / "Graph Exports_exp8"
+        written = sorted(p.name for p in out.glob("*.png"))
+        assert written == sorted(expected)
+
+    def test_the_files_are_real_pngs(self, app, master_ds, tmp_path):
+        from pathlib import Path
+
+        at = app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
+        at.button(key="save_page_figures").click().run()
+
+        for path in (Path(tmp_path) / "Graph Exports_exp8").glob("*.png"):
+            assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", f"{path.name} is not a PNG"
+            assert path.stat().st_size > 1000, f"{path.name} is suspiciously small"
+
+    def test_it_reports_where_they_went(self, app, master_ds, tmp_path):
+        """The confirmation has to survive the rerun the click causes, or the only
+        record of where a dozen files landed is gone by the time you look."""
+        at = app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
+        at.button(key="save_page_figures").click().run()
+        assert any("Graph Exports_exp8" in s.value for s in at.success)
+
+    def test_renaming_the_experiment_moves_the_output(self, app, master_ds, tmp_path):
+        """Ties the two fixes together: the name is editable after load, and the
+        figures follow it."""
+        from pathlib import Path
+
+        at = app(ds=self._loaded(master_ds, tmp_path, name="before"), page="export_data")
+        at.text_input(key="experiment_name_input").set_value("after").run()
+        at.switch_page("app_pages/sleep_activity.py").run()
+        at.button(key="save_page_figures").click().run()
+
+        assert (Path(tmp_path) / "Graph Exports_after").glob("*.png")
+        assert not list((Path(tmp_path) / "Graph Exports_before").glob("*.png"))

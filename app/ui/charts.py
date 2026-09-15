@@ -24,6 +24,8 @@ import re
 
 import streamlit as st
 
+import export_helpers
+
 #: Twice the on-screen pixel dimensions. The default of 1 produces a figure that
 #: is visibly soft the moment it goes into a slide or a figure panel.
 DEFAULT_SCALE = 2
@@ -90,6 +92,78 @@ def png_config(fig, filename=None, *, scale=DEFAULT_SCALE):
     }
 
 
+#: Figures drawn during the current rerun, as ``(filename, figure)``. Reset by
+#: :func:`begin_run` from the entry point, which runs before every page body.
+_DRAWN_KEY = "_figures_drawn_this_run"
+
+
+def begin_run():
+    """Start a fresh figure collection for this rerun.
+
+    Called by the entry point rather than by each page, because the entry point is
+    the one piece of code that runs exactly once per rerun before any page body. A
+    page that forgot to call it would quietly accumulate duplicates of every figure
+    across reruns, which is the kind of bug nobody notices until an export writes
+    forty files.
+    """
+    st.session_state[_DRAWN_KEY] = []
+
+
+def drawn_figures():
+    """The figures drawn so far this rerun.
+
+    Only what actually rendered: a chart inside an unselected tab was never drawn,
+    so it is not here and will not be exported. That is the honest answer — what
+    you can see is what you get.
+    """
+    return list(st.session_state.get(_DRAWN_KEY, []))
+
+
+def _record(fig, name):
+    """Remember a drawn figure under a filename unique within this run.
+
+    Two figures on a page can legitimately share a title (the same plot for LD and
+    DD, say). Left alone they would write to one filename and the second would
+    overwrite the first, so the duplicate gets a numeric suffix.
+    """
+    drawn = st.session_state.setdefault(_DRAWN_KEY, [])
+    taken = {existing for existing, _ in drawn}
+    filename, n = f"{name}.png", 1
+    while filename in taken:
+        n += 1
+        filename = f"{name}_{n}.png"
+    drawn.append((filename, fig))
+
+
+def save_figures_button(ds=None, *, key="save_page_figures", subfolder=None):
+    """Render "Save the N figures on this page" — or nothing, if none were drawn.
+
+    Rendered by the entry point after the page body, so every page offers it in the
+    same place without each one having to remember. Writes into the same
+    ``Graph Exports_<experiment>/`` folder as the CSV buttons, rather than the
+    browser's download folder, which is the one thing the modebar's camera button
+    cannot do.
+    """
+    figures = drawn_figures()
+    if not figures:
+        return None
+    ds = ds if ds is not None else st.session_state.get("dataset")
+    if ds is None:
+        return None
+
+    n = len(figures)
+    return export_helpers.save_figures_png_button(
+        f"Save {n} figure{'s' if n != 1 else ''} on this page as PNG",
+        figures,
+        ds,
+        key,
+        subfolder=subfolder,
+        help="Writes them into the working folder beside your data, at twice screen "
+        "resolution. The camera icon on a single chart downloads just that one, to "
+        "your browser's download folder.",
+    )
+
+
 def plotly_chart(fig, *, filename=None, scale=DEFAULT_SCALE, **kwargs):
     """``st.plotly_chart`` with the camera button configured.
 
@@ -98,4 +172,5 @@ def plotly_chart(fig, *, filename=None, scale=DEFAULT_SCALE, **kwargs):
     filename. Every other argument goes straight to ``st.plotly_chart``, including
     ``key`` and ``on_select``, and its return value comes back unchanged.
     """
+    _record(fig, png_filename(fig, filename))
     return st.plotly_chart(fig, config=png_config(fig, filename, scale=scale), **kwargs)
