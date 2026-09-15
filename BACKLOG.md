@@ -22,7 +22,7 @@ four found while fixing them (14, 15, 16, 17). Item 6 — the held decision on
 ~1900 lines of unwired Abhilash sleep-state code — was settled in favour of
 building the page; item 17 is the part of it that deliberately stayed unwired.
 
-Items 18-20 came later and from elsewhere: they were found while merging a lab
+Items 18-21 came later and from elsewhere: they were found while merging a lab
 mate's fork of the app (the `mi/*` branches), which is a different way of finding
 issues than mapping the codebase and tends to surface different ones — two of
 the three are duplication that only becomes visible once a second author's code
@@ -31,7 +31,7 @@ sits beside the first's.
 **Item numbers are original and stable.** They are referenced from the
 reorganization PR and from the commits that closed them, so they are not renumbered
 when items move between sections or get closed. A new issue takes the next free
-number (14, 15 and 18-20 were added this way), and never reuses a closed one.
+number (14, 15 and 18-21 were added this way), and never reuses a closed one.
 
 (`app/app_pages/data_groups.py` used to carry a pointer to item 12 in its module
 docstring. Item 12 is closed and that pointer is gone, so no code references this
@@ -45,7 +45,7 @@ line number costs more than no line number.
 
 ## What this file is for now
 
-Section A holds items 17-20. Four habits from clearing the original triage are
+Section A holds items 17-21. Four habits from clearing the original triage are
 worth keeping:
 
 **Capture a baseline before any item whose Verify step says "same as before".**
@@ -58,12 +58,19 @@ a copy, then re-run and `sha256sum -c` after the change.
 table was missing two of five, and item 3's Verify step asked for a difference
 the code could not produce. Both are recorded in their Done entries.
 
-**Build the triggering case from copies.** The phase-shift merge needed this
-again: `example_data` has no `pulse_time` column, so the phase-shift page stops
-at its own prerequisite guard and nothing below it can be reached. A metadata
-copy in a scratch folder — splitting each monitor's 32 channels into a pulsed
-and an unpulsed half, over the same six real monitor files — exercised the whole
-page on 192 real flies without touching the committed data.
+**Build the triggering case from copies** — and then find the real one. The
+phase-shift merge needed both. `example_data` has no `pulse_time` column, so the
+page stops at its own prerequisite guard (item 21); a metadata copy in a scratch
+folder, splitting each monitor's channels into a pulsed and an unpulsed half over
+the same six real files, got the page running on 192 real flies.
+
+But that copy could only show the machinery worked, because the "pulse" was
+fictional over untreated flies. The same page run against a REAL pulse experiment
+(`exp7`) immediately produced three things the fabricated case could not: an
+orphaned group whose only control was in a monitor with no usable data, two
+groups silently pooling two flyboxes at n=56 instead of 24, and a dose-dependent
+advance that a broken analysis could not have invented. **Fabricate to reach the
+code; use real data to find out whether it is right.**
 
 **Check whether `example_data` can even reach the code you changed.** It is real
 lab data, but it is one experiment: its monitors are all two digits (so item 13's
@@ -79,7 +86,7 @@ covers what the fixtures do and do not imitate.
 
 # A. Ready to fix
 
-Four items: **17**, the remainder of item 6, and **18-20**, found while merging a
+Five items: **17**, the remainder of item 6, and **18-21**, found while merging a
 lab mate's fork (the `mi/*` branches). Everything from the original triage has
 been closed — see [D. Done](#d-done).
 
@@ -146,6 +153,33 @@ known answer, which is a different and weaker claim than agreeing with SCAMP.
 
 **Verify:** either the named test exists and passes, or no docstring on the page
 or in `core/` cites a file that is not there.
+
+
+## 21. No committed dataset can exercise the phase-shift page
+
+`example_data` has no `pulse_time` column, so the phase-shift page stops at its
+own prerequisite guard and nothing below it is reachable — neither the
+control-referenced branch nor the per-fly one. Every verification of that page so
+far has needed a metadata file built by hand first.
+
+A real one exists: Maria's `exp7` (2026-08-02, 4 usable monitors, 384 flies) is a
+proper phase-response experiment — a ZT21 pulse at two doses, `noLP` controls in
+their own flybox, five genotypes, both sexes. It is not in the repo.
+
+**Decision: get a pulse-bearing dataset into the repo, and decide how small.**
+The full `exp7` is ~16 MB of monitor files. Options: commit a trimmed copy (a
+subset of channels over the pulse window), commit only its metadata alongside a
+pointer to where the monitor files live, or build a synthetic cohort as
+`tests/conftest.py`'s `pulse_ds` already does and accept that the page's app-level
+verification stays manual.
+
+Worth knowing before deciding: `pulse_ds` is enough for the analysis (it has a
+known right answer, which real data never does), but it is NOT enough for the
+page — the page's defaults branch on how many pre-pulse days the protocol leaves,
+and `exp7` (3 days) takes the opposite branch from `pulse_ds` (2 days).
+
+**Verify:** a fresh clone can reach the phase-shift results on both references
+without anyone writing a metadata file first.
 
 
 ## 17. Four Abhilash renderers the new page deliberately does not use
