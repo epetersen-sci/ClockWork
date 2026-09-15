@@ -13,6 +13,7 @@ PAGES = [
     "data_import",
     "data_groups",
     "data_curate_split",
+    "actograms",
     "period_analysis",
     "periodograms",
     "rhythmicity",

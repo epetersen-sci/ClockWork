@@ -101,6 +101,11 @@ if __name__ == "__main__":
             ],
             "Circadian analysis": [
                 st.Page(
+                    "app_pages/actograms.py",
+                    title="Actograms",
+                    icon=":material/view_day:",
+                ),
+                st.Page(
                     "app_pages/period_analysis.py",
                     title="Period analysis",
                     icon=":material/schedule:",
@@ -166,7 +171,7 @@ if __name__ == "__main__":
                 ),
             ],
         },
-        # 16 pages. Without this the menu collapses to ten with a "View 6 more"
+        # 17 pages. Without this the menu collapses to ten with a "View 7 more"
         # button, which hides a whole section behind a click.
         expanded=True,
     )
