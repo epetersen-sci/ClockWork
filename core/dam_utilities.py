@@ -984,6 +984,81 @@ def curate_dead_animals(
     )
 
 
+#: Metadata coords worth showing beside a curation verdict, in this order. Only
+#: those actually on the dataset appear, so a run without a ``sex`` column simply
+#: has no such column in the table.
+VERDICT_META_COORDS = ("genotype", "condition", "sex", "flybox", "block")
+
+
+def curation_verdict_table(live_data, dead_data=None):
+    """One row per fly: what curation decided, and the two numbers behind it.
+
+    Columns: ``id``, ``verdict``, ``total counts``, ``last active (day)``, plus
+    whichever of :data:`VERDICT_META_COORDS` the dataset carries. Empty frame when
+    there is nothing to report.
+
+    **Three verdicts, not two.** :func:`curate_dead_animals` returns a ``dead_data``
+    that holds two different things: flies it REMOVED, and flies it only TRIMMED —
+    a dead tail cut off and the fly itself kept. A trimmed fly is therefore present
+    in both returned datasets, so calling everything in ``dead_data`` "dropped"
+    counts it twice and reports a fly as discarded that is still in the analysis.
+    Membership of ``live_data`` is what separates them, and it is the only thing
+    that can: the two datasets carry no flag saying which happened.
+
+    ``last active (day)`` is the last minute with any beam break, as a day number.
+    It is the statistic the "dead" call rests on — a fly whose last activity sits
+    well before the end of the recording — so putting it next to the verdict is
+    what lets a borderline call be checked rather than taken on trust.
+    """
+    # Empty frames are filtered out rather than concatenated, because pandas warns
+    # about concatenating an all-NA frame — but that can leave nothing at all, and
+    # pd.concat of an EMPTY LIST raises rather than returning an empty frame.
+    frames = [
+        f
+        for f in (_verdict_rows(live_data, "kept"), _verdict_rows(dead_data, "dropped"))
+        if not f.empty
+    ]
+    if not frames:
+        return pd.DataFrame()
+    table = pd.concat(frames, ignore_index=True)
+
+    live_ids = {str(v) for v in live_data["id"].values} if live_data is not None else set()
+    both = table["id"].isin(live_ids) & (table["verdict"] == "dropped")
+    table.loc[both, "verdict"] = "trimmed"
+    # The same fly's "kept" row is now a duplicate of the relabelled one.
+    trimmed_ids = set(table.loc[both, "id"])
+    table = table[~((table["verdict"] == "kept") & table["id"].isin(trimmed_ids))]
+    return table.reset_index(drop=True)
+
+
+def _verdict_rows(ds, verdict):
+    """The per-fly rows of one side of :func:`curation_verdict_table`."""
+    if ds is None or int(ds.sizes.get("id", 0)) == 0 or "activity" not in ds:
+        return pd.DataFrame()
+    act = np.asarray(ds["activity"].transpose("time", "id").values, dtype=float)
+    minutes = np.asarray(ds["time"].values, dtype=float)
+
+    # nan_to_num first: a gap is not activity, and comparing NaN > 0 is False
+    # anyway — being explicit keeps it from reading as an accident.
+    moved = np.nan_to_num(act) > 0
+    last_day = np.zeros(act.shape[1])
+    for j in range(act.shape[1]):
+        nz = np.flatnonzero(moved[:, j])
+        if nz.size:
+            last_day[j] = minutes[nz[-1]] / 1440.0
+
+    rows = {
+        "id": [str(v) for v in ds["id"].values],
+        "verdict": verdict,
+        "total counts": np.round(np.nansum(act, axis=0), 0),
+        "last active (day)": np.round(last_day, 2),
+    }
+    for coord in VERDICT_META_COORDS:
+        if coord in ds.coords:
+            rows[coord] = [str(v) for v in ds[coord].values]
+    return pd.DataFrame(rows)
+
+
 def _longest_continuous_segment(activity_1d, time_vals, gap_threshold_minutes=60):
     """
     Find the longest stretch of non-NaN data for a single fly.

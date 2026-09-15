@@ -3,7 +3,10 @@ Preprocessing Page - Dead animal curation, LD/DD split and activity heatmap.
 """
 
 
+import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 import dam_utilities
 import plotting
@@ -111,6 +114,237 @@ if st.button("Run Curation", key="run_curation"):
             st.error(f"Error during curation: {e}")
         finally:
             curate_progress.empty()
+
+# ============================================================
+# Step 1b: Inspect the individual flies
+# ============================================================
+with st.expander("Inspect individual flies (kept and dropped)", expanded=False):
+    st.caption(
+        "Every fly's own activity trace. After curation the dropped flies are shown "
+        "alongside the kept ones, so a borderline call can be checked by eye rather "
+        "than taken on trust."
+    )
+
+    _live = st.session_state.get("dataset")
+    _dead = st.session_state.get("curated_dead_data")
+    # Three verdicts, and the kept/trimmed/dropped reconciliation is in core because
+    # it is the part that is easy to get wrong — see curation_verdict_table.
+    _tbl = dam_utilities.curation_verdict_table(_live, _dead)
+
+    if _tbl.empty:
+        st.info("Load a dataset to inspect its flies.")
+    else:
+        _n = _tbl.verdict.value_counts()
+        if _dead is None:
+            st.write(f"**{int(_n.get('kept', 0))} flies** — curation not run yet")
+        else:
+            st.write(
+                f"**{int(_n.get('kept', 0))} kept** · "
+                f"**{int(_n.get('trimmed', 0))} trimmed** (kept, dead tail cut) · "
+                f"**{int(_n.get('dropped', 0))} dropped** "
+                f"— {len(_tbl)} flies in total"
+            )
+
+        def _select_all_when_options_change(label, options, key):
+            """A multiselect defaulting to every option, that notices new ones.
+
+            ``default=`` is ignored once a keyed widget has state, so this cannot
+            be written as ``st.multiselect(..., default=options, key=key)``: the
+            selection made BEFORE curation — when "kept" was the only verdict —
+            would survive it and go on hiding the trimmed and dropped flies this
+            expander exists to show. (Backlog item 11 is the same rule elsewhere:
+            sharing or defaulting a key is never enough on its own.)
+
+            So the key is seeded directly, and re-seeded only when the set of
+            options changes. A selection the user narrowed by hand is therefore
+            left alone, while curation appearing — or a different "Group by"
+            column — starts from everything again rather than from a value that
+            no longer means anything.
+            """
+            seen_key = f"_{key}_options"
+            if st.session_state.get(seen_key) != options:
+                st.session_state[seen_key] = options
+                st.session_state[key] = list(options)
+            return st.multiselect(label, options, key=key)
+
+        _cols = [c for c in dam_utilities.VERDICT_META_COORDS if c in _tbl.columns]
+        f1, f2 = st.columns([2, 3])
+        with f1:
+            # Only the verdicts actually present: a run where nothing was dropped
+            # should not offer "dropped" as something to look at.
+            _verdicts = [v for v in ("kept", "trimmed", "dropped") if (_tbl.verdict == v).any()]
+            _show = _select_all_when_options_change("Show", _verdicts, "flyview_verdict")
+        with f2:
+            _by = st.selectbox("Group by", ["(none)", *_cols], key="flyview_groupby")
+
+        _sel = _tbl[_tbl.verdict.isin(_show)] if _show else _tbl.iloc[0:0]
+        if _by != "(none)" and not _sel.empty:
+            _vals = sorted(_sel[_by].unique())
+            _pick = _select_all_when_options_change(_by, _vals, "flyview_groupvals")
+            _sel = _sel[_sel[_by].isin(_pick)]
+
+        st.dataframe(
+            _sel.sort_values(["verdict", "id"]),
+            width="stretch",
+            hide_index=True,
+            height=260,
+        )
+
+        if not _sel.empty:
+            _ids = list(_sel.id)
+            _per_page = 8
+            _chosen = st.multiselect(
+                "Draw these flies",
+                _ids,
+                default=_ids[: min(_per_page, len(_ids))],
+                key="flyview_ids",
+                help="Each fly gets its own row: kept in grey, trimmed in "
+                "amber, dropped in red.",
+            )
+            b1, b2 = st.columns([1, 2])
+            with b1:
+                _bin = st.selectbox(
+                    "Bin (minutes)", [1, 5, 15, 30, 60], index=3, key="flyview_bin"
+                )
+            with b2:
+                _same_y = st.checkbox(
+                    "Same y-scale for every fly",
+                    value=True,
+                    key="flyview_samey",
+                    help="Comparable heights across flies. Uncheck to give a quiet "
+                    "fly its own scale.",
+                )
+
+            if len(_chosen) > _per_page:
+                _pages = (len(_chosen) + _per_page - 1) // _per_page
+                _pg = st.number_input(
+                    f"Page (of {_pages}, {_per_page} flies each)",
+                    min_value=1,
+                    max_value=_pages,
+                    value=1,
+                    step=1,
+                    key="flyview_page",
+                )
+                _draw = _chosen[(int(_pg) - 1) * _per_page : int(_pg) * _per_page]
+            else:
+                _draw = _chosen
+
+            if _draw:
+                _live_ids = (
+                    {str(v) for v in _live["id"].values} if _live is not None else set()
+                )
+                _verdict_of = dict(zip(_sel.id, _sel.verdict))
+                _COLOUR = {"kept": "#3D3D3D", "trimmed": "#E08A00", "dropped": "#C62828"}
+                _NOTE = {"kept": "", "trimmed": "  —  trimmed", "dropped": "  —  dropped"}
+
+                _traces = []
+                for _fid in _draw:
+                    _src = _live if _fid in _live_ids else _dead
+                    _one = _src.sel(id=_fid)["activity"].values.astype(float)
+                    _n_use = (len(_one) // int(_bin)) * int(_bin)
+                    _b = np.nan_to_num(_one[:_n_use]).reshape(-1, int(_bin)).sum(axis=1)
+                    _x = (np.arange(_b.size) + 0.5) * int(_bin) / 1440.0
+                    _traces.append((_fid, _x, _b, _verdict_of.get(_fid, "kept")))
+
+                _ymax = (
+                    max((float(np.nanmax(t[2])) for t in _traces if t[2].size), default=1.0)
+                    * 1.05
+                )
+                _xmax = max((float(t[1][-1]) for t in _traces if t[1].size), default=1.0)
+
+                # One row per fly. Overlaid, a dozen traces are just noise; stacked,
+                # a fly that stops halfway through is obvious at a glance.
+                _fig = make_subplots(
+                    rows=len(_traces),
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=min(0.055, 1.1 / max(len(_traces), 1)),
+                )
+                for _r, (_fid, _x, _b, _verdict) in enumerate(_traces, start=1):
+                    _col = _COLOUR.get(_verdict, "#3D3D3D")
+                    _fig.add_trace(
+                        go.Scatter(
+                            x=_x,
+                            y=_b,
+                            mode="lines",
+                            showlegend=False,
+                            line=dict(width=0.8, color=_col),
+                            fill="tozeroy",
+                            fillcolor=_col,
+                            hovertemplate="day %{x:.2f}<br>%{y:.0f} counts"
+                            f"<extra>{_fid}</extra>",
+                        ),
+                        row=_r,
+                        col=1,
+                    )
+                    # A rotated y-axis title is hard to read and collides with the
+                    # ticks; label each panel horizontally along its top edge instead.
+                    _fig.add_annotation(
+                        text=f"{_fid}{_NOTE.get(_verdict, '')}",
+                        xref="x domain",
+                        yref=f"y{_r if _r > 1 else ''} domain",
+                        x=0,
+                        y=1.0,
+                        xanchor="left",
+                        yanchor="bottom",
+                        showarrow=False,
+                        font=dict(size=12, color=_col),
+                    )
+                    _fig.update_yaxes(
+                        title_text="counts" if _r == 1 else None,
+                        title_font=dict(size=12, color="#000000"),
+                        title_standoff=4,
+                        range=[0, _ymax] if _same_y else None,
+                        showline=True,
+                        linecolor="#000000",
+                        linewidth=1,
+                        mirror=True,
+                        ticks="outside",
+                        tickfont=dict(size=10, color="#000000"),
+                        nticks=3,
+                        gridcolor="#E6E6E6",
+                        row=_r,
+                        col=1,
+                    )
+                    _fig.update_xaxes(
+                        range=[0, _xmax],
+                        dtick=1,
+                        showline=True,
+                        linecolor="#000000",
+                        linewidth=1,
+                        mirror=True,
+                        ticks="outside",
+                        tickfont=dict(size=11, color="#000000"),
+                        gridcolor="#E6E6E6",
+                        title_text="day" if _r == len(_traces) else None,
+                        title_font=dict(size=13, color="#000000"),
+                        row=_r,
+                        col=1,
+                    )
+
+                _fig.update_layout(
+                    height=100 * len(_traces) + 110,
+                    title=dict(
+                        text=f"Activity per fly — counts per {_bin}-minute bin",
+                        x=0.5,
+                        xanchor="center",
+                        font=dict(size=16, color="#000000"),
+                    ),
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    font=dict(color="#000000", size=12),
+                    margin=dict(t=70, b=55, l=65, r=25),
+                    bargap=0,
+                )
+                charts.plotly_chart(_fig, filename="per_fly_activity", width="stretch")
+
+        st.download_button(
+            "Download this fly table (CSV)",
+            _tbl.to_csv(index=False).encode("utf-8"),
+            file_name="fly_curation_table.csv",
+            mime="text/csv",
+            key="flyview_csv",
+        )
 
 st.divider()
 
