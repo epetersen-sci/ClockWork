@@ -21,7 +21,7 @@ from dataset_meta import (
     stamp_phase,
 )
 from load_and_save_datasets import load_dataset_from_netcdf
-from ui import status
+from ui import path_picker, status
 from ui.state import clear_dataset_state
 
 
@@ -63,6 +63,17 @@ tab_fresh, tab_netcdf, tab_combine = st.tabs(
 # ============================================================
 with tab_fresh:
     st.subheader("Import Raw DAM Data")
+
+    # Above the two text inputs on purpose: the "Use this..." buttons write into
+    # their session-state keys, and Streamlit only permits that before the widget
+    # for a key is created on the same run.
+    with st.expander("Browse for the folder and metadata file"):
+        path_picker.browse(
+            "load",
+            start=st.session_state.get("working_dir"),
+            dir_target="data_dir_input",
+            file_target="metadata_path_input",
+        )
 
     data_dir = st.text_input(
         "Data directory (folder containing MonitorXXX.txt files)",
@@ -341,6 +352,15 @@ with tab_fresh:
 # ============================================================
 with tab_netcdf:
     st.subheader("Load Existing NetCDF File")
+
+    with st.expander("Browse for the .nc file"):
+        path_picker.browse(
+            "nc",
+            start=st.session_state.get("working_dir"),
+            file_extensions=(".nc",),
+            file_target="nc_path_input",
+            file_label="NetCDF file",
+        )
 
     nc_path = st.text_input(
         "Path to NetCDF file (.nc)",
