@@ -135,8 +135,26 @@ def resolve_export_dir(ds=None, working_dir=None):
     return os.path.abspath(working_dir) if working_dir else os.getcwd()
 
 
+def sanitize_experiment_name(name):
+    """Filename-safe form of an experiment name, since it becomes a folder name.
+
+    Runs of anything that is not a letter or digit collapse to one underscore, so
+    a name typed as ``"exp 8 (repeat)"`` cannot produce a path separator, a drive
+    letter or a character Windows refuses. Capped at 60 characters because the
+    result is only one component of a path that already includes the user's
+    working folder.
+    """
+    import re
+
+    return "_".join(p for p in re.split(r"[^A-Za-z0-9]+", str(name or "")) if p)[:60]
+
+
 def experiment_name_from_path(metadata_path):
-    """Short experiment name read off the metadata file's name.
+    """Short experiment name guessed from the metadata file's name.
+
+    Only a STARTING POINT — the import page offers it in an editable field, because
+    a filename is a weak source: the convention is not enforced anywhere, and a file
+    named plainly ``metadata.xlsx`` carries nothing at all.
 
     The word ``metadata`` is what every one of these files has in common, so it
     carries no information and is dropped; what is left names the run::
@@ -145,16 +163,28 @@ def experiment_name_from_path(metadata_path):
         exp6_metadata.csv          -> 'exp6'
         metadata.csv               -> ''          (nothing left to name it with)
 
-    Returns a filename-safe token, or ``''`` when the name held nothing but
-    ``metadata`` — callers treat that as "no experiment name" and fall back to the
-    unsuffixed folder, which is exactly where exports went before this existed.
+    Returns ``''`` when the name held nothing but ``metadata``, which callers treat
+    as "no experiment name": exports then land in the unsuffixed folder, exactly
+    where they went before this existed.
     """
     import os
     import re
 
     stem = os.path.splitext(os.path.basename(str(metadata_path or "")))[0]
-    parts = [p for p in re.split(r"[^A-Za-z0-9]+", stem) if p and p.lower() != "metadata"]
-    return "_".join(parts)[:60]
+    kept = [p for p in re.split(r"[^A-Za-z0-9]+", stem) if p and p.lower() != "metadata"]
+    return sanitize_experiment_name("_".join(kept))
+
+
+def experiment_suffix_for_name(name):
+    """The suffix a given name would produce: ``'exp 8'`` -> ``'_exp_8'``, ``''`` -> ``''``.
+
+    Split out so the import page can show the user which folder their typed name
+    will create, BEFORE the dataset exists to be asked. Both paths therefore format
+    the name the same way, instead of the preview and the real thing agreeing only
+    by inspection.
+    """
+    clean = sanitize_experiment_name(name)
+    return f"_{clean}" if clean else ""
 
 
 def experiment_suffix(ds=None):
@@ -173,8 +203,10 @@ def experiment_suffix(ds=None):
     the name existed simply has none and exports exactly where it always did.
     """
     _attrs = getattr(ds, "attrs", None) if ds is not None else None
-    name = str(_attrs.get("experiment_name") or "").strip() if _attrs else ""
-    return f"_{name}" if name else ""
+    name = _attrs.get("experiment_name") if _attrs else ""
+    # Sanitised on the way out as well as in, so a dataset stamped before the rule
+    # existed — or edited by hand — still cannot put a separator in a folder name.
+    return experiment_suffix_for_name(name)
 
 
 def read_data_and_metadata(metadata_path, data_folder):

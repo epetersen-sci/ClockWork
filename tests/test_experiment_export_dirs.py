@@ -15,7 +15,11 @@ import xarray as xr
 
 import dam_utilities
 import export_helpers
-from dam_utilities import experiment_name_from_path, experiment_suffix
+from dam_utilities import (
+    experiment_name_from_path,
+    experiment_suffix,
+    sanitize_experiment_name,
+)
 
 
 def _ds(working_dir, name=None):
@@ -138,3 +142,66 @@ def test_the_suffix_is_read_from_the_dataset_only():
         "reintroduces the stale-name bug this signature exists to prevent."
     )
     assert "session_state" not in inspect.getsource(dam_utilities.experiment_suffix)
+
+
+class TestSanitizing:
+    """The name becomes a folder, so it has to survive being one."""
+
+    def test_spaces_and_punctuation_collapse(self):
+        assert sanitize_experiment_name("exp 8 (repeat)") == "exp_8_repeat"
+
+    def test_path_separators_cannot_survive(self):
+        """The whole point: a typed name must not be able to escape the working
+        folder or name a drive."""
+        for hostile in ("../../etc", r"C:\Windows", "a/b", r"a\b"):
+            out = sanitize_experiment_name(hostile)
+            assert "/" not in out and "\\" not in out and ".." not in out
+
+    def test_it_is_capped(self):
+        assert len(sanitize_experiment_name("x" * 200)) == 60
+
+    def test_empty_stays_empty(self):
+        assert sanitize_experiment_name("") == ""
+        assert sanitize_experiment_name(None) == ""
+
+    def test_a_stored_name_is_sanitised_on_the_way_out_too(self, tmp_path):
+        """A dataset stamped before the rule existed, or edited by hand, still
+        cannot put a separator into a path."""
+        assert experiment_suffix(_ds(tmp_path, "a/b")) == "_a_b"
+
+
+class TestTheImportFieldPrefill:
+    """The filename is a starting point offered in an editable field, not the
+    source of truth it used to be."""
+
+    def test_it_is_prefilled_from_the_metadata_filename(self, app):
+        at = app(page="data_import")
+        at.text_input(key="metadata_path_input").set_value(
+            "/runs/metadata_exp7_7_31_26.xlsx"
+        ).run()
+        assert at.session_state["experiment_name_input"] == "exp7_7_31_26"
+
+    def test_an_uninformative_filename_prefills_nothing(self, app):
+        """The case the filename source could never handle: the repo's own example
+        data is named plainly metadata.xlsx."""
+        at = app(page="data_import")
+        at.text_input(key="metadata_path_input").set_value("/runs/metadata.xlsx").run()
+        assert at.session_state["experiment_name_input"] == ""
+
+    def test_a_typed_name_survives_a_rerun(self, app):
+        """The prefill is guarded on the path it came from, so it must not stamp
+        over an edit on the next rerun."""
+        at = app(page="data_import")
+        at.text_input(key="metadata_path_input").set_value("/runs/metadata.xlsx").run()
+        at.text_input(key="experiment_name_input").set_value("my own name").run()
+        at.run()
+        assert at.session_state["experiment_name_input"] == "my own name"
+
+    def test_pointing_at_a_different_file_re_guesses(self, app):
+        """Keeping the previous run's name here would be worse than losing an edit —
+        it is how two experiments end up sharing one export folder again."""
+        at = app(page="data_import")
+        at.text_input(key="metadata_path_input").set_value("/runs/metadata_exp7.xlsx").run()
+        at.text_input(key="experiment_name_input").set_value("edited").run()
+        at.text_input(key="metadata_path_input").set_value("/runs/metadata_exp8.xlsx").run()
+        assert at.session_state["experiment_name_input"] == "exp8"
