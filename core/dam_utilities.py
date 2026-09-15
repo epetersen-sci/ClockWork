@@ -135,6 +135,48 @@ def resolve_export_dir(ds=None, working_dir=None):
     return os.path.abspath(working_dir) if working_dir else os.getcwd()
 
 
+def experiment_name_from_path(metadata_path):
+    """Short experiment name read off the metadata file's name.
+
+    The word ``metadata`` is what every one of these files has in common, so it
+    carries no information and is dropped; what is left names the run::
+
+        metadata_exp8_8_18_26.xlsx -> 'exp8_8_18_26'
+        exp6_metadata.csv          -> 'exp6'
+        metadata.csv               -> ''          (nothing left to name it with)
+
+    Returns a filename-safe token, or ``''`` when the name held nothing but
+    ``metadata`` — callers treat that as "no experiment name" and fall back to the
+    unsuffixed folder, which is exactly where exports went before this existed.
+    """
+    import os
+    import re
+
+    stem = os.path.splitext(os.path.basename(str(metadata_path or "")))[0]
+    parts = [p for p in re.split(r"[^A-Za-z0-9]+", stem) if p and p.lower() != "metadata"]
+    return "_".join(parts)[:60]
+
+
+def experiment_suffix(ds=None):
+    """``'_exp8_8_18_26'`` to append to an export folder name, or ``''``.
+
+    Two experiments routinely share one working folder — the metadata files of a
+    paired run sit side by side — so without this their exports land in the same
+    ``Graph Exports/`` and the second overwrites the first.
+
+    The DATASET is the only authority. The name is stamped into
+    ``attrs['experiment_name']`` at load and rides through the NetCDF round-trip,
+    so a reloaded ``.nc`` still exports beside its own experiment. Reading it from
+    anywhere else — a session key, the current text input — would let a name left
+    over from the previously loaded experiment redirect this one's exports, which
+    is a silent wrong answer rather than a visible failure. A dataset saved before
+    the name existed simply has none and exports exactly where it always did.
+    """
+    _attrs = getattr(ds, "attrs", None) if ds is not None else None
+    name = str(_attrs.get("experiment_name") or "").strip() if _attrs else ""
+    return f"_{name}" if name else ""
+
+
 def read_data_and_metadata(metadata_path, data_folder):
     """
     Convenience wrapper: load raw DAM data and metadata in one call.

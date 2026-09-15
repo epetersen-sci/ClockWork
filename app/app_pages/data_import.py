@@ -325,6 +325,14 @@ with tab_fresh:
                         # files. A plain string, so it survives the NetCDF round-trip
                         # (a reloaded .nc still exports to that folder when it exists).
                         ds.attrs["source_data_dir"] = st.session_state.get("working_dir") or ""
+                        # The experiment's name, read off the metadata file. It names
+                        # the export folder, so a paired run whose two metadata files
+                        # share a working folder keeps its figures apart. Plain string
+                        # for the same reason source_data_dir is one: a reloaded .nc
+                        # still exports into its own experiment's folder.
+                        ds.attrs["experiment_name"] = dam_utilities.experiment_name_from_path(
+                            metadata_path
+                        )
                         # Carry the import-time integrity counters onto the
                         # dataset so a reloaded .nc can still report its own
                         # quality. Plain ints only — see
@@ -608,6 +616,10 @@ with tab_combine:
 
                 combined = xr.concat(datasets, dim="id")
                 combined = dam_utilities.ensure_numpy_backed(combined)
+                # concat keeps the FIRST input's attrs, so a combination of two
+                # experiments would inherit one of their names and export as though
+                # it were that experiment. It is its own thing: no name, plain folder.
+                combined.attrs["experiment_name"] = ""
 
                 # Combined datasets inherit no clear partitioning from
                 # their constituents; stamp 'full' unless every input

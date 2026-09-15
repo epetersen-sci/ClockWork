@@ -5,8 +5,10 @@ Every line/bar graph's underlying data (the numbers actually plotted) is written
 as a CSV into the working folder — ``dam_utilities.resolve_export_dir`` (the
 metadata file's directory on a raw load, or the ``.nc``'s directory on a reload,
 so exports land next to the user's experiment files and survive a ``.nc`` reload)
-— under a ``Graph Exports/`` subfolder, instead of a browser download. One button
-per graph; a confirmation shows the written path.
+— under a ``Graph Exports_<experiment>/`` subfolder, instead of a browser download.
+The experiment name comes from the metadata file, so two runs sharing a working
+folder do not overwrite each other. One button per graph; a confirmation shows the
+written path.
 
 Used by the Periodograms, Period Analysis, Sleep and Activity, and HMM pages so the
 export mechanism is defined ONCE (no per-page drift). ``streamlit`` and
@@ -119,18 +121,31 @@ def zt_group_summary_table(binned_df, value_col, bin_size, *, group_col="group")
     return pivot
 
 
-def _export_dir(ds):
+def _export_dir(ds, subfolder=None):
+    """``Graph Exports_<experiment>/`` in the working folder, optionally one deeper.
+
+    The folder carries the experiment's name (from the metadata file — see
+    ``dam_utilities.experiment_suffix``) because a paired run keeps both metadata
+    files in ONE working folder, so an unsuffixed ``Graph Exports/`` had the second
+    experiment's figures overwriting the first's. A dataset with no experiment name
+    still gets the plain ``Graph Exports/``.
+
+    ``subfolder`` keeps one page's output together (``"Sleep_bouts"``) instead of
+    every page emptying into one flat directory.
+    """
     import streamlit as st
 
     import dam_utilities
 
     base = dam_utilities.resolve_export_dir(ds, st.session_state.get("working_dir"))
-    out = os.path.join(base, "Graph Exports")
+    out = os.path.join(base, f"Graph Exports{dam_utilities.experiment_suffix(ds)}")
+    if subfolder:
+        out = os.path.join(out, subfolder)
     os.makedirs(out, exist_ok=True)
     return out
 
 
-def save_df_button(label, df, ds, filename, key, *, index=False, help=None):
+def save_df_button(label, df, ds, filename, key, *, index=False, help=None, subfolder=None):
     """Render a 'Save to working folder' button. On click, write ``df`` as CSV into
     the working data folder's ``Graph Exports/`` and confirm the path. Returns the
     written path, or None (not clicked / empty df)."""
@@ -139,7 +154,7 @@ def save_df_button(label, df, ds, filename, key, *, index=False, help=None):
     disabled = df is None or (hasattr(df, "empty") and df.empty)
     if st.button(label, key=key, help=help, disabled=disabled):
         try:
-            path = os.path.join(_export_dir(ds), filename)
+            path = os.path.join(_export_dir(ds, subfolder), filename)
             df.to_csv(path, index=index)
             st.success(f"Saved to `{path}`")
             return path
@@ -148,7 +163,7 @@ def save_df_button(label, df, ds, filename, key, *, index=False, help=None):
     return None
 
 
-def save_multi_df_button(label, items, ds, key, *, index=False, help=None):
+def save_multi_df_button(label, items, ds, key, *, index=False, help=None, subfolder=None):
     """Render ONE button that writes SEVERAL CSVs into the working folder's
     ``Graph Exports/`` in a single click. ``items`` is an iterable of
     ``(filename, df)``; empty/None dataframes are skipped (e.g. an analysis that
@@ -162,7 +177,7 @@ def save_multi_df_button(label, items, ds, key, *, index=False, help=None):
     disabled = not items
     if st.button(label, key=key, help=help, disabled=disabled):
         try:
-            out = _export_dir(ds)
+            out = _export_dir(ds, subfolder)
             written = []
             for fn, df in items:
                 path = os.path.join(out, fn)
@@ -182,7 +197,7 @@ def save_multi_df_button(label, items, ds, key, *, index=False, help=None):
     return None
 
 
-def save_csv_button(label, csv_text, ds, filename, key, *, help=None):
+def save_csv_button(label, csv_text, ds, filename, key, *, help=None, subfolder=None):
     """Same as :func:`save_df_button` but for pre-rendered CSV text (a ``to_csv()``
     string). Returns the written path, or None."""
     import streamlit as st
@@ -190,7 +205,7 @@ def save_csv_button(label, csv_text, ds, filename, key, *, help=None):
     disabled = not csv_text
     if st.button(label, key=key, help=help, disabled=disabled):
         try:
-            path = os.path.join(_export_dir(ds), filename)
+            path = os.path.join(_export_dir(ds, subfolder), filename)
             with open(path, "w", encoding="utf-8", newline="") as fh:
                 fh.write(csv_text)
             st.success(f"Saved to `{path}`")
