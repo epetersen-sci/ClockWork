@@ -22,10 +22,16 @@ four found while fixing them (14, 15, 16, 17). Item 6 — the held decision on
 ~1900 lines of unwired Abhilash sleep-state code — was settled in favour of
 building the page; item 17 is the part of it that deliberately stayed unwired.
 
+Items 18-20 came later and from elsewhere: they were found while merging a lab
+mate's fork of the app (the `mi/*` branches), which is a different way of finding
+issues than mapping the codebase and tends to surface different ones — two of
+the three are duplication that only becomes visible once a second author's code
+sits beside the first's.
+
 **Item numbers are original and stable.** They are referenced from the
 reorganization PR and from the commits that closed them, so they are not renumbered
 when items move between sections or get closed. A new issue takes the next free
-number (14 and 15 were added this way), and never reuses a closed one.
+number (14, 15 and 18-20 were added this way), and never reuses a closed one.
 
 (`app/app_pages/data_groups.py` used to carry a pointer to item 12 in its module
 docstring. Item 12 is closed and that pointer is gone, so no code references this
@@ -39,7 +45,8 @@ line number costs more than no line number.
 
 ## What this file is for now
 
-Section A is empty. Three habits from clearing it are worth keeping:
+Section A holds items 17-20. Four habits from clearing the original triage are
+worth keeping:
 
 **Capture a baseline before any item whose Verify step says "same as before".**
 Item 5 needed one and it paid for itself — 721 of 724 SCAMP files matched
@@ -50,6 +57,13 @@ a copy, then re-run and `sha256sum -c` after the change.
 **Grep for call sites; do not trust a list in this file.** Item 5's consumer
 table was missing two of five, and item 3's Verify step asked for a difference
 the code could not produce. Both are recorded in their Done entries.
+
+**Build the triggering case from copies.** The phase-shift merge needed this
+again: `example_data` has no `pulse_time` column, so the phase-shift page stops
+at its own prerequisite guard and nothing below it can be reached. A metadata
+copy in a scratch folder — splitting each monitor's 32 channels into a pulsed
+and an unpulsed half, over the same six real monitor files — exercised the whole
+page on 192 real flies without touching the committed data.
 
 **Check whether `example_data` can even reach the code you changed.** It is real
 lab data, but it is one experiment: its monitors are all two digits (so item 13's
@@ -65,12 +79,73 @@ covers what the fixtures do and do not imitate.
 
 # A. Ready to fix
 
-One item: **17**, the remainder of item 6. Everything else triaged here has
+Four items: **17**, the remainder of item 6, and **18-20**, found while merging a
+lab mate's fork (the `mi/*` branches). Everything from the original triage has
 been closed — see [D. Done](#d-done).
 
 New issues go here as they are found, with the same shape the closed ones had:
 a Decision, a numbered Fix, and a Verify step that says what to check rather
 than "it works".
+
+
+## 18. One "saved the figures" note, shared by every page
+
+The router renders `ui.charts.save_figures_button` after each page body, always
+with its default `key="save_page_figures"`. `export_helpers._remember` keys the
+confirmation off that, so the note outlives the page that earned it: save the six
+actograms, switch to Sleep (SCAMP), and that page shows "Saved 6 PNG file(s) to
+…\Graph Exports" under its own single figure — a receipt for figures that are
+not on the page showing it. Seen in the running app on `example_data`.
+
+**Decision: scope the note to the page.** It cannot simply be cleared in
+`charts.begin_run()` — the note exists to survive the rerun the click itself
+causes, and `begin_run` runs on that rerun too. Have the router pass
+`key=f"save_page_figures_{page.url_path}"`, or have `save_figures_button` derive
+the suffix so no call site has to. A stale note on the page that produced it is
+defensible; one attributed to a different page is not.
+
+**Verify:** save on one page, switch to another that draws figures, and check the
+second page shows no confirmation until its own button is pressed. A test
+alongside `tests/test_figure_export.py` can drive both pages through `AppTest`.
+
+
+## 19. Four copies of "which apparatus did this group sit in"
+
+Actograms, Sleep (SCAMP) and Phase shift each name their panels by the `flybox`
+(or `Monitor`) coord without grouping on it, and each arrived with its own
+`_box_of` / `_boxes_of` / `_box_col` trio. The phase-shift page's copy is gone —
+it calls `phase_shift.group_extras`, which is the same function the analysis uses
+to record the answer — but the other two still hand-roll it, and all three format
+the label slightly differently (`"a · b"`, `"a+b"`, `"a-LP vs b-noLP"`).
+
+**Decision not yet made.** The lookup is one function; the LABEL is genuinely
+per page, and collapsing the three into one formatter would probably make it
+worse. The likely shape is a shared `ui` helper returning
+`{group label: [box, ...]}` with each page keeping its own formatting — but
+whether `group_extras` should simply be used everywhere (it needs `labels` and
+`groups`, which every one of those pages already has) is worth deciding first.
+
+**Verify:** one implementation of the lookup, three call sites, and the three
+pages' labels unchanged in the app.
+
+
+## 20. `core/phase_shift.py` cites a test file that does not exist
+
+`compute_group_phase_difference`'s docstring says its SCAMP concordance was
+"validated against the lab's own `peakphaseplot.m` exports for this protocol
+(3 genotypes x 2 pulse intensities x 6 days; see `tests/test_phase_shift.py`)".
+There is no `tests/test_phase_shift.py`, and no fixture of those exports in the
+repo, so the concordance claim — a median of 2 min, worst case 12 min, which the
+page repeats to the user — cannot currently be re-checked by anyone.
+
+**Decision: find out which it is.** Either the comparison data exists somewhere
+and should be committed with the test that reads it, or the numbers came from a
+one-off check and the docstring should say so and name where the exports live.
+`tests/test_phase_shift_controls.py` checks the analysis against a *synthetic*
+known answer, which is a different and weaker claim than agreeing with SCAMP.
+
+**Verify:** either the named test exists and passes, or no docstring on the page
+or in `core/` cites a file that is not there.
 
 
 ## 17. Four Abhilash renderers the new page deliberately does not use

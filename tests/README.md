@@ -5,7 +5,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-79 tests, about 20 seconds. No browser, no server, no port.
+480 tests, about four minutes. No browser, no server, no port.
 
 ## How the app tests work
 
@@ -51,6 +51,19 @@ failures a long way from the cause:
 
 If a page needs something else a real import produces, add it to the fixture.
 
+Two fixtures go further than imitating shape, and are worth knowing about:
+
+- `states_ds` runs the production `sleep_analysis` rather than hand-writing the
+  bout table, so the masks, the state labels and the per-bout `duration` cannot
+  drift out of step with each other.
+- `pulse_ds` is built to a **known design** — two genotypes whose baseline phase
+  differs by `PULSE_BASELINE_GAP_H`, each with a pulsed and an unpulsed arm, the
+  pulsed arms delayed by `PULSE_SHIFT_H` from the first DD day. Its activity is
+  one sharp Gaussian bump per day rather than a Poisson trace, because the peak
+  method low-pass filters at 12 h and a noisy trace has no peak left to find.
+  Change either constant and the phase-shift tests still hold; change the bump
+  width and they may not.
+
 ## What is covered
 
 | File | Covers |
@@ -60,6 +73,20 @@ If a page needs something else a real import produces, add it to the fixture.
 | `test_cache_keys.py` | `@st.cache_data` helpers take the fingerprint as `fp`, not `_fp` (backlog item 14), plus a test pinning the upstream Streamlit behaviour that rule depends on. |
 | `test_exports.py` | ZT summary column order and casing (item 2), `phase_slice` dtypes and parameters (item 5), the single bout-dataframe source (item 1). |
 | `test_page_behaviour.py` | The HMM phase picker (item 3) and the shared display group filter surviving a page switch (item 11) — both previously verified by hand in a browser. |
+| `test_plotting_seam.py` | `plotting` renders and does not run analyses (item 7), and the figures that put group names on an x axis rotate them. |
+| `test_figure_export.py` | Figure filenames, and that no page bypasses `ui.charts.plotly_chart`. |
+| `test_actograms.py` | SCAMP actogram geometry: binning, double-plotting, stacking, and the per-bin LD mask. |
+| `test_scamp_sleep.py` | `sleepcalc3.m`'s definitions on hand-computed inputs — the bin a bout is credited to, the per-bin Pdoze/Pwake reset, and missing minutes counting as sleep. |
+| `test_bout_spectrum.py` | Duration bins, the Figure 6 definition ladder and its nesting, and that `bout_spectrum_bars` takes the summary rather than computing it. |
+| `test_curation_verdicts.py` | Curation's kept/trimmed/dropped reconciliation, and the verdict filter noticing curation. |
+| `test_phase_shift_controls.py` | Which control a group is measured against, against a cohort built to a known answer — including what a single control costs. |
+
+Three of these test a **known right answer** rather than the code's own output,
+which is the most useful shape when the thing under test is a number rather than
+a rendering: `test_scamp_sleep.py` works its cases out by hand from the MATLAB's
+rules, `test_phase_shift_controls.py` builds a cohort with a designed 1.5 h shift
+and a 2 h genotype baseline gap, and `test_sleep_cwt_truth.py` checks the
+transform against `WaveletComp`. Prefer that shape where the domain allows it.
 
 ## When not to use AppTest
 
