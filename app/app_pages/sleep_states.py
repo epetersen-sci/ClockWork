@@ -51,6 +51,7 @@ import sleep_state_metrics as ssm
 from dam_utilities import select_phase
 from dataset_meta import dataset_fingerprint, dataset_phase
 from periodograms import sleep_cwt_analysis, ultradian_rhythmicity_chi_sq
+from ui import charts
 from ui.filters import group_filter_sidebar
 from ui.guards import require_dataset
 
@@ -334,7 +335,7 @@ if tab_wave.open:
                     continue
                 for column, (name, frame) in zip(st.columns(len(rows)), rows):
                     with column:
-                        st.plotly_chart(
+                        charts.plotly_chart(
                             plotting.normalized_waveform_overlay(
                                 frame,
                                 phase_label=name,
@@ -408,7 +409,7 @@ if tab_init.open:
             g_prof = prof_stats[prof_stats["group"] == group]
             left, right = st.columns(2)
             with left:
-                st.plotly_chart(
+                charts.plotly_chart(
                     plotting.state_profile_plot(
                         g_prof,
                         phase_label=phase_used,
@@ -421,7 +422,7 @@ if tab_init.open:
                 if init_stats is None:
                     st.empty()
                 else:
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.initiation_probability_plot(
                             init_stats[init_stats["group"] == group],
                             activity_stats=g_prof[g_prof["state"] == "activity"],
@@ -460,7 +461,7 @@ if tab_rose.open:
         # "Temporal organisation of sleep states — <group>" as the figure
         # title, so the heading repeated the group label directly above it.
         for group in groups:
-            st.plotly_chart(
+            charts.plotly_chart(
                 plotting.rose_plot_with_activity(
                     prof_stats[prof_stats["group"] == group],
                     group=group,
@@ -489,7 +490,7 @@ if tab_rose.open:
                 g_stats = circular[circular["group"] == group]
                 if g_stats.empty:
                     continue
-                st.plotly_chart(
+                charts.plotly_chart(
                     plotting.polar_gating_plot(
                         g_stats,
                         gates[gates["group"] == group],
@@ -729,7 +730,7 @@ if tab_scal.open:
                 if not surfaces:
                     st.info("The wavelet run produced no surfaces for these states.")
                 else:
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.sleep_state_scalogram(
                             surfaces,
                             axes,
@@ -739,7 +740,7 @@ if tab_scal.open:
                         ),
                         width="stretch",
                     )
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.period_amplitude_plot(
                             spectra,
                             axes,
@@ -822,7 +823,7 @@ if tab_ultra.open:
                     cropped[state] = cwt[surf_key].values[rows]
                     cropped_axes[state] = periods[rows]
                 if cropped:
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.sleep_state_scalogram(
                             cropped,
                             cropped_axes,
@@ -832,7 +833,7 @@ if tab_ultra.open:
                         ),
                         width="stretch",
                     )
-                st.plotly_chart(
+                charts.plotly_chart(
                     plotting.ultradian_amplitude_plot(
                         amp,
                         bin_size_min=CWT_BIN_MIN,
@@ -925,7 +926,7 @@ if tab_ultra.open:
                     if not len(chi.data_vars):
                         st.info("No periodogram could be computed.")
                     else:
-                        st.plotly_chart(
+                        charts.plotly_chart(
                             plotting.chi_sq_periodogram_plot(
                                 chi,
                                 states=tuple(states_present),

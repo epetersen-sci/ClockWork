@@ -39,6 +39,7 @@ from dataset_meta import (
     dataset_fingerprint,
     dataset_phase,
 )
+from ui import charts
 from ui.filters import DISPLAY_GROUPS_KEY, bin_size_sidebar, group_filter_sidebar
 from ui.guards import require_dataset
 
@@ -285,7 +286,7 @@ with tab_profiles:
         )
         # theme=None: let the figure's own styling (black text, transparent bg) drive both
         # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
-        st.plotly_chart(fig, width="stretch", theme=None)
+        charts.plotly_chart(fig, width="stretch", theme=None)
 
         # CSV download of binned data (grouped: mean, SD, n per condition)
         try:
@@ -351,7 +352,7 @@ with tab_profiles:
             bin_size,
         )
         # theme=None: the figure's black-text / transparent-bg styling drives screen + PNG.
-        st.plotly_chart(fig, width="stretch", theme=None)
+        charts.plotly_chart(fig, width="stretch", theme=None)
 
         try:
             binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)
@@ -433,7 +434,7 @@ with tab_bouts:
                 tuple(selected_temperatures) if selected_temperatures else None,
                 bout_show_individual,
             )
-            st.plotly_chart(bout_fig, width="stretch", theme=None)
+            charts.plotly_chart(bout_fig, width="stretch", theme=None)
 
             if bout_stats and np.isfinite(bout_stats.get("pvalue", float("nan"))):
                 st.caption(
@@ -489,7 +490,7 @@ with tab_bouts:
                 as_percent=ss_pct,
             )
             if ss_fig is not None:
-                st.plotly_chart(ss_fig, width="stretch")
+                charts.plotly_chart(ss_fig, width="stretch")
             if ss_df is not None and not ss_df.empty:
                 ex.save_df_button(
                     "Save Sleep-State Totals (group mean±SEM) to working folder",
@@ -543,7 +544,7 @@ with tab_totals:
             bin_size,
             _ds_phase_label,
         )
-        st.plotly_chart(fig, width="stretch")
+        charts.plotly_chart(fig, width="stretch")
         _act_tbl = _cached_summary_table(
             dataset_fingerprint(ds),
             ds,
@@ -589,7 +590,7 @@ with tab_totals:
             bin_size,
             _ds_phase_label,
         )
-        st.plotly_chart(fig, width="stretch")
+        charts.plotly_chart(fig, width="stretch")
         _sleep_tbl = _cached_summary_table(
             dataset_fingerprint(ds),
             ds,

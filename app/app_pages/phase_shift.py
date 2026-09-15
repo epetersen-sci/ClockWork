@@ -25,7 +25,7 @@ from calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
-from ui import status
+from ui import charts, status
 from ui.guards import require_dataset
 
 st.caption(
@@ -410,7 +410,7 @@ if reference == "control":
             yaxis_title="phase difference (hours)",
             height=460,
         )
-        st.plotly_chart(fig, width="stretch")
+        charts.plotly_chart(fig, width="stretch")
         st.caption(
             "Day 0 is flagged `filter_edge`: the smoothing filter pads the start of the "
             "record, so the first day's peak rests partly on synthetic padding and its "
@@ -479,7 +479,7 @@ else:
                     ),
                     title=f"{preview_id} — {method} method, shift {shift_txt}",
                 )
-                st.plotly_chart(fig1, width="stretch")
+                charts.plotly_chart(fig1, width="stretch")
                 if row1["status"] == "ok":
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Phase shift", f"{row1['phase_shift_hours']:+.2f} h")
@@ -580,7 +580,7 @@ else:
                 showlegend=False,
                 height=460,
             )
-            st.plotly_chart(fig, width="stretch")
+            charts.plotly_chart(fig, width="stretch")
 
         if len(status_counts) > 1 or "ok" not in status_counts:
             st.markdown("**Why some flies have no value**")
@@ -637,7 +637,7 @@ else:
                 ),
                 title=f"{view_id} ({row['group']}) — {results['method']} method, shift {shift_txt}",
             )
-            st.plotly_chart(fig, width="stretch")
+            charts.plotly_chart(fig, width="stretch")
 
     with tab_export:
         st.download_button(

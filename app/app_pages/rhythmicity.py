@@ -33,6 +33,7 @@ from rhythmicity_classification import (
     per_fly_classification_df,
     summarize_rhythmicity,
 )
+from ui import charts
 from ui.guards import require_dataset
 from ui.period_context import (
     dd_record_days,
@@ -255,7 +256,7 @@ if _has_ls or _has_ac or _has_cwt or _has_mesa:
                         period_window=(min_period, max_period),
                         scamp_ref=_ref,
                     )
-                    st.plotly_chart(_fig, width="stretch", key=f"expl_fig_{_algo}")
+                    charts.plotly_chart(_fig, width="stretch", key=f"expl_fig_{_algo}")
                     _t = _summ.get("_total", {})
                     if _t:
                         st.caption(

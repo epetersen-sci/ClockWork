@@ -14,7 +14,7 @@ import dam_utilities
 import plotting
 import sleep_deprivation as sd_module
 from analysis_detection import detect_analyses
-from ui import status
+from ui import charts, status
 from ui.guards import require_dataset
 
 # ============================================================
@@ -172,7 +172,7 @@ with col_plot:
             height=400,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
-        st.plotly_chart(fig_sel, width="stretch")
+        charts.plotly_chart(fig_sel, width="stretch")
 
 # ============================================================
 # Section 4: Run analysis
@@ -339,7 +339,7 @@ with tab_timecourse:
         height=500,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig1, width="stretch")
+    charts.plotly_chart(fig1, width="stretch")
 
     # --- 1b. Difference plot (recovery − baseline) ---
     st.markdown("#### Sleep Difference (Recovery − Baseline)")
@@ -386,7 +386,7 @@ with tab_timecourse:
     fig2.update_xaxes(title_text="ZT (hours)", range=[0, 24], dtick=4)
     fig2.update_yaxes(title_text="Sleep Difference (fraction)", col=1)
     fig2.update_layout(height=400)
-    st.plotly_chart(fig2, width="stretch")
+    charts.plotly_chart(fig2, width="stretch")
 
     # --- 1c. Cumulative sleep difference ---
     st.markdown("#### Cumulative Sleep Difference (minutes)")
@@ -418,7 +418,7 @@ with tab_timecourse:
         height=450,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig3, width="stretch")
+    charts.plotly_chart(fig3, width="stretch")
 
 # ================================================================
 # Tab 2: Bar Graphs
@@ -467,7 +467,7 @@ with tab_bars:
             height=500,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
-        st.plotly_chart(fig_bar, width="stretch")
+        charts.plotly_chart(fig_bar, width="stretch")
 
     # --- Rebound % bar chart ---
     st.markdown("#### Sleep Rebound (%)")
@@ -499,7 +499,7 @@ with tab_bars:
             height=450,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
-        st.plotly_chart(fig_reb, width="stretch")
+        charts.plotly_chart(fig_reb, width="stretch")
 
 # ================================================================
 # Tab 3: Data Export

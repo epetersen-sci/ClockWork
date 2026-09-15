@@ -215,6 +215,66 @@ def save_csv_button(label, csv_text, ds, filename, key, *, help=None, subfolder=
     return None
 
 
+def _remember(key, message):
+    """Keep a "saved" confirmation alive past the rerun that follows the click.
+
+    ``st.success`` inside a button branch is drawn once and gone on the next
+    rerun — and a rerun is exactly what a Streamlit button causes. For a CSV the
+    message is a nicety; for a button that writes a dozen PNGs it is the only
+    report of where they went, so it has to survive.
+    """
+    import streamlit as st
+
+    st.session_state[f"_saved_note_{key}"] = message
+
+
+def _show_remembered(key):
+    """Redraw the remembered confirmation, if this button has one."""
+    import streamlit as st
+
+    note = st.session_state.get(f"_saved_note_{key}")
+    if note:
+        st.success(note)
+
+
+def save_figures_png_button(label, figures, ds, key, *, scale=2, subfolder=None, help=None):
+    """Write every ``(filename, plotly figure)`` in ``figures`` as a PNG, in one click.
+
+    The modebar's own camera button downloads ONE figure into the browser's
+    download folder, which no page can redirect (``ui.charts`` configures its name
+    and resolution, which is as far as a web page may go). This is the other half:
+    every figure on the page at once, written into the working folder beside the
+    experiment's data like every other export here.
+
+    Needs ``kaleido``, plotly's static image backend. It is in requirements.txt, so
+    a missing one means a broken environment rather than an optional extra — the
+    error says which package and stays on screen.
+    """
+    import streamlit as st
+
+    figures = list(figures or [])
+    if st.button(label, key=key, help=help, disabled=not figures):
+        try:
+            out = _export_dir(ds, subfolder)
+            paths = []
+            for filename, fig in figures:
+                path = os.path.join(out, filename)
+                with open(path, "wb") as fh:
+                    fh.write(fig.to_image(format="png", scale=scale))
+                paths.append(path)
+            _remember(key, f"Saved {len(paths)} PNG file(s) to `{out}`")
+            _show_remembered(key)
+            return paths
+        except Exception as e:
+            st.error(
+                f"PNG export failed: {e}. Static image export needs the "
+                "`kaleido` package (`pip install kaleido`)."
+            )
+            return None
+    _show_remembered(key)
+    return None
+
+
 def save_group_average_scalograms(group_averages, out_dir, ds=None):
     """Write one PNG + CSV per group-averaged scalogram, and return the manifest.
 
