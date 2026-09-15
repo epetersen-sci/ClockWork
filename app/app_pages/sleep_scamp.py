@@ -27,7 +27,7 @@ import export_helpers
 import phase_shift as ps_module
 import scamp_sleep as ss
 from dataset_meta import dataset_fingerprint
-from ui import charts
+from ui import charts, days
 from ui.guards import require_dataset
 
 # SCAMP's own figure colours: dark grey / orange / green, then extras.
@@ -65,8 +65,8 @@ st.markdown(
 # value (StreamlitValueAssignmentNotAllowedError), and that error is raised when
 # st.button runs, not when the value is assigned — so it cannot be caught here.
 # Buttons need no persisting anyway: a button's value is only True on the run
-# right after the click. Keys of buttons on this page, kept out deliberately:
-# scamp_avg_xlsx, and the "<key>_all" / "<key>_none" pair inside day_checkboxes().
+# right after the click. The one button key on this page, kept out deliberately,
+# is scamp_avg_xlsx.
 _PERSIST_KEYS = {
     "scamp_view",         # radio: which view
     "scamp_facets",       # multiselect: figures to draw
@@ -75,15 +75,10 @@ _PERSIST_KEYS = {
     "perday_cols",        # selectbox: panel columns
     "avg_epoch",          # radio: LD / DD
 }
-# Dynamic keys: the day checkboxes, which are "<key>_cb_<label>" for key "perday"
-# and "avg_<epoch>".
-_PERSIST_PREFIXES = ("perday_cb_", "avg_LD_cb_", "avg_DD_cb_")
-
-for _k in list(st.session_state.keys()):
-    if not isinstance(_k, str):
-        continue
-    if _k in _PERSIST_KEYS or _k.startswith(_PERSIST_PREFIXES):
-        st.session_state[_k] = st.session_state[_k]
+for _k in _PERSIST_KEYS & set(st.session_state.keys()):
+    st.session_state[_k] = st.session_state[_k]
+# The day tick-boxes, by the same rule and for the same reason.
+days.persist_checkbox_keys("perday_cb_", "avg_LD_cb_", "avg_DD_cb_")
 
 st.caption(
     "Sleep and activity in the SCAMP layout. Metrics match `sleepcalc3.m` — "
@@ -108,36 +103,10 @@ if n_days_total < 1:
     st.error("The recording is shorter than one full day.")
     st.stop()
 
-# --- epoch per day, and day numbering within each epoch ---------------------------
-dd_day = None
-if "split_minute" in ds.coords or "first_DD_day" in ds.coords:
-    try:
-        split = (
-            ds["split_minute"].values
-            if "split_minute" in ds.coords
-            else dam_utilities.add_phase_metadata(ds)["split_minute"].values
-        )
-        dd_days = {int(round(float(s) / 1440.0)) for s in np.asarray(split)}
-        if len(dd_days) == 1:
-            dd_day = dd_days.pop()
-        else:
-            st.warning(
-                "Flies enter DD on different days of this dataset's time axis "
-                f"({sorted(dd_days)}), so there is no single LD→DD transition to number "
-                "days from and the whole record is labelled LD."
-            )
-    except Exception:
-        dd_day = None
-
-day_rows = []
-for d in range(n_days_total):
-    if dd_day is None or d < dd_day:
-        epoch, within = "LD", d + 1
-    else:
-        epoch, within = "DD", d - dd_day + 1
-    day_rows.append({"absolute": d, "epoch": epoch, "within": within,
-                     "label": f"{epoch} day {within}"})
-DAYS = pd.DataFrame(day_rows)
+# Day numbering, the tick-box widget and the label/filename spellings all come from
+# ui.days, which the Sleep bouts page uses too — see its docstring for why there is
+# one copy rather than one per page.
+DAYS, dd_day = days.day_table(ds, warn=st.warning)
 
 m1, m2, m3 = st.columns(3)
 m1.metric("Flies", int(ds.sizes["id"]))
@@ -307,100 +276,6 @@ def _day_window(absolute_day):
     return slice(absolute_day * 1440, (absolute_day + 1) * 1440)
 
 
-def _compress_runs(nums, dash="-"):
-    """[2,3,4,7] -> '2-4, 7' — consecutive days collapse into a range.
-
-    ``dash="to"`` gives the filename spelling (``'2to4, 7'``). ``ui.charts`` slugs a
-    filename by flattening every non-alphanumeric run to ``_``, so with a plain dash
-    the contiguous ``3-5`` and the discontiguous ``3, 5`` would slug identically and
-    one export would overwrite the other. Spelling the range out keeps them distinct.
-    """
-    nums = sorted({int(n) for n in nums})
-    if not nums:
-        return ""
-    runs, start, prev = [], nums[0], nums[0]
-    for n in nums[1:]:
-        if n == prev + 1:
-            prev = n
-            continue
-        runs.append((start, prev))
-        start = prev = n
-    runs.append((start, prev))
-    return ", ".join(str(a) if a == b else f"{a}{dash}{b}" for a, b in runs)
-
-
-def _day_summary(rows, epoch, *, dash="-"):
-    """'DD days 2-5' / 'LD days 1, 3'. The labels already carry the epoch, so
-    joining them raw gave titles like 'DD DD day 2, DD day 3'."""
-    nums = sorted(int(n) for n in rows.within)
-    if not nums:
-        return epoch
-    word = "day" if len(nums) == 1 else "days"
-    return f"{epoch} {word} {_compress_runs(nums, dash)}"
-
-
-def _days_label(rows, *, dash="-"):
-    """Same as :func:`_day_summary` but for a selection that may span both epochs:
-    ``'LD days 2-4 + DD days 1-5'``. Used by the per-day view, whose day ticks are
-    not confined to one epoch.
-
-    This text goes into the figure TITLE and, spelled with ``dash='to'``, into the
-    exported filename — so two exports of the same view over different days land in
-    different files instead of the second silently overwriting the first.
-    """
-    order = {"LD": 0, "DD": 1}
-    parts = []
-    for ep in sorted(set(rows.epoch), key=lambda e: order.get(e, 9)):
-        sub = rows[rows.epoch == ep]
-        if len(sub):
-            parts.append(_day_summary(sub, ep, dash=dash))
-    return " + ".join(parts)
-
-
-def day_checkboxes(rows, key, *, default=None, per_row=6):
-    """Tick boxes for days, laid out across columns, plus All / None shortcuts.
-
-    A multiselect hides what is currently chosen behind a dropdown; with eight days
-    and two epochs the whole selection wants to be visible at once.
-    """
-    labels = list(rows.label)
-    default = labels if default is None else list(default)
-
-    def _cb_key(lbl):
-        return f"{key}_cb_{lbl}"
-
-    # Each box's own widget key IS its state. Streamlit ignores a keyed widget's
-    # ``value=`` argument on every run after the first, so All / None cannot work by
-    # writing to a separate dict and passing it back in as ``value`` — the widget
-    # never reads it, which is why None appeared to do nothing. They have to assign
-    # the widget keys themselves.
-    for lbl in labels:  # a changed epoch or dataset can bring new labels
-        if _cb_key(lbl) not in st.session_state:
-            st.session_state[_cb_key(lbl)] = lbl in default
-
-    b1, b2, _ = st.columns([1, 1, 6])
-    # These run BEFORE the checkboxes below are instantiated in this same script
-    # run, which is the only window in which assigning a widget's key still
-    # changes what that widget renders.
-    if b1.button("All", key=f"{key}_all"):
-        for lbl in labels:
-            st.session_state[_cb_key(lbl)] = True
-    if b2.button("None", key=f"{key}_none"):
-        for lbl in labels:
-            st.session_state[_cb_key(lbl)] = False
-
-    chosen = []
-    for start in range(0, len(labels), per_row):
-        chunk = labels[start : start + per_row]
-        cols = st.columns(per_row)
-        for col, lbl in zip(cols, chunk):
-            # No ``value=``: the key already carries the state, and passing both
-            # makes Streamlit warn about a value that will be ignored.
-            if col.checkbox(lbl, key=_cb_key(lbl)):
-                chosen.append(lbl)
-    return rows[rows.label.isin(chosen)].sort_values("absolute"), chosen
-
-
 view = st.radio("View", ["Per-day profiles", "Averaged days + sleep features"],
                 horizontal=True, key="scamp_view")
 
@@ -416,7 +291,7 @@ if view == "Per-day profiles":
     metric = "amean" if which == "Activity" else "s30"
     ylabel = ss.PROFILE_LABELS[metric]
     st.markdown("**Days**")
-    sel_days, day_choice = day_checkboxes(DAYS, "perday")
+    sel_days, day_choice = days.day_checkboxes(DAYS, "perday")
     if not day_choice:
         st.info("Tick at least one day.")
         st.stop()
@@ -460,13 +335,13 @@ if view == "Per-day profiles":
                          title_font=dict(size=DAY_AXIS_TITLE, color=INK))
         fig.update_yaxes(tickfont=dict(size=DAY_TICK, color=INK),
                          title_font=dict(size=DAY_AXIS_TITLE, color=INK))
-        _days_txt = _days_label(sel_days)
+        _days_txt = days.days_label(sel_days)
         _facet_txt = _facet_label(facet) if (facet or _boxes_of(facet)) else ""
         title = (f"{which} — {_days_txt} — {_facet_txt}" if _facet_txt
                  else f"{which} — {_days_txt}")
         # Filename built from the same pieces, with ranges spelled 'to' (see
-        # _compress_runs) so a different day pick can never reuse this name.
-        _file_txt = f"sleep perday {which} {_days_label(sel_days, dash='to')} {facet}"
+        # ui.days.compress_runs) so a different day pick can never reuse this name.
+        _file_txt = f"sleep perday {which} {days.days_label(sel_days, dash='to')} {facet}"
         fig.update_layout(
             title=dict(text=title, x=0.5, xanchor="center", y=0.985, yanchor="top",
                        font=dict(size=DAY_TITLE, color=INK)),
@@ -503,16 +378,16 @@ if view == "Averaged days + sleep features":
     with ec2:
         st.markdown(f"**{epoch} days to average**")
         # Day 1 of an epoch is the transition day, so it starts unticked.
-        sel, picked = day_checkboxes(
+        sel, picked = days.day_checkboxes(
             pool, f"avg_{epoch}", default=list(pool.label)[1:] or list(pool.label)
         )
     if not picked:
         st.info("Tick at least one day.")
         st.stop()
     abs_days = [int(d) for d in sel.absolute]
-    day_label = _day_summary(sel, epoch)
-    # Same days, spelled for a filename (ranges as 'to' — see _compress_runs).
-    day_slug = _day_summary(sel, epoch, dash="to")
+    day_label = days.day_summary(sel, epoch)
+    # Same days, spelled for a filename (ranges as 'to' — see ui.days).
+    day_slug = days.day_summary(sel, epoch, dash="to")
 
     # SCAMP names the halves LP/DP in LD and sLP/sDP in DD (subjective).
     lp, dp = ("LP", "DP") if epoch == "LD" else ("sLP", "sDP")

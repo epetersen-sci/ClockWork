@@ -24,6 +24,8 @@ CACHED_HELPERS = [
     ("app_pages.periodograms", "_curves_by_group"),
     ("app_pages.rhythmicity", "_build_period_summary_df"),
     ("app_pages.sleep_scamp", "_score_sleep"),
+    ("app_pages.sleep_bouts", "_cached_bout_counts"),
+    ("app_pages.sleep_bouts", "_cached_by_definition"),
 ]
 
 

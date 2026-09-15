@@ -96,6 +96,25 @@ def png_config(fig, filename=None, *, scale=DEFAULT_SCALE):
 #: :func:`begin_run` from the entry point, which runs before every page body.
 _DRAWN_KEY = "_figures_drawn_this_run"
 
+#: Where this rerun's figures should be written, relative to
+#: ``Graph Exports_<experiment>/``. Set by :func:`set_subfolder` and cleared by
+#: :func:`begin_run`, so it never leaks from one page to the next.
+_SUBFOLDER_KEY = "_figure_subfolder_this_run"
+
+
+def set_subfolder(name):
+    """Put this page's figures in a subfolder, beside the CSVs it writes there.
+
+    A page whose exports already go into a subfolder (Sleep bouts writes seven CSVs
+    into ``Sleep_bouts/``) would otherwise have its figures land one level up,
+    because the router renders the save button and knows nothing about the page.
+    Call this from the page body and the router's button follows.
+
+    Cleared by :func:`begin_run` rather than by the page, so a page that does not
+    call it cannot inherit the last one's folder.
+    """
+    st.session_state[_SUBFOLDER_KEY] = name or None
+
 
 def begin_run():
     """Start a fresh figure collection for this rerun.
@@ -107,6 +126,7 @@ def begin_run():
     forty files.
     """
     st.session_state[_DRAWN_KEY] = []
+    st.session_state[_SUBFOLDER_KEY] = None
 
 
 def drawn_figures():
@@ -150,6 +170,8 @@ def save_figures_button(ds=None, *, key="save_page_figures", subfolder=None):
     ds = ds if ds is not None else st.session_state.get("dataset")
     if ds is None:
         return None
+    if subfolder is None:
+        subfolder = st.session_state.get(_SUBFOLDER_KEY)
 
     n = len(figures)
     return export_helpers.save_figures_png_button(

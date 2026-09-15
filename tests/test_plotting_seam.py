@@ -21,7 +21,16 @@ from conftest import REPO_ROOT
 
 import plotting
 
-ANALYSIS_MODULES = {"sleep_analysis", "rhythmicity_classification", "periodograms"}
+#: ``bout_spectrum`` is here because it very nearly happened again: the
+#: ``bout_spectrum_bars`` this list now guards arrived defer-importing it to call
+#: ``summarize_by_group``, and the set did not yet name the module, so nothing
+#: failed. Add a new analysis module here when you add one.
+ANALYSIS_MODULES = {
+    "sleep_analysis",
+    "rhythmicity_classification",
+    "periodograms",
+    "bout_spectrum",
+}
 
 
 def _function_level_imports(path):

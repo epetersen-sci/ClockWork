@@ -11,6 +11,8 @@ Functions
 dataset_to_heatmap()              — Activity/sleep heatmap (all flies × time)
 daily_pattern_line()              — ZT-binned mean ± SEM line plot per group
 sleep_bout_duration_lines()       — Per-fly sleep bout duration curves (KDE/survival) by group
+bout_spectrum_bars()              — Group mean ± SEM across duration bins or
+                                    candidate sleep definitions (bars or lines)
 group_spectrum_plot()             — Generic mean±SEM curve overlay per group on a shared x-axis
 summary_bars()                    — Grouped bar chart: total activity/sleep by day/night/all-day
 single_fly_scalogram_plotly()        — Interactive Plotly scalogram for one fly
@@ -611,6 +613,99 @@ def sleep_bout_duration_lines(
             font=dict(size=11, color="gray"),
         )
 
+    return fig
+
+
+def bout_spectrum_bars(
+    stat_df: pd.DataFrame,
+    category_col: str,
+    category_order=None,
+    title="Sleep bout spectrum",
+    yaxis_title="Bouts per fly (mean ± SEM)",
+    xaxis_title="Bout duration bin",
+    chart="bar",
+) -> go.Figure:
+    """Group mean ± SEM across an ordered set of categories, as bars or lines.
+
+    Serves both views on the Sleep bouts page — bouts binned by duration, and sleep
+    re-totalled under each candidate definition of sleep — because both are the same
+    shape: one summarised value per group per category.
+
+    **Takes the summary, not the per-fly frame.** It arrived taking the long per-fly
+    table and calling ``bout_spectrum.summarize_by_group`` itself, behind a deferred
+    ``import bout_spectrum`` — the same inverted dependency backlog item 7 removed
+    from this module, and for the same reason: a renderer that computes its own
+    numbers is the only thing that can disagree with the CSV the caller exports. The
+    caller now summarises once and passes the result here and to the export, so the
+    plotted numbers and the saved numbers are the same object rather than the same
+    computation run twice.
+
+    Parameters
+    ----------
+    stat_df : pd.DataFrame
+        From ``bout_spectrum.summarize_by_group``: ``group``, ``<category_col>``,
+        ``mean``, ``sem``, ``n``. Empty or None renders the "no data" placeholder.
+    category_col : str
+        The column holding the category — ``'bin_label'`` or ``'definition'``.
+    category_order : sequence of str, optional
+        Categories in plot order, and the x axis is pinned to it, so a category
+        with no rows still keeps its slot. May contain a blank entry as a spacer
+        between two families of categories. Defaults to first-seen order.
+    chart : {'bar', 'line'}
+        ``'line'`` draws markers joined by lines — easier to read once there are
+        many categories, and closer to the scatter panels of Abhilash & Shafer
+        (2024) Figure 6.
+
+    A cell whose ``sem`` is NaN (one fly) draws no error bar. That is deliberate:
+    ``summarize_by_group`` reports NaN rather than 0 there, and coercing it to 0
+    here would redraw the zero-length bar that reads as "no variability".
+    """
+    if stat_df is None or getattr(stat_df, "empty", True):
+        return _empty("No data for the selected groups and days.")
+
+    if category_order is None:
+        category_order = list(dict.fromkeys(stat_df[category_col]))
+
+    groups = sorted(stat_df["group"].unique())
+    colors = _get_group_colors(groups)
+    fig = go.Figure()
+    for grp in groups:
+        sub = stat_df[stat_df["group"] == grp].set_index(category_col).reindex(category_order)
+        n_flies = int(np.nanmax(sub["n"].values)) if sub["n"].notna().any() else 0
+        err = dict(type="data", array=sub["sem"].values.astype(float), visible=True)
+        common = dict(name=f"{grp} (n={n_flies})", x=category_order, marker_color=colors[grp])
+        if chart == "line":
+            fig.add_trace(
+                go.Scatter(
+                    y=sub["mean"].values,
+                    error_y=err,
+                    mode="lines+markers",
+                    line=dict(color=colors[grp]),
+                    **common,
+                )
+            )
+        else:
+            fig.add_trace(go.Bar(y=sub["mean"].values, error_y=err, **common))
+
+    fig.update_layout(
+        barmode="group",
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
+        legend_title="Group",
+        hovermode="x unified",
+    )
+    # Through apply_category_ticks for its automargin as much as its angle: there
+    # are fourteen definition labels, plotly turns them vertical to fit, and
+    # without automargin they are drawn into the existing bottom margin and
+    # overprint the axis title.
+    apply_category_ticks(
+        fig,
+        category_order,
+        type="category",
+        categoryorder="array",
+        categoryarray=category_order,
+    )
     return fig
 
 
