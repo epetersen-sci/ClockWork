@@ -162,6 +162,26 @@ def binned_df():
     return pd.DataFrame(rows)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_bare_session_state():
+    """Empty Streamlit's bare-mode session state around every test.
+
+    Two session states are in play and only one of them is per-test. ``AppTest``
+    carries its own (``at.session_state``), but a test that calls app code
+    DIRECTLY — no AppTest — touches ``st.session_state``, which in bare mode is a
+    single process-global dict that outlives the test that wrote it.
+
+    That makes ordering bugs: ``ui.charts`` reads the loaded dataset from session
+    state to prefix download filenames, so one test leaving a named dataset behind
+    renamed another test's figure, and only when the two ran in that order.
+    """
+    import streamlit as st
+
+    st.session_state.clear()
+    yield
+    st.session_state.clear()
+
+
 @pytest.fixture
 def app():
     """Factory: an AppTest on the real entrypoint, seeded with a dataset.

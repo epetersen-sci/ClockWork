@@ -13,10 +13,18 @@ import sleep_analysis
 from analysis_detection import detect_analyses
 from dataset_meta import is_split_applied
 from load_and_save_datasets import save_dataset_to_netcdf
+from ui import experiment
 from ui.guards import require_dataset
 
 ds = require_dataset()
 analyses = detect_analyses(ds)
+
+# Renaming the experiment here renames the folder every "save to working folder"
+# button on every page writes into, including the ones on Sleep & activity and
+# Periodograms. It is offered on this page as well as at import because a dataset
+# reloaded from .nc never passes through the import field, and because this is
+# where someone goes when they want to know where their files went.
+experiment.name_control()
 
 # Three kinds of output, three tabs: the dataset itself, the raw/binned
 # tables, and the per-analysis result exports.

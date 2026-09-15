@@ -21,7 +21,7 @@ from dataset_meta import (
     stamp_phase,
 )
 from load_and_save_datasets import load_dataset_from_netcdf
-from ui import file_dialogs, status
+from ui import experiment, file_dialogs, status
 from ui.state import clear_dataset_state
 
 
@@ -99,24 +99,9 @@ with tab_fresh:
     # than losing an edit).
     if st.session_state.get("_experiment_name_source") != metadata_path:
         st.session_state["_experiment_name_source"] = metadata_path
-        st.session_state["experiment_name_input"] = dam_utilities.experiment_name_from_path(
-            metadata_path
-        )
+        st.session_state[experiment.KEY] = dam_utilities.experiment_name_from_path(metadata_path)
 
-    experiment_name = st.text_input(
-        "Experiment name (optional)",
-        key="experiment_name_input",
-        help="Names the export folder, so two experiments sharing a working folder "
-        "do not overwrite each other's figures. Guessed from the metadata filename "
-        "and safe to edit or clear.",
-    )
-    _suffix = dam_utilities.experiment_suffix_for_name(experiment_name)
-    st.caption(
-        f"Exports will go to `Graph Exports{_suffix}/` in the working folder."
-        if _suffix
-        else "Exports will go to `Graph Exports/` — name the experiment to keep two "
-        "runs in one folder apart."
-    )
+    experiment.name_control()
 
     gap_threshold = st.number_input("Gap threshold (hours)", min_value=0.1, value=1.0, step=0.5)
 
@@ -364,7 +349,7 @@ with tab_fresh:
                         # for the same reason source_data_dir is one: a reloaded .nc
                         # still exports into its own experiment's folder.
                         ds.attrs["experiment_name"] = dam_utilities.sanitize_experiment_name(
-                            st.session_state.get("experiment_name_input")
+                            st.session_state.get(experiment.KEY)
                         )
                         # Carry the import-time integrity counters onto the
                         # dataset so a reloaded .nc can still report its own
@@ -495,6 +480,10 @@ with tab_netcdf:
                 st.session_state.dataset = ds
                 st.session_state.dataset_path = _nc_path
                 st.session_state.working_dir = os.path.abspath(os.path.dirname(_nc_path))
+                # Take the name from the FILE, even when it has none: whatever the
+                # last import left in the field must not follow this dataset around
+                # and send its exports to the previous experiment's folder.
+                experiment.sync_from_dataset(ds)
 
                 analyses = detect_analyses(ds)
                 st.session_state.analyses = analyses
@@ -649,6 +638,7 @@ with tab_combine:
                 # experiments would inherit one of their names and export as though
                 # it were that experiment. It is its own thing: no name, plain folder.
                 combined.attrs["experiment_name"] = ""
+                experiment.sync_from_dataset(combined)
 
                 # Combined datasets inherit no clear partitioning from
                 # their constituents; stamp 'full' unless every input
