@@ -194,14 +194,26 @@ with st.expander("Sleep State Thresholds (Abhilash et al. 2026)"):
 
 if st.button("Run Sleep Analysis", key="run_sleep"):
     _run_msg = None
+    # A real bar, not just a spinner: the work is per fly and on a few hundred flies
+    # it runs long enough that a spinner leaves you unable to tell progress from a
+    # hang. Curation on Curate & split already reports this way.
+    _sleep_progress = st.progress(0.0, text="Starting sleep analysis…")
     with st.spinner(f"Running sleep analysis on {_sleep_phase} data..."):
         try:
+
+            def _sleep_cb(completed, total):
+                _sleep_progress.progress(
+                    min(1.0, completed / total),
+                    text=f"Detecting sleep bouts: fly {completed}/{total}",
+                )
+
             _sleep_ds = sleep_analysis.sleep_analysis(
                 _sleep_ds,
                 sleep_threshold_sec=sleep_threshold,
                 short_max_min=short_max_min,
                 inter_max_min=inter_max_min,
                 phase=_sleep_phase_arg,
+                progress_callback=_sleep_cb,
             )
             # _sleep_ds is now the WHOLE dataset with phase-masked sleep
             # (out-of-phase minutes are -1). The master always carries it.
@@ -249,6 +261,10 @@ if st.button("Run Sleep Analysis", key="run_sleep"):
                 _run_msg = "Sleep analysis complete."
         except Exception as e:
             st.error(f"Error during sleep analysis: {e}")
+        finally:
+            # Clear the bar either way; on success the rerun below replaces the
+            # page anyway, on failure a bar stuck at 90% reads as "still going".
+            _sleep_progress.empty()
 
     # Outside the try on purpose: st.rerun raises RerunException, an Exception
     # subclass the handler above would swallow and report as a failure. The

@@ -269,8 +269,25 @@ class TestEpochWithoutMasks:
         zeroed["sleep_long"] = zeroed["sleep_long"] * 0
         assert "long" in ssm.states_with_data(zeroed)
 
-    def test_page_says_which_epoch_the_masks_are_for(self, app, ld_only_ds):
+    def test_the_ld_default_lands_on_the_epoch_that_has_data(self, app, ld_only_ds):
+        """This dataset's sleep analysis ran on LD, so opening on LD shows it.
+
+        The page used to default to DD and greet an LD-only dataset with a warning
+        about an empty epoch — which is what the test below was written for. The
+        default is now LD, so the common case just works and the warning is reserved
+        for actually asking for the epoch that has nothing.
+        """
         at = app(ds=ld_only_ds, page="sleep_states")
+        assert not at.exception
+        assert at.session_state["sleep_states_phase"] == "LD"
+        assert not [w for w in at.warning if "epoch" in w.value]
+
+    def test_page_says_which_epoch_the_masks_are_for(self, app, ld_only_ds):
+        """Asking for DD on an LD-only dataset still has to say so rather than
+        drawing four blank panels."""
+        at = app(ds=ld_only_ds, page="sleep_states")
+        at.session_state["sleep_states_phase"] = "DD"
+        at = at.run()
         assert not at.exception
         warnings = " ".join(w.value for w in at.warning)
         assert warnings, "an all-missing epoch has to be announced, not drawn blank"

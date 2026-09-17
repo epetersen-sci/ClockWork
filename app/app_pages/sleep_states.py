@@ -136,8 +136,13 @@ def _cached_chi_sq(fp, group, _cwt, states):
 # ---------------------------------------------------------------------------
 
 stamped = dataset_phase(ds)
-phase_options = ["DD", "LD"]
-default_phase = "DD" if stamped in (None, "full", "DD") else stamped
+phase_options = ["LD", "DD"]
+# LD leads. The circadian measures here are cleanest in DD, with no light cycle
+# driving them, and that is why DD used to be the default — but it made the page
+# open on an epoch most people had not asked for, and on a dataset whose sleep
+# analysis was run on LD it opened on an epoch with no data at all. Whichever
+# epoch is chosen, it is now the only one drawn.
+default_phase = "LD" if stamped in (None, "full", "LD") else stamped
 phase = st.sidebar.radio(
     "Phase",
     phase_options,
@@ -146,9 +151,10 @@ phase = st.sidebar.radio(
     # widget id is generated and nothing can select the non-default epoch.
     key="sleep_states_phase",
     help=(
-        "DD is the default because the circadian measures here are cleanest "
-        "without a light cycle driving them. A dataset already stamped with a "
-        "single epoch can only be shown in that epoch."
+        "Every figure on this page shows this epoch and no other. LD is the "
+        "default; DD is where the circadian measures are cleanest, with no "
+        "light cycle driving them. A dataset already stamped with a single "
+        "epoch can only be shown in that epoch."
     ),
 )
 
@@ -277,30 +283,15 @@ if tab_wave.open:
             "makes every fly's own peak 1.0 and flattens between-fly "
             "differences in profile shape."
         )
-        # Figure 1B prints LD and DD beside each other, because its claim is
-        # that the waveform SHAPES survive the loss of the light cycle. Showing
-        # only the selected epoch loses that comparison, so both are drawn when
-        # the dataset carries both. Same flies in each panel.
-        fly_ids = phase_ds["id"].values
-        epochs = {}
-        for epoch in ("LD", "DD"):
-            if epoch == phase_used:
-                epochs[epoch] = phase_ds
-                continue
-            try:
-                other, other_used = select_phase(ds, phase=epoch)
-            except (ValueError, KeyError):
-                continue  # this dataset holds only the one epoch
-            try:
-                other = other.sel(id=fly_ids)
-            except KeyError:
-                continue
-            # Skip an epoch sleep analysis did not run on rather than binning
-            # 189 flies x 4 all-missing masks to produce a panel that gets
-            # filtered out below anyway.
-            if not ssm.states_with_data(other):
-                continue
-            epochs[other_used] = other
+        # ONE epoch — whichever the sidebar selects.
+        #
+        # This panel used to draw LD beside DD, because the paper's Figure 1B does:
+        # its claim is that the waveform SHAPES survive the loss of the light cycle,
+        # which needs both to be seen together. That comparison is gone by request —
+        # the sidebar selector should govern what is on screen, and a page that
+        # answered it everywhere except here was the more confusing of the two.
+        # Restoring it means putting the other epoch back into `epochs` below.
+        epochs = {phase_used: phase_ds}
 
         panels = [(name, _cached_waveforms(dataset_fingerprint(sub), sub, bin_size_min))
                   for name, sub in epochs.items()]

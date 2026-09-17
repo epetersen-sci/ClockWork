@@ -109,6 +109,7 @@ def sleep_analysis(
     short_max_min=30,
     inter_max_min=60,
     phase="auto",
+    progress_callback=None,
 ):
     """
     Detect sleep bouts in DAM activity data and add results to the dataset.
@@ -149,6 +150,11 @@ def sleep_analysis(
         Upper bound (exclusive) for short sleep in minutes (default 30).
     inter_max_min : float
         Upper bound (exclusive) for intermediate sleep in minutes (default 60).
+    progress_callback : callable, optional
+        Called as ``callback(completed, total)`` after each fly. The per-fly loop is
+        the bulk of the runtime, and on a few hundred flies a bare spinner says
+        nothing about whether it is halfway or stuck. Same signature as
+        ``dam_utilities.curate_dead_animals``'s, so the pages drive both alike.
     phase : str
         ``"auto"`` (→ ``"LD"``), ``"LD"``, ``"DD"``, or ``"both"``. Selects the
         epoch sleep is computed on. The whole dataset must be passed; selection is
@@ -344,10 +350,17 @@ def sleep_analysis(
     all_inter_masks = []
     all_long_masks = []
 
-    for group_id, group_data in analysis_ds.groupby("id", squeeze=False):
+    # Counted up front so the callback can report a fraction. groupby is lazy, so
+    # this is a size lookup rather than a pass over the data.
+    _n_flies = int(analysis_ds.sizes.get("id", 0))
+    for _done, (group_id, group_data) in enumerate(
+        analysis_ds.groupby("id", squeeze=False), start=1
+    ):
         sleep_mask_da, sleep_bouts_df, short_da, inter_da, long_da = _wrapped_sleep_analysis(
             group_data, sleep_threshold_sec, group_id
         )
+        if progress_callback is not None and _n_flies:
+            progress_callback(_done, _n_flies)
         all_sleep_masks.append(sleep_mask_da.expand_dims({"id": [group_id]}))
         all_short_masks.append(short_da.expand_dims({"id": [group_id]}))
         all_inter_masks.append(inter_da.expand_dims({"id": [group_id]}))
