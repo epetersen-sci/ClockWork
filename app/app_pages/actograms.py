@@ -46,6 +46,21 @@ c1.metric("Flies", int(ds.sizes["id"]))
 c2.metric("Complete days", _n_days)
 c3.metric("Recording", f"{_minutes[-1] / 1440.0:.1f} days")
 
+# Which flies those are. Curation REPLACES session_state["dataset"] with the live
+# set, so this page draws curated flies once it has been run and every imported fly
+# before that — a difference of tens of flies that is otherwise invisible here.
+if ds.attrs.get("curation_time_window_hours") is not None:
+    st.caption(
+        f"Curated flies only — dead animals were removed on **Data → Curate & split** "
+        f"({ds.attrs['curation_min_alive_days']} day minimum alive). A group's n below "
+        "counts what survived."
+    )
+else:
+    st.caption(
+        "Every imported fly, including any that died mid-recording — curation has not "
+        "been run. Run it on **Data → Curate & split** to drop them."
+    )
+
 # ============================================================
 # Section 2: Grouping
 # ============================================================
@@ -61,12 +76,20 @@ if not _coord_opts:
     st.error("This dataset has no categorical metadata coordinates to group by.")
     st.stop()
 
-_default = [c for c in ("genotype", "condition", "sex", "block") if c in _coord_opts]
+# Default to the grouping the dataset ALREADY HAS — the columns ticked on Import,
+# recorded in attrs['group_columns'] and read back by get_group_columns. Guessing a
+# likely-looking set instead (genotype, condition, sex, block) silently disagreed
+# with the groups every other page uses: on a dataset grouped by genotype alone it
+# split five groups into thirty panels, which is not a layout problem but a
+# different answer to "what is a group here".
+_default = [c for c in dam_utilities.get_group_columns(ds) if c in _coord_opts]
 group_by = st.multiselect(
     "One actogram per",
     _coord_opts,
     default=_default or _coord_opts[:1],
-    help="A group is one combination of these, and each group gets its own actogram.",
+    help="A group is one combination of these, and each group gets its own actogram. "
+    "Defaults to the columns chosen on the Import page, so these panels match the "
+    "groups the rest of the app uses.",
 )
 if not group_by:
     st.error("Pick at least one column.")
@@ -115,11 +138,24 @@ with st.expander("Detection and layout parameters"):
         )
     with p2:
         bar_colour = st.color_picker("Bar colour", "#0000CD")
+        # Three across by default. One panel per row filled the screen with a single
+        # actogram, which is worse for the thing actograms are for — comparing groups
+        # against each other, which needs them side by side rather than a scroll apart.
+        n_cols = st.slider(
+            "Panels across",
+            min_value=1,
+            max_value=4,
+            value=3,
+            help="Actograms are read by comparing them, so they default to three "
+            "abreast. Drop to 1 for a close look at one group.",
+        )
         panel_height = st.number_input(
             "Panel height (px)",
             min_value=200,
             max_value=1400,
-            value=max(260, 60 * _n_days),
+            # Scaled to the column width: a panel three-across is a third as wide, so
+            # a full-height one would be a tall thin sliver.
+            value=max(240, int((30 + 26 * _n_days) * (4 - n_cols) / 3 + 60)),
             step=20,
         )
     # LD highlighting needs to know where each group was released into DD. On an
@@ -132,7 +168,11 @@ with st.expander("Detection and layout parameters"):
     with h1:
         mark_ld = st.checkbox(
             "Colour LD days",
-            value=False,
+            # On by default when the dataset can answer it. Where DD starts is the
+            # first thing read off an actogram — a free-run is only interpretable
+            # against the entrained days before it — so it should not be a setting
+            # someone has to discover.
+            value=_can_mark_ld,
             disabled=not _can_mark_ld,
             key="actogram_mark_ld",
             help=(
@@ -202,7 +242,14 @@ if mark_ld:
             "coloured while every fly in the group was still entrained."
         )
 
-for grp in selected:
+_cols_row = None
+for _panel_i, grp in enumerate(selected):
+    # Lay the panels out across the row, opening a fresh row of columns each time
+    # the last one is full.
+    if _panel_i % int(n_cols) == 0:
+        _cols_row = st.columns(int(n_cols))
+    _cell = _cols_row[_panel_i % int(n_cols)]
+
     matrix = res[grp]["matrix"]
     rows = act_module.actogram_rows(matrix, reps=int(reps))
     vmin, shift = act_module.actogram_scale(matrix)
@@ -254,14 +301,40 @@ for grp in selected:
                 go.Bar(x=[None], y=[None], name=_name, marker=dict(color=_col), showlegend=True)
             )
 
+    # A ruled line where the free-run begins, on top of the per-bin colouring.
+    # The colouring is the exact answer (a double-plotted row straddles the release,
+    # so only a per-bin label can be right), but a reader still has to find the
+    # colour change; a labelled line says which ROW it happened on at a glance.
+    # Drawn at the floor of the last wholly-entrained row, so everything below it is
+    # fully DD — the straddling row sits just above, part-coloured.
+    _split_min = _splits.get(grp)
+    if mark_ld and _split_min is not None and np.isfinite(_split_min):
+        _dd_row = int(np.floor(float(_split_min) / 1440.0))
+        if 0 < _dd_row <= n_days - 1:
+            fig.add_hline(
+                y=-(_dd_row - 1) * shift,
+                line_dash="dash",
+                line_color="#333333",
+                line_width=1.5,
+                annotation_text="DD begins",
+                annotation_position="top left",
+                annotation_font=dict(size=11, color="#333333"),
+            )
+
     finite = matrix[np.isfinite(matrix)]
     _top = (float(finite.max()) - vmin) if finite.size else 1.0
     fig.update_layout(
-        title=f"{_panel_name(grp)}   (n={res[grp]['n_flies']})",
+        title=dict(
+            text=f"{_panel_name(grp)}   (n={res[grp]['n_flies']})",
+            font=dict(size=14 if n_cols > 2 else 17),
+        ),
         bargap=0,
         height=int(panel_height),
-        margin=dict(t=60, b=50, l=70, r=20),
+        margin=dict(t=54, b=46, l=54, r=14),
         plot_bgcolor="rgba(0,0,0,0)",
+        # A shared legend on every narrow panel eats the plot; one on the first is
+        # enough to read the colours by.
+        showlegend=(_panel_i == 0),
     )
     fig.update_xaxes(
         title_text="time (h)",
@@ -283,7 +356,10 @@ for grp in selected:
     )
     # Named rather than left to the title, so the file says what kind of figure it
     # is; ui.charts adds the experiment prefix and the router offers the lot as PNGs.
-    charts.plotly_chart(fig, filename=f"actogram_{_panel_name(grp)}", width="stretch")
+    with _cell:
+        charts.plotly_chart(
+            fig, filename=f"actogram_{_panel_name(grp)}", width="stretch"
+        )
 
 st.caption(
     "Bars are the group's mean activity per fly in each bin. A bin measured in no fly "
@@ -292,8 +368,9 @@ st.caption(
 )
 if mark_ld:
     st.caption(
-        "Coloured bins were recorded before the group's release into DD. The label is "
-        "per bin, not per row, so the row that straddles the release is part-coloured; "
-        "the bin containing the transition itself is left in the bar colour, since it "
-        "belongs to both epochs."
+        "Coloured bins were recorded before the group's release into DD, and the "
+        "dashed line marks where the free-run begins — everything below it is wholly "
+        "DD. The colour label is per bin, not per row, so the row straddling the "
+        "release (just above the line) is part-coloured; the bin containing the "
+        "transition itself is left in the bar colour, since it belongs to both epochs."
     )
