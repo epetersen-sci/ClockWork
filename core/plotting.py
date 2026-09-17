@@ -182,7 +182,15 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
             tickvals.append(ids_ord[mid])
             ticktext.append(grp_ord[i])
             i = j
-        fig.update_yaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        # automargin, or the labels are clipped. Group names are metadata strings of
+        # any length ("dsOpa1(67159)+Ldhmut-ZT21-60.0"), and plotly's default 80 px
+        # left margin cut them mid-word — an exported heatmap read "er-none-0.0" for
+        # "per-none-0.0", with the axis title overprinting what was left. This is the
+        # y-axis counterpart of what apply_category_ticks does for group names on an
+        # x axis; it is the only other axis in this module carrying them.
+        fig.update_yaxes(
+            tickmode="array", tickvals=tickvals, ticktext=ticktext, automargin=True
+        )
         fig.update_layout(yaxis_title="Group")
 
     return fig

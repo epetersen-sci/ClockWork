@@ -236,6 +236,47 @@ class TestRidgeDensityTakesAFilteredDataset:
             )
 
 
+class TestHeatmapGroupLabelsAreNotClipped:
+    """Group names on the heatmap's y axis are metadata strings of any length.
+
+    Reported from an exported figure: "per-none-0.0" arrived as "er-none-0.0" and
+    the axis title overprinted what was left, because the axis set custom tick text
+    but left plotly's default 80 px left margin in place. This is the y-axis
+    counterpart of TestCategoryTickAngle's rule, and the same fix — claim the margin
+    the labels need.
+    """
+
+    @staticmethod
+    def _ds(labels):
+        import numpy as np
+        import xarray as xr
+
+        n_t = 50
+        return xr.Dataset(
+            {"moving": (("time", "id"), np.random.default_rng(0).random((n_t, len(labels))))},
+            coords={
+                "id": [f"f{i}" for i in range(len(labels))],
+                "time": np.arange(n_t),
+                "group": ("id", np.array(labels)),
+            },
+        )
+
+    def test_the_axis_claims_its_margin(self):
+        fig = plotting.dataset_to_heatmap(
+            self._ds(["dsOpa1(67159)+Ldhmut-ZT21-60.0"] * 2 + ["per-none-0.0"] * 2),
+            "moving",
+            "t",
+        )
+        assert fig.layout.yaxis.automargin is True
+
+    def test_the_labels_are_the_group_names_in_full(self):
+        """Truncating them in the data would hide the clipping rather than fix it."""
+        fig = plotting.dataset_to_heatmap(
+            self._ds(["a-very-long-genotype-name-none-0.0"] * 2 + ["b"] * 2), "moving", "t"
+        )
+        assert "a-very-long-genotype-name-none-0.0" in list(fig.layout.yaxis.ticktext)
+
+
 class TestCategoryTickAngle:
     """Genotype names on an x axis have to stay readable.
 
