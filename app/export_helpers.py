@@ -275,6 +275,69 @@ def save_figures_png_button(label, figures, ds, key, *, scale=2, subfolder=None,
     return None
 
 
+def save_excel_button(label, sheets, ds, filename, key, *, help=None, subfolder=None):
+    """Write a multi-sheet ``.xlsx`` into the working folder, in one click.
+
+    ``sheets`` is an iterable of ``(sheet_name, df)``, or a zero-argument callable
+    returning one. An empty or None frame is skipped, so a sheet whose analysis
+    produced nothing is simply absent rather than present and blank. Returns the
+    written path, or None (not clicked / no sheets).
+
+    **Pass a callable when a sheet is expensive to build.** The iterable form is
+    evaluated on every rerun, because the argument is built before the button is
+    rendered; the callable form runs only on the click. The sleep-SCAMP workbook's
+    test sheet is the case that matters â€” it is a fifth of that page's cost, and
+    computing it just to have a button sit unclicked is a fifth of every rerun.
+
+    A workbook rather than a folder of CSVs because the sheets are read together â€”
+    a summary, the per-fly values behind it, and the tests over those â€” and because
+    a reader who opens one of three CSVs cannot tell it apart from the others. The
+    confirmation is remembered like the PNG button's, since a click reruns the page
+    and would otherwise take the only record of where the file went with it.
+
+    Needs ``openpyxl``, which is in requirements.txt: a missing one is a broken
+    environment, not an optional extra, so the error names the package.
+    """
+    import pandas as pd
+    import streamlit as st
+
+    def _resolve():
+        built = sheets() if callable(sheets) else sheets
+        return [
+            (name, df)
+            for name, df in (built or [])
+            if df is not None and not (hasattr(df, "empty") and df.empty)
+        ]
+
+    # A callable is assumed to have something to write, since asking would mean
+    # building it. The iterable form can be checked, so an empty one disables.
+    has_sheets = True if callable(sheets) else bool(_resolve())
+    if st.button(label, key=key, help=help, disabled=not has_sheets):
+        try:
+            resolved = _resolve()
+            if not resolved:
+                st.info("Nothing to export.")
+                return None
+            path = os.path.join(_export_dir(ds, subfolder), filename)
+            with pd.ExcelWriter(path, engine="openpyxl") as xl:
+                for name, df in resolved:
+                    # Excel's own limit, which openpyxl raises on rather than
+                    # trimming. Callers here pass short names, so this is a guard
+                    # against a crash, not a naming policy.
+                    df.to_excel(xl, sheet_name=str(name)[:31], index=False)
+            _remember(key, f"Saved {len(resolved)} sheet(s) to `{path}`")
+            _show_remembered(key)
+            return path
+        except Exception as e:
+            st.error(
+                f"Excel export failed: {e}. Writing .xlsx needs the `openpyxl` "
+                "package (`pip install openpyxl`)."
+            )
+            return None
+    _show_remembered(key)
+    return None
+
+
 def save_group_average_scalograms(group_averages, out_dir, ds=None):
     """Write one PNG + CSV per group-averaged scalogram, and return the manifest.
 

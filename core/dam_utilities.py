@@ -1261,6 +1261,38 @@ def add_phase_metadata(ds):
     return ds.assign_coords(split_minute=("id", split_minute))
 
 
+def dd_onset_days(ds):
+    """The distinct days of the recording on which flies are released into DD.
+
+    ``[3]`` for one cohort released on day 3; ``[]`` when the dataset carries no
+    boundary at all. **More than one entry is the signature of a combined dataset**
+    — two runs whose boxes went into DD on different days of their own recordings.
+    That matters wherever days have to be counted from the release rather than from
+    each fly's own start: at the same day index two such cohorts have been
+    free-running for different numbers of days, and the difference between them
+    picks up roughly ``24 - tau`` of drift per day of offset.
+
+    Lives here, beside :func:`add_phase_metadata`, because it is a question about
+    the dataset's phase metadata rather than about any one page — it is derived
+    from the per-fly ``split_minute``, attached from ``first_DD_day`` if it has not
+    been already. Returns ``[]`` rather than raising when the dataset cannot
+    answer, since every caller so far treats "no boundary" as a normal state.
+    """
+    if "split_minute" not in ds.coords and "first_DD_day" not in ds.coords:
+        return []
+    try:
+        split = (
+            ds["split_minute"].values
+            if "split_minute" in ds.coords
+            else add_phase_metadata(ds)["split_minute"].values
+        )
+    except Exception:
+        return []
+    vals = np.asarray(split, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    return sorted({int(round(v / 1440.0)) for v in vals})
+
+
 def _derive_pulse_minute(ds):
     """Compute the per-`id` light-pulse onset in the dataset's relative-minute units.
 
