@@ -45,94 +45,19 @@ from ui.period_context import (
 
 ds = require_dataset()
 
-phase_selection, period_ds, _analysis_src, _period_phase = render_phase_picker(ds)
-min_period, max_period = render_period_range(show_caption=False)
+# This page EXPLORES results; Period analysis configures and runs them. Both the
+# phase and the period range were set there — they share widget keys, so a copy of
+# each picker here was the same control rendered twice, and two copies of a control
+# are two chances to disagree about which epoch and which window a number came
+# from. Resolved quietly and stated instead.
+phase_selection, period_ds, _analysis_src, _period_phase = render_phase_picker(ds, quiet=True)
+min_period, max_period = render_period_range(show_caption=False, quiet=True)
 
-st.divider()
-
-st.subheader("Per-fly period summary")
-
-# Re-read period_ds in case analyses were run above. Always the master now: the
-# pre-sliced dataset_DD / dataset_LD caches this used to prefer are gone, and the
-# per-fly period outputs this table reads are phase-independent ``(id,)`` vars
-# merged onto the master anyway, so the slice never added anything here.
-period_ds = st.session_state.dataset
-
-@st.cache_data(show_spinner=False)
-def _build_period_summary_df(fp, _ds):
-    """Build the per-fly Period Analysis summary table. Cached so a page
-    rerun (no analysis-state change) doesn't redo the per-fly `.sel()`
-    loop. The fingerprint key is invalidated whenever the analysis attrs
-    or rhythmic flags change.
-
-    ``fp`` carries no leading underscore, and must not grow one. Streamlit's
-    underscore rule is syntactic — it drops ANY leading-underscore parameter
-    from the cache key — and these are the only two parameters, so as ``_fp``
-    the key was EMPTY: the table was built once per session and then returned
-    unchanged for every later dataset, which is exactly the invalidation this
-    docstring promises. ``_ds`` keeps its underscore because a Dataset is what
-    the fingerprint exists to stand in for.
-    """
-    rows = []
-    for fly_id in _ds["id"].values:
-        row = {"ID": fly_id}
-        if "group" in _ds.coords:
-            row["Group"] = str(_ds["group"].sel(id=fly_id).values)
-        if "cwt_period" in _ds.data_vars:
-            row["CWT Period (h)"] = float(_ds["cwt_period"].sel(id=fly_id).values)
-        if "ls_period" in _ds.data_vars:
-            row["LS Period (h)"] = float(_ds["ls_period"].sel(id=fly_id).values)
-        if "ac_period" in _ds.data_vars:
-            row["AC Period (h)"] = float(_ds["ac_period"].sel(id=fly_id).values)
-        if "mesa_period" in _ds.data_vars:
-            row["MESA Period (h)"] = float(_ds["mesa_period"].sel(id=fly_id).values)
-        # Per-algorithm STRENGTH metrics — the values the Interactive threshold
-        # explorer plots (so this table is a superset of the explorer: no separate
-        # export needed). AC RI = ac_power; LS power/FAP; CWT rhythmicity; MESA SNR.
-        if "ac_power" in _ds.data_vars:
-            row["AC RI (strength)"] = float(_ds["ac_power"].sel(id=fly_id).values)
-        if "ls_power" in _ds.data_vars:
-            row["LS Power (strength)"] = float(_ds["ls_power"].sel(id=fly_id).values)
-        if "ls_fap" in _ds.data_vars:
-            row["LS FAP"] = float(_ds["ls_fap"].sel(id=fly_id).values)
-        if "cwt_rhythmicity" in _ds.data_vars:
-            row["CWT Rhythmicity (strength)"] = float(_ds["cwt_rhythmicity"].sel(id=fly_id).values)
-        if "mesa_power" in _ds.data_vars:
-            row["MESA SNR (peak/median)"] = float(_ds["mesa_power"].sel(id=fly_id).values)
-        # Per-algorithm rhythmic flags. AC is the canonical filter; LS/CWT
-        # appear here for diagnostic comparison only and never gate downstream.
-        if "ac_rhythmic" in _ds.coords:
-            row["AC Rhythmic"] = bool(_ds["ac_rhythmic"].sel(id=fly_id).values)
-        if "ls_rhythmic" in _ds.coords:
-            row["LS Rhythmic (diagnostic)"] = bool(_ds["ls_rhythmic"].sel(id=fly_id).values)
-        if "cwt_rhythmic" in _ds.coords:
-            row["CWT Rhythmic (diagnostic)"] = bool(_ds["cwt_rhythmic"].sel(id=fly_id).values)
-        rows.append(row)
-    _df = pd.DataFrame(rows)
-    # Alphabetical (Group then ID) for a predictable, GraphPad-friendly export.
-    _sort_keys = [c for c in ("Group", "ID") if c in _df.columns]
-    return _df.sort_values(_sort_keys).reset_index(drop=True) if _sort_keys else _df
-
-
-summary_df = _build_period_summary_df(dataset_fingerprint(period_ds), period_ds)
-summary_data = summary_df.to_dict("records")
-
-if summary_data and len(summary_data[0]) > 2:
-    st.dataframe(summary_df, width="stretch", height=300)
-    st.caption(
-        "This table includes every per-fly value shown in the Interactive threshold "
-        "explorer below (period + strength + rhythmic call per algorithm), so exporting "
-        "it captures the explorer data too."
-    )
-    ex.save_df_button(
-        "Save Period Summary to working folder",
-        summary_df,
-        period_ds,
-        "period_summary.csv",
-        key="download_period_csv",
-    )
-else:
-    st.info("No period analysis results to display. Run an analysis above.")
+st.caption(
+    f"Showing the **{phase_selection}** phase, classified over "
+    f"**{min_period:g}–{max_period:g} h**. Both are set on **Circadian analysis "
+    "→ Period analysis** and apply to every number below."
+)
 
 # ============================================================
 # Rhythmicity Classification (per-algorithm: LS / AC / CWT)
@@ -147,8 +72,8 @@ _has_cwt = "cwt_rhythmicity" in period_ds
 # needs both the MESA period AND autocorrelation to render.
 _has_mesa = ("mesa_period" in period_ds) and _has_ac
 
+
 if _has_ls or _has_ac or _has_cwt or _has_mesa:
-    st.divider()
 
     # --- Interactive threshold explorer (Part 2b) --------------------------
     # C2: shown ABOVE the Classification section (visual-before-cutoff) — see the
@@ -293,6 +218,95 @@ if _has_ls or _has_ac or _has_cwt or _has_mesa:
             "current slider cutoff. Un-run analyses are skipped.",
         )
 
+
+st.divider()
+
+st.subheader("Per-fly period summary")
+
+# Re-read period_ds in case analyses were run above. Always the master now: the
+# pre-sliced dataset_DD / dataset_LD caches this used to prefer are gone, and the
+# per-fly period outputs this table reads are phase-independent ``(id,)`` vars
+# merged onto the master anyway, so the slice never added anything here.
+period_ds = st.session_state.dataset
+
+@st.cache_data(show_spinner=False)
+def _build_period_summary_df(fp, _ds):
+    """Build the per-fly Period Analysis summary table. Cached so a page
+    rerun (no analysis-state change) doesn't redo the per-fly `.sel()`
+    loop. The fingerprint key is invalidated whenever the analysis attrs
+    or rhythmic flags change.
+
+    ``fp`` carries no leading underscore, and must not grow one. Streamlit's
+    underscore rule is syntactic — it drops ANY leading-underscore parameter
+    from the cache key — and these are the only two parameters, so as ``_fp``
+    the key was EMPTY: the table was built once per session and then returned
+    unchanged for every later dataset, which is exactly the invalidation this
+    docstring promises. ``_ds`` keeps its underscore because a Dataset is what
+    the fingerprint exists to stand in for.
+    """
+    rows = []
+    for fly_id in _ds["id"].values:
+        row = {"ID": fly_id}
+        if "group" in _ds.coords:
+            row["Group"] = str(_ds["group"].sel(id=fly_id).values)
+        if "cwt_period" in _ds.data_vars:
+            row["CWT Period (h)"] = float(_ds["cwt_period"].sel(id=fly_id).values)
+        if "ls_period" in _ds.data_vars:
+            row["LS Period (h)"] = float(_ds["ls_period"].sel(id=fly_id).values)
+        if "ac_period" in _ds.data_vars:
+            row["AC Period (h)"] = float(_ds["ac_period"].sel(id=fly_id).values)
+        if "mesa_period" in _ds.data_vars:
+            row["MESA Period (h)"] = float(_ds["mesa_period"].sel(id=fly_id).values)
+        # Per-algorithm STRENGTH metrics — the values the Interactive threshold
+        # explorer plots (so this table is a superset of the explorer: no separate
+        # export needed). AC RI = ac_power; LS power/FAP; CWT rhythmicity; MESA SNR.
+        if "ac_power" in _ds.data_vars:
+            row["AC RI (strength)"] = float(_ds["ac_power"].sel(id=fly_id).values)
+        if "ls_power" in _ds.data_vars:
+            row["LS Power (strength)"] = float(_ds["ls_power"].sel(id=fly_id).values)
+        if "ls_fap" in _ds.data_vars:
+            row["LS FAP"] = float(_ds["ls_fap"].sel(id=fly_id).values)
+        if "cwt_rhythmicity" in _ds.data_vars:
+            row["CWT Rhythmicity (strength)"] = float(_ds["cwt_rhythmicity"].sel(id=fly_id).values)
+        if "mesa_power" in _ds.data_vars:
+            row["MESA SNR (peak/median)"] = float(_ds["mesa_power"].sel(id=fly_id).values)
+        # Per-algorithm rhythmic flags. AC is the canonical filter; LS/CWT
+        # appear here for diagnostic comparison only and never gate downstream.
+        if "ac_rhythmic" in _ds.coords:
+            row["AC Rhythmic"] = bool(_ds["ac_rhythmic"].sel(id=fly_id).values)
+        if "ls_rhythmic" in _ds.coords:
+            row["LS Rhythmic (diagnostic)"] = bool(_ds["ls_rhythmic"].sel(id=fly_id).values)
+        if "cwt_rhythmic" in _ds.coords:
+            row["CWT Rhythmic (diagnostic)"] = bool(_ds["cwt_rhythmic"].sel(id=fly_id).values)
+        rows.append(row)
+    _df = pd.DataFrame(rows)
+    # Alphabetical (Group then ID) for a predictable, GraphPad-friendly export.
+    _sort_keys = [c for c in ("Group", "ID") if c in _df.columns]
+    return _df.sort_values(_sort_keys).reset_index(drop=True) if _sort_keys else _df
+
+
+summary_df = _build_period_summary_df(dataset_fingerprint(period_ds), period_ds)
+summary_data = summary_df.to_dict("records")
+
+if summary_data and len(summary_data[0]) > 2:
+    st.dataframe(summary_df, width="stretch", height=300)
+    st.caption(
+        "This table includes every per-fly value shown in the Interactive threshold "
+        "explorer below (period + strength + rhythmic call per algorithm), so exporting "
+        "it captures the explorer data too."
+    )
+    ex.save_df_button(
+        "Save Period Summary to working folder",
+        summary_df,
+        period_ds,
+        "period_summary.csv",
+        key="download_period_csv",
+    )
+else:
+    st.info("No period analysis results to display. Run an analysis above.")
+
+
+if _has_ls or _has_ac or _has_cwt or _has_mesa:
     st.divider()
     st.subheader("Rhythmicity Classification")
     st.markdown(
