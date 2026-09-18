@@ -274,7 +274,9 @@ reloaded `.nc` never had one.
 
 ## 15. Re-running sleep analysis on a reloaded `.nc` crashes
 
-`546e69b`. The drop of the previous run's variables now happens before
+`604d8a4` (this entry said `546e69b` until 2026-09-18 — no such object exists in
+the repo, and the habit note at the top of this file about re-checking references
+applies to commit shas as much as to line numbers). The drop of the previous run's variables now happens before
 `analysis_ds` is derived, so the per-fly loop no longer takes the cartesian
 product of `time` and `sleep_bout_number`.
 
