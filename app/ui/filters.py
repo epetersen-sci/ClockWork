@@ -94,3 +94,51 @@ def bin_size_sidebar(key, *, label="Bin size (minutes)", default=30):
     """ZT bin-size slider. Its own function so it stops rendering underneath the
     "Filter groups" subheader, which is where it currently appears to belong."""
     return st.sidebar.slider(label, 5, 60, default, step=5, key=key)
+
+
+#: The dataset's own per-fly grouping, offered as a pickable "column" alongside the
+#: metadata coords. Its values are the labels built at import from whichever columns
+#: were ticked there, so selecting it reproduces those groups exactly.
+GROUP_COORD = "group"
+
+
+def group_by_options(ds):
+    """``(options, default)`` for a "one panel/figure per …" picker.
+
+    The default is the dataset's OWN grouping — the ``group`` coord — so a page
+    draws the groups defined on Import without having to reconstruct them.
+
+    Reconstructing them is what went wrong. Defaulting to
+    ``attrs['group_columns']`` looks right, but that records the metadata COLUMNS
+    ticked at import, and two of them are stored under different coord names
+    (``pulse_time`` -> ``pulse_zt_hour``). Filtering that list down to real coords
+    silently dropped them, so a dataset grouped by genotype + pulse time + pulse
+    duration came out grouped by genotype alone — a different partition, presented
+    as the default. The ``group`` coord already holds the answer, and is what
+    Curate & split and the group filters use, which is why those pages looked right
+    while these two did not.
+
+    The metadata coords still follow it, so a page can be re-grouped on the fly.
+    """
+    import dam_utilities
+
+    options = []
+    if GROUP_COORD in ds.coords:
+        options.append(GROUP_COORD)
+    options += [c for c in dam_utilities.group_defining_coords(ds) if c != GROUP_COORD]
+    default = [GROUP_COORD] if GROUP_COORD in ds.coords else options[:1]
+    return options, default
+
+
+def group_by_label(ds, column):
+    """How a :func:`group_by_options` entry reads in a picker.
+
+    ``group`` is not a metadata column and naming it one is confusing, so it says
+    what it is and which columns built it.
+    """
+    import dam_utilities
+
+    if column != GROUP_COORD:
+        return str(column)
+    cols = dam_utilities.get_group_columns(ds)
+    return f"the groups defined at import ({', '.join(cols)})" if cols else "the groups defined at import"

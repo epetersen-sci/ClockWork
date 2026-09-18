@@ -194,14 +194,28 @@ with _tab_setup:
         if not _coord_opts:
             st.error("This dataset has no categorical metadata coordinates to group by.")
             st.stop()
-        # Start from the grouping the dataset already has (attrs['group_columns'], set on
-        # Import), so these groups are the ones the rest of the app means. The pairing
-        # additionally needs the column that separates pulsed from unpulsed — without it
-        # every group is its own control — so a condition-like column is added when the
-        # import grouping did not include one.
-        _grp_default = [c for c in dam_utilities.get_group_columns(ds) if c in _coord_opts]
+        # Start from the grouping the dataset already has — as COORD names, via
+        # get_group_coord_names. attrs['group_columns'] records the metadata COLUMNS
+        # ticked at import, and two of those live under different coord names
+        # (pulse_time -> pulse_zt_hour), so filtering that list down to real coords
+        # dropped them and left this page defaulting to genotype alone: a different
+        # partition from the one the dataset is grouped by.
+        #
+        # Unlike the actograms page this cannot simply select the `group` coord: the
+        # matched pairing needs a column that separates pulsed from unpulsed, which
+        # means the grouping has to stay decomposable. A condition-like column is
+        # added when the import grouping did not include one — without it every
+        # group is its own control and the pairing has nothing to do.
+        _grp_default = [
+            c for c in dam_utilities.get_group_coord_names(ds) if c in _coord_opts
+        ]
         _cond_like = next(
-            (c for c in ("condition", "treatment", "pulse_time") if c in _coord_opts), None
+            (
+                c
+                for c in ("condition", "treatment", "pulse_zt_hour")
+                if c in _coord_opts
+            ),
+            None,
         )
         if _cond_like and _cond_like not in _grp_default:
             _grp_default = _grp_default + [_cond_like]
@@ -600,37 +614,44 @@ with _tab_setup:
         )
 
 
+    # The run button lives at the FOOT OF SETUP, not on Results. Clicking it
+    # reruns the script, and a rerun resets the tab selection to the first tab —
+    # so a button on the Results tab bounced you back to Setup every time, and you
+    # had to click back to see what it produced. Below the controls that feed it is
+    # also simply where it belongs.
+    if reference == "control" and st.button(
+        "Run Group Phase Comparison", type="primary"
+    ):
+        with st.spinner("Comparing each group's daily peak time to the control..."):
+            try:
+                gres = ps_module.compute_group_phase_difference(ds_pulse, **params)
+                st.session_state.phase_shift_group_results = gres
+                ds.attrs["phase_shift_method"] = "group_peak_vs_control"
+                # attrs must survive a netCDF round-trip, so a per-group mapping is
+                # recorded as text rather than as a dict.
+                ds.attrs["phase_shift_control_group"] = (
+                    "; ".join(
+                        f"{g}->{c}"
+                        for g, c in sorted(gres["control_map"].items())
+                        if c is not None
+                    )
+                    if isinstance(control_group, dict)
+                    else str(control_group)
+                )
+                ds.attrs["phase_shift_filter_hours"] = float(filter_hours)
+                st.session_state.dataset = ds
+                status.refresh(ds)
+                st.success(f"Done: {gres['per_day']['group'].nunique()} groups compared.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Error: {exc}")
+                st.stop()
+
 with _tab_results:
     # ============================================================
     # Section 3: Run (control-referenced group comparison)
     # ============================================================
     if reference == "control":
-        if st.button("Run Group Phase Comparison", type="primary"):
-            with st.spinner("Comparing each group's daily peak time to the control..."):
-                try:
-                    gres = ps_module.compute_group_phase_difference(ds_pulse, **params)
-                    st.session_state.phase_shift_group_results = gres
-                    ds.attrs["phase_shift_method"] = "group_peak_vs_control"
-                    # attrs must survive a netCDF round-trip, so a per-group mapping is
-                    # recorded as text rather than as a dict.
-                    ds.attrs["phase_shift_control_group"] = (
-                        "; ".join(
-                            f"{g}->{c}"
-                            for g, c in sorted(gres["control_map"].items())
-                            if c is not None
-                        )
-                        if isinstance(control_group, dict)
-                        else str(control_group)
-                    )
-                    ds.attrs["phase_shift_filter_hours"] = float(filter_hours)
-                    st.session_state.dataset = ds
-                    status.refresh(ds)
-                    st.success(f"Done: {gres['per_day']['group'].nunique()} groups compared.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Error: {exc}")
-                    st.stop()
-
         if "phase_shift_group_results" not in st.session_state:
             st.info("Pick the control group above and click **Run** to compare.")
             st.stop()
@@ -713,48 +734,6 @@ with _tab_results:
             def _pretty(col):
                 return _PLURAL.get(col, str(col).replace("_", " ").capitalize())
 
-            # Values are taken from the plottable groups only: the control-only groups are
-            # already excluded, so e.g. "noLP" never shows up as a condition to untick.
-            _incl_values = {}
-            for c in _gcols:
-                vals = sorted({str(_gvals.get(g, {}).get(c, "")) for g in others} - {""})
-                if len(vals) > 1:  # a column with one value filters nothing
-                    _incl_values[c] = vals
-            _all_boxes = sorted({b for g in others for b in _box_set(g)})
-
-            keep_boxes = None
-            if _incl_values or len(_all_boxes) > 1:
-                with st.expander("Include in graphs", expanded=False):
-                    st.caption(
-                        "Untick to leave a value out of the figures, the exports and the "
-                        "plotted table. The underlying comparison is not recomputed — only "
-                        "what gets drawn changes. A factor with just one value is not shown."
-                    )
-                    _keep = {}
-                    for c, vals in _incl_values.items():
-                        _keep[c] = _include_boxes(_pretty(c), vals, c)
-                    keep_boxes = (
-                        _include_boxes(_pretty(_desc or "flybox"), _all_boxes, "box")
-                        if len(_all_boxes) > 1
-                        else None
-                    )
-
-                _before = len(others)
-                for c, picked in _keep.items():
-                    others = [
-                        g for g in others if str(_gvals.get(g, {}).get(c, "")) in set(picked)
-                    ]
-                if keep_boxes is not None:
-                    # a group spanning several boxes stays as long as one is ticked
-                    others = [
-                        g for g in others if not _box_set(g) or (_box_set(g) & set(keep_boxes))
-                    ]
-                if not others:
-                    st.warning("Nothing ticked — every group has been filtered out.")
-                    st.stop()
-                if len(others) < _before:
-                    st.caption(f"Showing **{len(others)} of {_before}** groups.")
-
             # One figure per light-pulse condition, one line per genotype — the lab's layout.
             # Whichever column carries the series becomes the legend; the rest split figures.
             pc1, pc2 = st.columns(2)
@@ -777,6 +756,43 @@ with _tab_results:
                     help="Each combination of these gets its own figure — e.g. condition and "
                     "sex gives one chart per pulse dose per sex.",
                 )
+
+            # Only the factors that are actually pooled INTO a figure can be filtered
+            # here. The faceting columns are excluded: each of their values already
+            # gets a figure of its own, so unticking one is "do not draw that figure",
+            # which is what the "One figure per" picker is for. The apparatus is
+            # excluded too — filtering by flybox assumes an experiment laid out one
+            # box per arm, and that is one lab's collection habit rather than
+            # something this page should build in.
+            _filterable = [c for c in _gcols if c != series_col and c not in facet_cols]
+            _incl_values = {}
+            for c in _filterable:
+                vals = sorted({str(_gvals.get(g, {}).get(c, "")) for g in others} - {""})
+                if len(vals) > 1:  # a column with one value filters nothing
+                    _incl_values[c] = vals
+
+            if _incl_values:
+                with st.expander("Include in graphs", expanded=False):
+                    st.caption(
+                        "Untick to leave a value out of the figures, the exports and the "
+                        "plotted table. The underlying comparison is not recomputed — only "
+                        "what gets drawn changes. A factor with just one value is not "
+                        "shown, and nor is one that already has a figure of its own."
+                    )
+                    _keep = {}
+                    for c, vals in _incl_values.items():
+                        _keep[c] = _include_boxes(_pretty(c), vals, c)
+
+                _before = len(others)
+                for c, picked in _keep.items():
+                    others = [
+                        g for g in others if str(_gvals.get(g, {}).get(c, "")) in set(picked)
+                    ]
+                if not others:
+                    st.warning("Nothing ticked — every group has been filtered out.")
+                    st.stop()
+                if len(others) < _before:
+                    st.caption(f"Showing **{len(others)} of {_before}** groups.")
 
             # Error bars. The plotted point is the peak of the group's MEAN trace, so
             # there is no per-fly spread to average into a SEM — the uncertainty has to
@@ -1262,8 +1278,6 @@ with _tab_results:
                 width="stretch",
                 hide_index=True,
             )
-            st.markdown("**Parameters used**")
-            st.json({k: (list(v) if isinstance(v, tuple) else v) for k, v in gres["params"].items()})
 
     # The two references are mutually exclusive workflows, not two halves of one.
     # This used to be a bare st.stop() at the end of the control branch, which left
@@ -1499,5 +1513,3 @@ with _tab_results:
                     "a suspicious result.",
                 )
 
-            st.markdown("**Parameters used**")
-            st.json(results["params"])

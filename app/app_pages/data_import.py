@@ -262,6 +262,14 @@ with tab_fresh:
                 options=_grp_candidates,
                 default=_grp_default,
                 key="group_columns_select",
+                # Without this the selection is gone the moment you leave the page:
+                # Streamlit drops a keyed widget's value once the widget stops being
+                # rendered, and a page switch is exactly that. Coming back to Import
+                # then showed the DEFAULT — genotype + temperature — while the loaded
+                # dataset was still grouped by whatever had actually been ticked, so
+                # the page contradicted the data it had just built. `persist_state` is
+                # Streamlit's own answer; ui/filters.py uses it for the same reason.
+                persist_state="session",
                 help="Which metadata factors define the comparison 'group' used throughout "
                 "the analysis (e.g. add 'sex', or use genotype alone). Datetime, monitor, "
                 "region and id columns are excluded automatically. "

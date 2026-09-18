@@ -443,6 +443,15 @@ def convert_to_relative_time(dam_data: pd.DataFrame, metadata: pd.DataFrame = No
 # Columns that can NEVER define a group: per-fly ids / filenames / monitor+region
 # numbers, and the experiment-timing columns. Datetime-typed columns are excluded
 # additionally by dtype in group_defining_columns (robust to future column names).
+#: Metadata columns stored as a per-id coord under a DIFFERENT name. The value is
+#: transformed on the way in — "ZT21" is parsed to the float 21.0 — so the coord
+#: cannot simply carry the column's name and values. Anything that has to get from a
+#: metadata column name to the coord holding it goes through this.
+METADATA_COORD_RENAMES = {
+    "pulse_time": "pulse_zt_hour",
+    "pulse_duration_min": "pulse_duration_minutes",
+}
+
 GROUP_EXCLUDE_COLUMNS = (
     "file",
     "region_id",
@@ -523,6 +532,24 @@ def get_group_columns(ds):
     return [str(v) for v in np.atleast_1d(val)]
 
 
+def get_group_coord_names(ds):
+    """The per-id COORD names behind ``ds['group']``.
+
+    :func:`get_group_columns` returns the metadata COLUMNS that were ticked, which
+    is the right record of the choice but not always readable off the dataset —
+    ``pulse_time`` is stored as ``pulse_zt_hour``. Use this wherever the grouping
+    has to be re-derived from coords (a "one figure per …" picker), and
+    ``get_group_columns`` wherever the question is which columns were chosen.
+
+    Falls back to mapping the columns through :data:`METADATA_COORD_RENAMES` for
+    datasets saved before the attr existed, so an older ``.nc`` still resolves.
+    """
+    recorded = ds.attrs.get("group_coord_names")
+    if recorded is not None:
+        return [str(v) for v in np.atleast_1d(recorded)]
+    return [METADATA_COORD_RENAMES.get(c, c) for c in get_group_columns(ds)]
+
+
 def group_defining_coords(ds):
     """The :func:`group_defining_columns` question, asked of a BUILT dataset.
 
@@ -541,6 +568,12 @@ def group_defining_coords(ds):
     :data:`GROUP_EXCLUDE_COLUMNS` and datetime dtype, so the timing columns do
     not offer themselves as grouping factors.
     """
+    # `metadata_coords` is written at import and names every per-id coord that came
+    # from the metadata, including those stored under a different name than their
+    # column. Prefer it: the attr-key test below cannot see those, because the
+    # columns they came from have no attr of their own (see create_xarray_dataset).
+    recorded = [str(v) for v in np.atleast_1d(ds.attrs.get("metadata_coords", []))]
+
     out = []
     for name, coord in ds.coords.items():
         col = str(name)
@@ -548,7 +581,9 @@ def group_defining_coords(ds):
             continue
         if col in GROUP_EXCLUDE_COLUMNS or col == "group":
             continue
-        if col not in ds.attrs:
+        # Falls back to the attr-key test for datasets written before
+        # `metadata_coords` existed, so an older .nc still offers what it can.
+        if col not in recorded and col not in ds.attrs:
             continue
         if np.issubdtype(coord.dtype, np.datetime64):
             continue
@@ -774,6 +809,26 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     for col in properties:
         coords[col] = ("id", _as_numpy_array(metadata.set_index("id")[col]))
 
+    # Which per-id coords came FROM THE METADATA — including the two stored under a
+    # different name than their column (``pulse_time`` -> ``pulse_zt_hour``,
+    # ``pulse_duration_min`` -> ``pulse_duration_minutes``).
+    #
+    # This is not the same list as ``group_columns``, which records the metadata
+    # COLUMNS the user ticked. A page that wants to re-derive a grouping needs names
+    # it can actually read off the dataset, and for the pulse columns those differ —
+    # which is why defaulting a picker to ``group_columns`` quietly dropped them.
+    #
+    # It is also not recoverable from the attrs. ``group_defining_coords`` identifies
+    # metadata coords by "is a per-id coord AND an attr key", and the pulse columns
+    # deliberately have no attr: their unique values mix strings, numbers and the NaN
+    # of an unpulsed cohort, which NetCDF cannot serialize. A flat list of coord
+    # names can be serialized, so the provenance is recorded directly instead.
+    _meta_coords = list(properties)
+    for _c in ("genotype", "pulse_zt_hour", "pulse_duration_minutes"):
+        if _c in coords and _c not in _meta_coords:
+            _meta_coords.append(_c)
+    attrs["metadata_coords"] = sorted(_meta_coords)
+
     # Combined group label for group-level analysis. ``group_columns`` chooses which
     # metadata factors define the comparison group; when None we reproduce the
     # historical default (genotype[-temperature]) exactly. The chosen columns are
@@ -786,6 +841,13 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     if group_series is not None:
         coords["group"] = ("id", _as_numpy_array(group_series))
         attrs["group_columns"] = list(chosen)
+        # The same choice, as COORD names. `group_columns` is what the user ticked
+        # and is the honest record of that; but two of those columns live under
+        # different coord names, so a page that wants to re-derive the grouping
+        # from coords cannot use it directly and silently dropped them.
+        attrs["group_coord_names"] = [
+            METADATA_COORD_RENAMES.get(c, c) for c in chosen
+        ]
 
     ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 

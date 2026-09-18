@@ -12,10 +12,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import actograms as act_module
-import dam_utilities
 import phase_shift as ps_module
 from dataset_meta import PHASE_DD, PHASE_LD, dataset_phase
-from ui import charts
+from ui import charts, filters
 from ui.guards import require_dataset
 
 st.caption(
@@ -66,30 +65,22 @@ else:
 # ============================================================
 st.subheader("Groups")
 
-# Via group_defining_coords rather than a blocklist of the coords analyses attach.
-# It answers "which coords came from the metadata" from provenance (a per-id coord
-# that is ALSO an attr key — see its docstring), so a coord added by a later
-# analysis cannot appear here and there is no list to keep in step with core/. It is
-# the same question Groups & subsets asks, so both pages offer the same factors.
-_coord_opts = dam_utilities.group_defining_coords(ds)
+# The dataset's OWN grouping leads — see ui.filters.group_by_options for why
+# rebuilding it from attrs['group_columns'] dropped the pulse columns. The metadata
+# coords follow, so this can still be re-grouped on the fly.
+_coord_opts, _default = filters.group_by_options(ds)
 if not _coord_opts:
     st.error("This dataset has no categorical metadata coordinates to group by.")
     st.stop()
 
-# Default to the grouping the dataset ALREADY HAS — the columns ticked on Import,
-# recorded in attrs['group_columns'] and read back by get_group_columns. Guessing a
-# likely-looking set instead (genotype, condition, sex, block) silently disagreed
-# with the groups every other page uses: on a dataset grouped by genotype alone it
-# split five groups into thirty panels, which is not a layout problem but a
-# different answer to "what is a group here".
-_default = [c for c in dam_utilities.get_group_columns(ds) if c in _coord_opts]
 group_by = st.multiselect(
     "One actogram per",
     _coord_opts,
-    default=_default or _coord_opts[:1],
-    help="A group is one combination of these, and each group gets its own actogram. "
-    "Defaults to the columns chosen on the Import page, so these panels match the "
-    "groups the rest of the app uses.",
+    default=_default,
+    format_func=lambda c: filters.group_by_label(ds, c),
+    help="Defaults to the groups you defined on the Import page, so these panels "
+    "match the groups the rest of the app uses. Pick metadata columns instead to "
+    "re-group just this page.",
 )
 if not group_by:
     st.error("Pick at least one column.")
