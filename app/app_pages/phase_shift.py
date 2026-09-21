@@ -43,10 +43,12 @@ if "pulse_zt_hour" not in ds.coords:
     st.error(
         "This dataset has no **pulse_time** column. Phase-shift analysis needs to know at "
         "what circadian time the light pulse was given.\n\n"
-        "Add a `pulse_time` column to your metadata file — a ZT hour such as `ZT15` — and "
-        "optionally `pulse_duration_min`, then reload the dataset on the **Data → Import** "
-        "page. See `metadata_template.csv` for the format. Leave the cell blank for any "
-        "group that received no pulse."
+        "Add a `pulse_time` column to your metadata file — a ZT hour such as `ZT15` — "
+        "and a `pulse_duration_min` column, then reload the dataset on the "
+        "**Data → Import** page. See `metadata_template.csv` for the format.\n\n"
+        "For a group that received no pulse, leave `pulse_time` blank and write **0** "
+        "in `pulse_duration_min`. The 0 is what identifies it as the control; a blank "
+        "there reads as \"not recorded\" and leaves the group unmatched."
     )
     st.stop()
 

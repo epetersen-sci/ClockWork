@@ -176,17 +176,21 @@ group the flies.
 | `first_DD_day` | For DD/LD work | `2025-01-18 09:00:00` | **CT0 (subjective morning) of the first full DD day** — not the last lights-off. Without it there is no LD/DD split and period analysis silently runs on the combined record. |
 | `region_id` | Situational | `1-16`, `5`, `1,3,5`, `65-96` | Which channels this row covers. Blank → channels **1–32 only**. Required on non-DAM monitor sources (e.g. FlyBox) — see [Format rules](#format-rules). |
 | `pulse_time` | Phase shift only | `ZT15` | Light-pulse time as a ZT hour. Accepts `ZT15`, `zt15`, `ZT 15`, `15`, `15.5`. Leave **blank** for unpulsed controls (blank means "no pulse"; `0` would mean ZT0). |
-| `pulse_duration_min` | Optional | `60` | Pulse length. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. |
-| `condition` | Recommended | `ZT15_60min` | Default second grouping key for phase-shift comparisons. |
+| `pulse_duration_min` | Phase shift | `60` | Pulse length in minutes. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. **Write `0`, not a blank, for unpulsed controls** — that 0 is how phase shift identifies them. |
+| `pulse_intensity` | Optional | `100` | Pulse intensity, in whatever unit your rig reports. Not required, but when present it is what separates two arms that share a genotype, time and duration, and phase shift draws those side by side. |
+| `condition` | Optional | `ZT15_60min` | A readable label for an arm. Once a grouping factor in its own right for phase shift; the control is now found from `pulse_duration_min` instead, so this is just another column you can group by. |
 | `temperature` | Optional | `25C` | Historically the second half of the default group label. |
 | `sex`, `treatment`, `incubator`, `notes`, … | Optional | `M` | **Any column you invent** becomes a per-fly coordinate and an eligible grouping factor. |
 
 Do **not** add an `id` column — ClockWork computes it as
 `YYYYMMDD_Monitor_Region` (e.g. `20250115_17_5`).
 
-Columns excluded from grouping: `file`, `region_id`, `Monitor`, `id`,
-`start_datetime`, `stop_datetime`, `first_DD_day`, and any datetime-typed
-column. Everything else is offered in the **"Group-defining metadata columns"**
+Columns excluded from grouping: `file`, `region_id`, `id`, `start_datetime`,
+`stop_datetime`, `first_DD_day`, and any datetime-typed column. `Monitor` is
+**not** excluded — a monitor is a physical device and monitor-level effects are
+a real thing to look for, so it can be grouped and faceted on like any other
+column. `region_id` stays out because it separates individual flies, which the
+`id` coordinate already does. Everything else is offered in the **"Group-defining metadata columns"**
 selector at import, and can be re-grouped later on **Data → Groups & subsets**
 ("Redefine groups") without re-importing — including on a dataset reloaded from
 `.nc`, where the raw monitor files may no longer be to hand. Regrouping clears
@@ -199,11 +203,11 @@ every cached analysis result, because `group` feeds all of them.
 | Loading and validation | `Monitor`, `start_datetime`, `stop_datetime` |
 | Creating the dataset | the above **plus** `genotype` |
 | Period analysis (DD) | `first_DD_day` — without it the split doesn't exist and LD+DD get analysed together |
-| Sleep / activity (LD) | `first_DD_day`, and `start_datetime` set to ZT0 |
-| Phase shift | `pulse_time` (**hard requirement**, the module stops without it) + `first_DD_day`; `pulse_duration_min` and `condition` recommended |
+| Activity & Sleep (LD) | `first_DD_day`, and `start_datetime` set to ZT0 |
+| Phase shift | `pulse_time` (**hard requirement**, the page stops without it) and `first_DD_day` to anchor it. `pulse_duration_min` in practice too: it is how the unpulsed control is identified, and without it every group is reported blank for want of one. `pulse_intensity` optional |
 | Sleep deprivation | `first_DD_day` (LD-only analysis). The SD day, start ZT and duration are entered in the UI, not the metadata |
 | SCAMP export | nothing extra; monitor and region are recovered from the fly ID |
-| Grouping / faceting only | `temperature`, `sex`, `condition`, `notes`, or anything else you add |
+| Grouping / faceting only | `Monitor`, `temperature`, `sex`, `condition`, `notes`, or anything else you add |
 
 ### Format rules
 
