@@ -339,7 +339,7 @@ def test_the_page_runs_the_matched_comparison(app, pulse_ds):
 
     pairing = [r for r in at.radio if "control is each group compared against" in r.label]
     assert pairing, "the pairing picker is missing"
-    assert pairing[0].value == "Matched control within genotype", (
+    assert pairing[0].value == "Unpulsed control of the same genotype", (
         "with two genotypes present the matched pairing must be preselected"
     )
 
@@ -373,6 +373,47 @@ def test_the_page_runs_the_matched_comparison(app, pulse_ds):
     assert abs(_diff(per_day, "B_LP", PULSE_DD_DAY + 1, col) - expected) < TOL
     # And the unpulsed arms stay flat, which is what the matched pairing buys.
     assert abs(_diff(per_day, "B_noLP", PULSE_DD_DAY + 1, col)) < TOL
+
+
+def test_the_page_builds_the_phase_response_from_the_same_click(app, pulse_ds):
+    """One button, two answers. The phase response curve is what a pulse experiment
+    is run to produce, so it must not be behind a second button somebody has to find.
+
+    This fixture has no pulse-duration column — its unpulsed arm is the string
+    ``noLP`` — which is exactly the case that cannot identify a control by "duration
+    is zero". It still gets a phase response, because the page hands over the
+    pairing it already resolved instead of making core work it out again.
+    """
+    at = app(ds=pulse_ds, page="phase_shift")
+    run = [b for b in at.button if "Run Group Phase Comparison" in b.label]
+    at = run[0].click().run()
+    assert not at.exception, f"run raised: {at.exception}"
+
+    pres = at.session_state["phase_shift_response"]
+    assert pres is not None, "the response was not computed"
+    per_fly = pres["per_fly"]
+    assert not per_fly.empty
+    assert pres["control_map"]["A_LP"] == "A_noLP"
+
+    # The fixture DELAYS the pulsed arms, and a delay reads negative.
+    pulsed = per_fly[per_fly["zt"].notna()]
+    assert len(pulsed) > 0
+    assert pulsed["response_hours"].mean() == pytest.approx(-PULSE_SHIFT_H, abs=0.5)
+
+    # Every fly in the cohort is accounted for: drawn, or counted as left out.
+    assert int(pres["dropped"]["n_total"].sum()) == pulse_ds.sizes["id"]
+
+
+def test_one_pulse_time_says_so_instead_of_drawing_a_curve(app, pulse_ds):
+    """The lab's own data is currently single-timepoint, so this is the message most
+    people will meet first. A one-point "curve" would imply a shape nobody measured."""
+    at = app(ds=pulse_ds, page="phase_shift")
+    run = [b for b in at.button if "Run Group Phase Comparison" in b.label]
+    at = run[0].click().run()
+    assert not at.exception
+    assert any("one point is not a curve" in i.value for i in at.info), (
+        [i.value for i in at.info]
+    )
 
 
 def test_the_page_stops_cleanly_without_a_pulse_column(app, master_ds):

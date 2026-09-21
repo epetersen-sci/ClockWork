@@ -1013,6 +1013,7 @@ def _per_fly_day_phase_hours(
     ds,
     *,
     fallback_pulse_minute=None,
+    progress_callback=None,
     activity_var="activity",
     filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
     peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
@@ -1063,7 +1064,14 @@ def _per_fly_day_phase_hours(
     )
 
     out = {}
+    n = len(fly_ids)
     for i, fly_id in enumerate(fly_ids):
+        # Per-fly detection is the slow half of a phase response, so the caller
+        # gets to say how far along it is. Reported per fly rather than per
+        # chunk: a cohort of 200 is the common case and a bar that moves once
+        # is not a bar.
+        if progress_callback is not None:
+            progress_callback(i / n if n else 1.0)
         own_pulse = pulse_minutes[i]
         if not np.isfinite(own_pulse):
             own_pulse = fallback_pulse_minute
@@ -1084,6 +1092,8 @@ def _per_fly_day_phase_hours(
             for day, m in markers.items()
             if np.isfinite(m)
         }
+    if progress_callback is not None:
+        progress_callback(1.0)
     return out
 
 
@@ -1091,10 +1101,12 @@ def compute_phase_response(
     ds,
     *,
     group_by=("genotype", "pulse_zt_hour", "pulse_duration_minutes"),
+    control_map=None,
     response_days=RESPONSE_DAYS_AFTER_PULSE,
     baseline_days=BASELINE_DAYS_AFTER_PULSE,
     duration_coord="pulse_duration_minutes",
     zt_coord="pulse_zt_hour",
+    progress_callback=None,
     activity_var="activity",
     filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
     peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
@@ -1138,6 +1150,12 @@ def compute_phase_response(
     is markedly noisier than the group-mean detection ``peakphaseplot.m`` was built
     around, and an arrhythmic fly has no peak to find at all.
 
+    **Pairing.** ``control_map`` is derived from the pulse itself
+    (:func:`control_map_from_pulse`) unless one is passed in, which is how a caller
+    that resolved the pairing some other way — a dataset with no pulse-duration
+    column, where the unpulsed arm is named rather than computed — gets the same
+    analysis.
+
     Returns
     -------
     dict
@@ -1155,9 +1173,19 @@ def compute_phase_response(
 
     labels, cols = group_labels(ds, group_by)
     meta = _group_meta(ds, cols, labels)
-    control_map, controls = control_map_from_pulse(
-        ds, group_by, duration_coord=duration_coord
-    )
+    if control_map is None:
+        control_map, controls = control_map_from_pulse(
+            ds, group_by, duration_coord=duration_coord
+        )
+    else:
+        # A caller that already knows the pairing passes it in, and this does not
+        # go looking for a duration column it may not have. That is the case for a
+        # dataset recorded before anyone wrote pulse durations down: its unpulsed
+        # arm is a string in a `condition` column, which no rule about zero can
+        # find, but the page has already resolved it and there is no reason the
+        # phase response should be the one result such a dataset cannot have.
+        control_map = dict(control_map)
+        controls = sorted({c for c in control_map.values() if c is not None})
 
     fly_ids = [str(i) for i in ds["id"].values]
     pulse_minutes = np.asarray(ds["pulse_minute"].values, dtype=float)
@@ -1178,6 +1206,7 @@ def compute_phase_response(
     phases = _per_fly_day_phase_hours(
         ds,
         fallback_pulse_minute=median_pulse,
+        progress_callback=progress_callback,
         activity_var=activity_var,
         filter_hours=filter_hours,
         peak_prominence_frac=peak_prominence_frac,
