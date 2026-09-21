@@ -13,8 +13,8 @@ daily_pattern_line()              — ZT-binned mean ± SEM line plot per group
 sleep_bout_duration_lines()       — Per-fly sleep bout duration curves (KDE/survival) by group
 group_spectrum_plot()             — Generic mean±SEM curve overlay per group on a shared x-axis
 summary_bars()                    — Grouped bar chart: total activity/sleep by day/night/all-day
-summary_violins()                 — The same totals as per-fly distributions, one
-                                    violin per group per half of the cycle
+group_violins()                   — One measure as per-fly distributions, one violin
+                                    per group (the distribution behind a group bar)
 single_fly_scalogram_plotly()        — Interactive Plotly scalogram for one fly
 group_ridge_density_plotly()         — Plotly ridge density of CWT periods per group
 phase_shift_actogram()            — Double-plotted actogram for one fly with the
@@ -4454,7 +4454,7 @@ def phase_response_curve(
     # exported PNG would leave behind.
     fig.add_annotation(
         x=0, y=1, xref="paper", yref="paper", xanchor="left", yanchor="bottom",
-        text="advance up / delay down", showarrow=False,
+        text="advance positive / delay negative", showarrow=False,
         font=dict(size=11, color="#666666"),
     )
     return fig
@@ -4598,114 +4598,105 @@ def phase_response_violins(
     fig.update_yaxes(title=y_title, showgrid=True, gridcolor="#eeeeee", zeroline=False)
     fig.add_annotation(
         x=0, y=1, xref="paper", yref="paper", xanchor="left", yanchor="bottom",
-        text="advance up / delay down", showarrow=False,
+        text="advance positive / delay negative", showarrow=False,
         font=dict(size=11, color="#666666"),
     )
     return fig, drawn
 
 
-#: The day/night columns ``per_fly_summary_table`` produces, and what to call
-#: them on a figure. "All Day" is left out on purpose: it is Day + Night, so
-#: drawing it beside them puts a third violin on the axis that carries nothing
-#: the other two do not already say. It stays in the CSV, where a total is
-#: useful and costs no space.
-_SUMMARY_PERIODS = (("Day Only", "Day"), ("Night Only", "Night"))
+
+#: One violin colour per measure, so the three panels of a set are told apart at a
+#: glance without the colour ever encoding a group (the x axis does that).
+#:
+#: Public because the pages index into it to keep a set of panels distinct, and a
+#: page reaching for a private name is backlog item 8 again.
+MEASURE_COLOURS = ("#3B76AF", "#E8722C", "#2C3E50", "#16A085", "#8E6BBF", "#B5892B")
 
 
-def summary_violins(
+def group_violins(
     per_fly,
+    value_col,
     *,
-    value_label="minutes",
-    title="Day/night totals",
-    phase_label="LD",
-    periods=_SUMMARY_PERIODS,
+    group_col="Group",
+    title=None,
+    y_title="minutes",
     show_points=True,
+    colour=MEASURE_COLOURS[0],
+    groups=None,
 ):
-    """Per-fly day and night totals as violins, one pair per group.
+    """One violin per group, for ONE measure. The distribution behind a group bar.
 
-    The bar version of this plots a group mean with a SEM whisker, which is four
-    numbers standing in for thirty flies. Two groups can share a mean and a SEM
-    and still be obviously different — one tight, one bimodal — and a bar cannot
-    show it. The flies are already computed either way (``per_fly_summary_table``
-    is what the bars' mean is taken over), so this costs nothing but the drawing.
+    A bar chart of these plots a group mean with a SEM whisker: four numbers
+    standing in for thirty flies. Two groups can share both and still be obviously
+    different — one tight, one bimodal — and the bar cannot show it. The per-fly
+    values are computed either way (a group mean IS their mean), so the
+    distribution costs nothing but the drawing.
+
+    ONE measure per figure, deliberately. Putting day and night side by side in one
+    figure makes the day-versus-night step the salient comparison and the
+    group-versus-group one the hard one, which is backwards: the experiment varies
+    genotype, not time of day. Three panels, each answering "how do the groups
+    differ in this one number", is the reading the design asks for.
 
     Parameters
     ----------
     per_fly : pd.DataFrame
-        ``plotting.per_fly_summary_table`` output: ``ID``, ``Group``, and one
-        column per period.
-    phase_label : {'LD', 'DD'}
-        Under DD the halves are subjective, so they are named CT day and CT night
-        rather than day and night — calling them day and night there would name a
-        light cycle that was not running.
+        One row per fly, with ``group_col`` and ``value_col`` among its columns —
+        ``per_fly_summary_table`` and ``per_fly_sleep_state_totals`` both qualify.
+    groups : sequence, optional
+        Fixes the x order across a set of panels. Without it a group that is absent
+        from one measure shifts every later column, and three panels meant to be
+        read down a page no longer line up.
 
     Returns
     -------
     (go.Figure, pd.DataFrame)
-        The figure, and the long-form frame actually drawn.
+        The figure, and the rows actually drawn.
     """
     fig = go.Figure()
-    if per_fly is None or per_fly.empty:
+    if per_fly is None or per_fly.empty or value_col not in per_fly.columns:
         return fig, pd.DataFrame()
 
-    present = [(col, name) for col, name in periods if col in per_fly.columns]
-    if not present:
-        return fig, pd.DataFrame()
+    drawn = per_fly[[group_col, value_col]].copy()
+    drawn[value_col] = pd.to_numeric(drawn[value_col], errors="coerce")
+    drawn = drawn[drawn[value_col].notna()]
+    if drawn.empty:
+        return fig, drawn
 
-    rows = []
-    for col, name in present:
-        sub = per_fly[["ID", "Group", col]].copy()
-        sub = sub[pd.to_numeric(sub[col], errors="coerce").notna()]
-        sub["period"] = f"CT {name.lower()}" if phase_label == "DD" else name
-        sub["value"] = pd.to_numeric(sub[col])
-        rows.append(sub[["ID", "Group", "period", "value"]])
-    long = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
-    if long.empty:
-        return fig, long
-
-    groups = sorted(long["Group"].astype(str).unique())
-    for period in long["period"].unique():
-        sub = long[long["period"] == period]
-        fig.add_trace(
-            go.Violin(
-                x=sub["Group"].astype(str),
-                y=np.asarray(sub["value"], dtype=float),
-                name=str(period),
-                legendgroup=str(period),
-                scalegroup=str(period),
-                line=dict(width=1.3),
-                opacity=0.6,
-                points="all" if show_points else False,
-                jitter=0.3,
-                pointpos=0,
-                marker=dict(size=4, opacity=0.6, color="#333333"),
-                meanline=dict(visible=True),
-                box=dict(visible=False),
-                spanmode="hard",
-                hoverinfo="y+name+x",
-            )
+    order = list(groups) if groups is not None else sorted(
+        drawn[group_col].astype(str).unique()
+    )
+    fig.add_trace(
+        go.Violin(
+            x=drawn[group_col].astype(str),
+            y=np.asarray(drawn[value_col], dtype=float),
+            name=str(value_col),
+            line=dict(color=colour, width=1.3),
+            fillcolor=colour,
+            opacity=0.55,
+            points="all" if show_points else False,
+            jitter=0.3,
+            pointpos=0,
+            marker=dict(size=4, opacity=0.65, color="#333333"),
+            meanline=dict(visible=True),
+            box=dict(visible=False),
+            spanmode="hard",
+            showlegend=False,
+            hoverinfo="y+x",
         )
-    # Colour carries the period (two traces), so the group axis is left to the
-    # x labels — colouring by group as well would give every violin its own hue
-    # and make the day/night comparison the harder one to see.
-    for trace, colour in zip(fig.data, ("#3B76AF", "#2C3E50")):
-        trace.line.color = colour
-        trace.fillcolor = colour
-
+    )
     fig.update_layout(
-        title=title,
-        violinmode="group",
-        height=440,
+        title=title or str(value_col),
+        height=380,
         plot_bgcolor="white",
-        legend=dict(orientation="h", yanchor="top", y=-0.2, x=0),
         margin=dict(l=70, r=30, t=60, b=110),
     )
     fig.update_xaxes(
         title="group",
         categoryorder="array",
-        categoryarray=groups,
+        categoryarray=order,
         tickangle=-25,
         showgrid=False,
     )
-    fig.update_yaxes(title=value_label, showgrid=True, gridcolor="#eeeeee", rangemode="tozero")
-    return fig, long
+    fig.update_yaxes(title=y_title, showgrid=True, gridcolor="#eeeeee", rangemode="tozero")
+    return fig, drawn

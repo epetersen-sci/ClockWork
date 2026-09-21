@@ -216,7 +216,7 @@ with tab_tables:
                         .reset_index(drop=True)
                     )
                     st.download_button(
-                        "Download Per-Fly CSV (for stats)",
+                        "Download Per-Fly CSV",
                         per_fly_df.to_csv(index=False),
                         f"{export_var}_per_fly.csv",
                         "text/csv",

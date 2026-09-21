@@ -101,7 +101,7 @@ def render():
     # Plain-language "which model, and why". The three presets are not interchangeable —
     # each is built to interrogate a DIFFERENT axis of sleep/wake biology (which is also
     # why they disagree on state occupancies). Surface that at the point of choice.
-    with st.expander("Which model should I pick? (what each one answers)", expanded=True):
+    with st.expander("Which model should I pick?"):
         st.markdown(
             "Each preset is built to interrogate a **different axis of sleep/wake biology** — "
             "pick by what your experiment is about:\n\n"

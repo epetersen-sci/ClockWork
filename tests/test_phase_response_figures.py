@@ -6,8 +6,8 @@ the wrong axis, connect points that were never measured, or order a dose axis
 ``100, 20`` because the values arrived as text.
 
 The cohort here exists because the real one does not yet: the lab's exp7 pulsed
-at a single circadian time, so on that data the curve is permanently the "one
-point is not a curve" message and nothing about the line itself is exercised.
+at a single circadian time, so on that data the curve is permanently the "not
+enough timepoints" message and nothing about the line itself is exercised.
 Every arm below has a DESIGNED response, so the figure can be checked against a
 number rather than against itself.
 """
@@ -338,14 +338,17 @@ class TestTheDoseAxisIsSortedAsNumbers:
         assert plotting._prc_join(("Mito", 21.5)) == "Mito · 21.5"
 
 
-class TestOnlyOnePulseTime:
-    """What the page must not do with a single-timepoint experiment, which is what
-    the lab's own data currently is."""
+class TestTooFewPulseTimes:
+    """What the page must not do with a one- or two-timepoint experiment, which is
+    what the lab's own data currently is."""
 
-    def test_one_pulse_time_is_detectable_from_the_frame(self, treated):
+    def test_the_count_of_pulse_times_is_readable_from_the_frame(self, treated):
         one = treated[treated["zt"] == 21.0]
         assert len({float(z) for z in one["zt"]}) == 1, (
-            "the page keys its 'one point is not a curve' message off exactly this"
+            "the page keys its 'not enough timepoints' message off exactly this count"
+        )
+        assert len({float(z) for z in treated["zt"]}) == 3, (
+            "and three is the floor a curve is allowed to be drawn at"
         )
 
     def test_the_curve_degrades_to_points_rather_than_raising(self, treated):

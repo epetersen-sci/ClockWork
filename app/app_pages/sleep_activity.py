@@ -78,19 +78,22 @@ def _cached_zt_binned(fp, _ds, value_col, bin_size_minutes):
     return dam_utilities.get_zt_binned_dataframe(_ds, value_col, bin_size_minutes)
 
 @st.cache_data(show_spinner=False)
-def _cached_summary_bars(
-    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
+def _cached_per_fly_summary(
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes
 ):
-    """Cache the per-fly summary computation that feeds the bars figure.
-    ``phase_label`` is included in the cache key so DD vs LD relabeling
-    invalidates correctly."""
-    return plotting.summary_bars(
+    """Per-fly All Day / Day / Night totals — the rows every totals panel draws.
+
+    Cached because it is now read three times per measure (one figure each) and a
+    fourth time for the export, where the bars it replaced computed a group mean
+    once. The group table beside it stays its own cache: it is a different
+    aggregation of the same flies, and both are cheap to keep.
+    """
+    return plotting.per_fly_summary_table(
         _ds,
         variable,
         selected_genotypes=list(selected_genotypes) if selected_genotypes else None,
         selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
         bin_size_minutes=bin_size_minutes,
-        phase_label=phase_label,
     )
 
 @st.cache_data(show_spinner=False)
@@ -177,8 +180,13 @@ def _cached_bout_duration_lines(
     )
     return fig, curves_df, summary_df, stats_result
 
-def _summary_csv(tbl):
-    """Friendly-header CSV of the per-group summary table (mean + SEM per period)."""
+def _summary_frame(tbl):
+    """The per-group summary table with headers a reader recognises.
+
+    A frame rather than the CSV string it used to return, because it is now a
+    SHEET in a workbook beside the per-fly rows it is the mean of. Two buttons
+    meant choosing twice and then remembering which file was which.
+    """
     return tbl.rename(
         columns={
             "group": "Group",
@@ -190,7 +198,7 @@ def _summary_csv(tbl):
             "Night Only": "Night mean (min)",
             "Night Only_sem": "Night SEM (min)",
         }
-    ).to_csv(index=False)
+    )
 
 
 
@@ -296,16 +304,21 @@ _summary_subhead_suffix = (
 )
 
 
-def _totals_violins(variable, title, y_label, key):
-    """Per-fly day/night totals as violins, with the group table beside them.
+def _totals_violins(variable, y_label, key):
+    """Three panels for one measure: total, day and night, groups on the x axis.
 
-    Violins rather than the bars this page used to draw: the bar was a group mean
-    with a SEM whisker, four numbers standing in for thirty flies, and two groups
-    can share both and still be obviously different — one tight, one bimodal. The
-    per-fly values were already being computed to export them, so the
-    distribution costs nothing but the drawing.
+    ONE measure per panel. The first pass at this put day and night side by side in
+    a single figure, which made the day-versus-night step the salient comparison
+    and left group-versus-group as the hard one — backwards, since the experiment
+    varies genotype, not time of day.
+
+    Violins rather than bars: a bar was a group mean with a SEM whisker, four
+    numbers standing in for thirty flies, and two groups can share both and still
+    be obviously different. The per-fly values are computed either way — a group
+    mean IS their mean — so the distribution costs only the drawing.
     """
-    per_fly = plotting.per_fly_summary_table(
+    per_fly = _cached_per_fly_summary(
+        dataset_fingerprint(ds),
         ds,
         variable,
         tuple(selected_genotypes) if selected_genotypes else None,
@@ -315,13 +328,27 @@ def _totals_violins(variable, title, y_label, key):
     if per_fly.empty:
         st.info(f"No {variable} data to summarise for the current selection.")
         return
-    fig, _long = plotting.summary_violins(
-        per_fly,
-        value_label=y_label,
-        title=title,
-        phase_label=_ds_phase_label,
-    )
-    charts.plotly_chart(fig, width="stretch", theme=None)
+
+    # Under DD both halves are subjective, so they are named for the subjective
+    # cycle rather than for a light cycle that was not running.
+    _dd = _ds_phase_label == PHASE_DD
+    panels = [
+        ("All Day", "Total"),
+        ("Day Only", "Subjective day" if _dd else "Day"),
+        ("Night Only", "Subjective night" if _dd else "Night"),
+    ]
+    # One group order for all three, so the panels line up when read down the page.
+    _order = sorted(per_fly["Group"].astype(str).unique())
+    for i, (col, name) in enumerate(panels):
+        fig, _ = plotting.group_violins(
+            per_fly,
+            col,
+            title=f"{variable.capitalize()} — {name}",
+            y_title=y_label,
+            colour=plotting.MEASURE_COLOURS[i],
+            groups=_order,
+        )
+        charts.plotly_chart(fig, width="stretch", theme=None)
 
     tbl = _cached_summary_table(
         dataset_fingerprint(ds),
@@ -332,20 +359,17 @@ def _totals_violins(variable, title, y_label, key):
         bin_size,
         _ds_phase_label,
     )
-    if not tbl.empty:
-        ex.save_csv_button(
-            f"Save {variable.capitalize()} Summary (group mean±SEM) to working folder",
-            _summary_csv(tbl),
-            ds,
-            f"{variable}_summary.csv",
-            key=f"dl_{key}_summary",
-        )
-    ex.save_df_button(
-        f"Save per-fly {variable.capitalize()} totals (for stats) to working folder",
-        per_fly,
+    # One workbook rather than two buttons. The group summary and the per-fly rows
+    # it is the mean of are read together, and two CSVs meant choosing twice and
+    # then remembering which file was which.
+    ex.save_excel_button(
+        f"Save {variable.capitalize()} totals (.xlsx)",
+        [("summary", None if tbl.empty else _summary_frame(tbl)), ("per_fly", per_fly)],
         ds,
-        f"{variable}_totals_per_fly.csv",
-        key=f"dl_{key}_summary_perfly",
+        f"{variable}_totals",
+        key=f"dl_{key}_totals",
+        help="Two sheets: the group mean ± SEM per period, and the per-fly values "
+        "behind it.",
     )
 
 
@@ -391,29 +415,28 @@ with tab_activity:
             # instead, which gave the alphabetical Mean/N/SD — a different header
             # row for the same quantity.
             _pivot = ex.zt_group_summary_table(binned_df, "activity", bin_size)
-            csv_act = _pivot.to_csv()
-            ex.save_csv_button(
-                "Save Binned Activity (group mean±SD±N) to working folder",
-                csv_act,
-                ds,
-                "activity_binned.csv",
-                key="dl_act",
-            )
-            # Per-fly binned time course (long) so other stats can be computed: one row
-            # per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, activity).
+            # Per-fly binned time course (long) so other stats can be computed:
+            # one row per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, activity).
             _act_pf = binned_df.rename(columns={"id": "ID", "group": "Group"}).copy()
-            _act_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(_act_pf["zt_bin_minute"], bin_size)
+            _act_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(
+                _act_pf["zt_bin_minute"], bin_size
+            )
             _act_pf = (
                 _act_pf[["ID", "Group", "zt_bin_minute", "zt_hours", "activity"]]
                 .sort_values(["Group", "ID", "zt_bin_minute"])
                 .reset_index(drop=True)
             )
-            ex.save_df_button(
-                "Save per-fly Binned Activity (for stats) to working folder",
-                _act_pf,
+            ex.save_excel_button(
+                "Save binned activity (.xlsx)",
+                [
+                    ("group_summary", _pivot.reset_index()),
+                    ("per_fly", _act_pf),
+                ],
                 ds,
-                "activity_binned_per_fly.csv",
-                key="dl_act_perfly",
+                "activity_binned",
+                key="dl_act",
+                help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
+                "grouped-table order, and the per-fly time course behind it.",
             )
         except Exception:
             pass
@@ -430,8 +453,7 @@ with tab_activity:
             "alignment may drift — verify the actogram before publishing."
         )
     if "activity" in ds.data_vars:
-        _totals_violins("activity", f"Activity Summary{_summary_subhead_suffix}",
-                        "activity (counts)", "act")
+        _totals_violins("activity", "activity (counts)", "act")
 
 
 with tab_sleep:
@@ -478,28 +500,28 @@ with tab_sleep:
             binned_sleep["group"] = binned_sleep["id"].map(_id_to_group_sl)
             # Shared builder — see the activity block above.
             _pivot_sl = ex.zt_group_summary_table(binned_sleep, "sleep", bin_size)
-            csv_sleep = _pivot_sl.to_csv()
-            ex.save_csv_button(
-                "Save Binned Sleep (group mean±SD±N) to working folder",
-                csv_sleep,
-                ds,
-                "sleep_binned.csv",
-                key="dl_sleep",
-            )
-            # Per-fly binned time course (long) so other stats can be computed.
+            # Per-fly binned time course (long) so other stats can be computed:
+            # one row per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, sleep).
             _sl_pf = binned_sleep.rename(columns={"id": "ID", "group": "Group"}).copy()
-            _sl_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(_sl_pf["zt_bin_minute"], bin_size)
+            _sl_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(
+                _sl_pf["zt_bin_minute"], bin_size
+            )
             _sl_pf = (
                 _sl_pf[["ID", "Group", "zt_bin_minute", "zt_hours", "sleep"]]
                 .sort_values(["Group", "ID", "zt_bin_minute"])
                 .reset_index(drop=True)
             )
-            ex.save_df_button(
-                "Save per-fly Binned Sleep (for stats) to working folder",
-                _sl_pf,
+            ex.save_excel_button(
+                "Save binned sleep (.xlsx)",
+                [
+                    ("group_summary", _pivot_sl.reset_index()),
+                    ("per_fly", _sl_pf),
+                ],
                 ds,
-                "sleep_binned_per_fly.csv",
-                key="dl_sleep_perfly",
+                "sleep_binned",
+                key="dl_sleep",
+                help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
+                "grouped-table order, and the per-fly time course behind it.",
             )
         except Exception:
             pass
@@ -507,8 +529,7 @@ with tab_sleep:
         st.divider()
 
         st.subheader(f"Sleep Summary{_summary_subhead_suffix}")
-        _totals_violins("sleep", f"Sleep Summary{_summary_subhead_suffix}",
-                        "sleep (minutes)", "sleep")
+        _totals_violins("sleep", "sleep (minutes)", "sleep")
 
         st.divider()
 
@@ -558,7 +579,12 @@ with tab_sleep:
                     f"equal variance {'passed' if bout_stats['equal_variance_passed'] else 'failed'})."
                 )
                 if bout_stats["pairwise"]:
-                    st.dataframe(pd.DataFrame(bout_stats["pairwise"]), width="stretch")
+                    # Folded: the p-value above is the answer most people came for,
+                    # and the pairwise grid is what you open when it is interesting.
+                    with st.expander("Pairwise comparisons"):
+                        st.dataframe(
+                            pd.DataFrame(bout_stats["pairwise"]), width="stretch"
+                        )
 
             raw_bout_df = sleep_analysis.raw_bout_dataframe(
                 ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
@@ -567,19 +593,19 @@ with tab_sleep:
             # come from raw_bout_dataframe, but this one is filtered to the group
             # selection in the sidebar while that one is every fly — under one
             # filename, whichever the user opened last silently won.
-            ex.save_df_button(
-                "Save Sleep Bout Data (current group selection) to working folder",
-                raw_bout_df,
+            ex.save_excel_button(
+                "Save sleep bout data (.xlsx)",
+                [
+                    ("per_fly_summary", bout_summary_df),
+                    ("bouts", raw_bout_df),
+                ],
                 ds,
-                "sleep_bouts_filtered.csv",
+                "sleep_bouts_filtered",
                 key="dl_bouts",
-            )
-            ex.save_df_button(
-                "Save per-fly Bout Duration Summary (for stats) to working folder",
-                bout_summary_df,
-                ds,
-                "sleep_bout_duration_summary_per_fly.csv",
-                key="dl_bouts_summary",
+                help="Two sheets: one row per fly with its bout-duration summary, and "
+                "every individual bout behind it. Named apart from the Export page's "
+                "sleep_bouts on purpose — this one is filtered to the sidebar group "
+                "selection and that one is every fly.",
             )
 
     else:

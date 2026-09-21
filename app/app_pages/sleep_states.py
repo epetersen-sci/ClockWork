@@ -342,29 +342,49 @@ if _has_state_masks and st.checkbox(
     "Show how much sleep falls in each state",
     value=False,
     key="ss_show_totals",
-    help="Group means of each fly's time in short, intermediate and long sleep, "
-    "under the bounds set above.",
+    help="Each fly's time in short, intermediate and long sleep, under the bounds "
+    "set above.",
 ):
     _ss_pct = st.checkbox(
         "Show as % of each fly's classified sleep", value=False, key="ss_state_pct"
     )
-    _ss_fig, _ss_df = plotting.sleep_state_totals_bars(phase_ds, as_percent=_ss_pct)
-    if _ss_fig is not None:
-        charts.plotly_chart(_ss_fig, width="stretch")
-    if _ss_df is not None and not _ss_df.empty:
-        ex.save_df_button(
-            "Save Sleep-State Totals (group mean±SEM) to working folder",
-            _ss_df,
+    _ss_per_fly = plotting.per_fly_sleep_state_totals(
+        phase_ds, None, None, as_percent=_ss_pct
+    )
+    if _ss_per_fly.empty:
+        st.info("No classified sleep in this epoch for the current group selection.")
+    else:
+        # One panel per state, groups on the x axis — the same treatment the
+        # activity and sleep totals get, and for the same reason: the experiment
+        # varies genotype, so that has to be the easy comparison. The grouped bar
+        # chart this replaces made state-versus-state the easy one instead.
+        _ss_unit = "% of classified sleep" if _ss_pct else "minutes"
+        _ss_order = sorted(_ss_per_fly["Group"].astype(str).unique())
+        for _i, _state in enumerate(("Short", "Intermediate", "Long")):
+            if _state not in _ss_per_fly.columns:
+                continue
+            _fig, _ = plotting.group_violins(
+                _ss_per_fly,
+                _state,
+                title=f"{_state} sleep",
+                y_title=_ss_unit,
+                colour=plotting.MEASURE_COLOURS[_i],
+                groups=_ss_order,
+            )
+            charts.plotly_chart(_fig, width="stretch")
+
+        _ss_group = plotting.sleep_state_totals_bars(phase_ds, as_percent=_ss_pct)[1]
+        ex.save_excel_button(
+            "Save sleep-state totals (.xlsx)",
+            [
+                ("summary", _ss_group),
+                ("per_fly", _ss_per_fly),
+            ],
             ds,
-            "sleep_state_totals.csv",
+            "sleep_state_totals",
             key="dl_sleep_states",
-        )
-        ex.save_df_button(
-            "Save per-fly Sleep-State totals (for stats) to working folder",
-            plotting.per_fly_sleep_state_totals(phase_ds, None, None, as_percent=_ss_pct),
-            ds,
-            "sleep_state_totals_per_fly.csv",
-            key="dl_sleep_states_perfly",
+            help="Two sheets: the group mean ± SEM per state, and the per-fly "
+            "values behind it.",
         )
 
 st.divider()

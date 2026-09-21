@@ -287,20 +287,16 @@ with _tab_setup:
             else 1
         )
 
-        # Which apparatus each group's flies sat in, named without grouping on it. Asked of
-        # core's own group_extras — the same function that records it on the result — so
-        # this preview cannot disagree with what the analysis then reports.
-        describe_by = tuple(
-            c for c in ("flybox", "Monitor") if c in ds_pulse.coords and c not in group_by
-        )
-        _extras_now = ps_module.group_extras(ds_pulse, _labels, _groups, describe_by)
-        _desc_col = describe_by[0] if describe_by else None
-
-        def _box_of(grp):
-            """``'cake'`` / ``'bun+tart'`` — the box(es) behind one group, or ``''``."""
-            if grp is None or _desc_col is None:
-                return ""
-            return "+".join((_extras_now.get(grp) or {}).get(_desc_col) or [])
+        # No apparatus column is singled out any more. This page used to hunt for
+        # `flybox` (then `Monitor`) and thread it through every legend entry, figure
+        # title, pairing note and exported column, on the reasoning that which box an
+        # arm sat in bounds how much of a difference can be read as the pulse. True,
+        # but it is one lab's collection habit wearing the clothes of an analysis
+        # rule: it assumed one box per arm, it fired on any dataset that happened to
+        # carry the column, and it put a factor nobody had chosen into the output of
+        # every comparison. A box effect is a confound like any other — if it matters
+        # here, `flybox` belongs in the grouping, where it is compared rather than
+        # annotated.
 
         PAIRING_LABELS = {
             "Unpulsed control of the same genotype": "matched",
@@ -436,8 +432,6 @@ with _tab_setup:
                         "compared against": control_group.get(g) or "— none —",
                         "n": _n_by_group[g],
                         "n in control": _n_by_group.get(control_group.get(g), 0),
-                        (_desc_col or "source"): _box_of(g),
-                        "control " + (_desc_col or "source"): _box_of(control_group.get(g)),
                     }
                     for g in _groups
                     if control_group.get(g) != g
@@ -482,10 +476,10 @@ with _tab_setup:
                 )
 
         # Neither the day origin nor the direction of the subtraction is a choice
-        # any more. The lab plots noLP − LP, so a delay reads negative — which is
-        # also the sign the phase response curve uses, and two views of one pulse
-        # disagreeing about which way is an advance is the kind of thing nobody
-        # catches until a figure is in a manuscript.
+        # any more. The difference is reported control minus pulsed, so a delay
+        # reads negative — the same sign the phase response curve uses. Two views
+        # of one pulse disagreeing about which way is an advance is the kind of
+        # thing nobody catches until a figure is in a manuscript.
         difference_sign = "control_minus_group"
 
         # Days are counted from the recording start, with one exception that is a
@@ -563,7 +557,7 @@ with _tab_setup:
                 "Take out the starting offset (set one day to zero)",
                 value=True,
                 help="Subtracts each group's difference on the chosen day from all of "
-                "its days. Without it, a flybox-to-flybox phase offset present before "
+                "its days. Without it, a cohort-to-cohort phase offset present before "
                 "the pulse is carried through every later day.",
             )
             baseline_day = None
@@ -682,8 +676,6 @@ with _tab_setup:
         params = dict(
             control_group=control_group,
             group_by=group_by,
-            # Label each comparison with the apparatus it came from, without grouping on it.
-            describe_by=describe_by,
             day_origin=day_origin,
             baseline_day=baseline_day,
             difference_sign=difference_sign,
@@ -866,18 +858,16 @@ with _tab_results:
                     # ---------------------------------------- the curve
                     st.markdown("#### Phase response curve")
                     _zts = sorted({float(z) for z in _treated["zt"] if np.isfinite(z)})
+                    MIN_ZT_FOR_A_CURVE = 3
                     # The pulse time is the x axis, so it is not also a line; every
                     # other grouping factor separates the lines.
                     _series_prc = [c for c in _gb_prc if c != _zt_coord]
-                    if len(_zts) < 2:
+                    if len(_zts) < MIN_ZT_FOR_A_CURVE:
                         st.info(
-                            "This experiment pulsed at a single circadian time"
-                            + (f" (ZT{_zts[0]:g})" if _zts else "")
-                            + ", so there is no curve to draw — a phase response curve "
-                            "is the shift plotted against the time of the pulse, and "
-                            "one point is not a curve. The per-fly responses at that "
-                            "time are below. Add cohorts pulsed at other circadian "
-                            "times and the curve appears here."
+                            f"This experiment only contains {len(_zts)} timepoint"
+                            f"{'' if len(_zts) == 1 else 's'}. At least "
+                            f"{MIN_ZT_FOR_A_CURVE} timepoints are required to create a "
+                            "phase response curve. Please refer to per-fly responses below."
                         )
                     else:
                         _summary = ps_module.summarize_phase_response(
@@ -1032,11 +1022,10 @@ with _tab_results:
                     "Phase difference = each group's daily peak time minus **its own matched "
                     "control**'s on the same day (the `control_group` column names it)."
                 )
-            _sign_note = gres["params"].get("difference_sign", "group_minus_control")
             st.caption(
-                "Reported as **noLP − LP**, so a delay reads negative and an advance positive."
-                if _sign_note == "control_minus_group"
-                else "Reported as **LP − noLP**, so a delay reads positive and an advance negative."
+                "Reported as **control − pulsed**, so a delay reads negative and an "
+                "advance positive — the same sign convention as the phase response "
+                "curve on the other tab."
             )
 
             tab_plot, tab_table = st.tabs(["Phase Difference by Day", "Table & Export"])
@@ -1053,19 +1042,6 @@ with _tab_results:
                     for g in sorted(per_day["group"].unique())
                     if control_map.get(g) not in (g, None)
                 ]
-
-                _extras = gres.get("group_extras") or {}
-                _desc = (gres["params"].get("describe_by") or [None])[0]
-
-                def _boxes(grp):
-                    """Which apparatus a group's flies sat in, as 'cake' or 'cake+croissant'."""
-                    vals = (_extras.get(grp) or {}).get(_desc) if _desc else None
-                    return "+".join(vals) if vals else ""
-
-                def _box_set(grp):
-                    """The individual boxes behind a group — a group can span more than one."""
-                    vals = (_extras.get(grp) or {}).get(_desc) if _desc else None
-                    return set(vals) if vals else set()
 
                 def _include_boxes(label, values, key, *, per_row=6):
                     """A row of tick boxes, all on by default. Returns the ticked values."""
@@ -1120,10 +1096,7 @@ with _tab_results:
                 # Only the factors that are actually pooled INTO a figure can be filtered
                 # here. The faceting columns are excluded: each of their values already
                 # gets a figure of its own, so unticking one is "do not draw that figure",
-                # which is what the "One figure per" picker is for. The apparatus is
-                # excluded too — filtering by flybox assumes an experiment laid out one
-                # box per arm, and that is one lab's collection habit rather than
-                # something this page should build in.
+                # which is what the "One figure per" picker is for.
                 _filterable = [c for c in _gcols if c != series_col and c not in facet_cols]
                 _incl_values = {}
                 for c in _filterable:
@@ -1205,7 +1178,6 @@ with _tab_results:
                                     if k
                                     in (
                                         "group_by",
-                                        "describe_by",
                                         "day_origin",
                                         "baseline_day",
                                         "difference_sign",
@@ -1234,7 +1206,7 @@ with _tab_results:
                 # not a property of the axis anyway — both are set on this page, travel with
                 # the figure in the workbook export, and are restated in the caption below.
                 _y_title = "Phase difference (h)"
-                _axis_note = ("noLP − LP" if _sign == "control_minus_group" else "LP − noLP") + (
+                _axis_note = "control − pulsed" + (
                     f", relative to day {_params['baseline_day']}" if _rebased else ""
                 )
                 # The pulse is given on the last entrained day and shows up in the NEXT day's
@@ -1290,24 +1262,6 @@ with _tab_results:
                     n = _n_of.get(grp)
                     return int(n) if n is not None and np.isfinite(n) else None
 
-                def _boxes_or(grp, fallback="—"):
-                    return _boxes(grp) or fallback
-
-                def _control_tag(grp):
-                    """What the control arm is called, read off whichever column separates the
-                    two groups — 'noLP' here, but whatever the control value happens to be."""
-                    ctrl = control_map.get(grp)
-                    a, b = _gvals.get(grp, {}), _gvals.get(ctrl, {})
-                    diff = [c for c in _gcols if a.get(c) != b.get(c)]
-                    return "/".join(str(b[c]) for c in diff) if diff else "control"
-
-                def _arms(grp):
-                    """'bun-LP vs pie-noLP' — which box got the pulse and which is the reference."""
-                    lp, ct = _boxes(grp), _boxes(control_map.get(grp))
-                    if not lp:
-                        return str(control_map.get(grp))
-                    return f"{lp}-LP vs {ct}-{_control_tag(grp)}"
-
                 _stem = y_col.replace("_hours", "")
 
                 def _err_arrays(sub, grp):
@@ -1327,52 +1281,22 @@ with _tab_results:
                     # plotly wants distances from the point, never absolute bounds
                     return np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)
 
-                def _union_boxes(groups):
-                    """Every box behind a set of groups, as 'bun+tart'."""
-                    out = set()
-                    for g in groups:
-                        out |= _box_set(g)
-                    return "+".join(sorted(out))
-
                 for key in sorted(_facets):
                     # Facet VALUES only — the column names ("condition ZT15…") were three
                     # quarters of the title and said nothing the values do not.
                     title = " · ".join(str(v) for v in key) or "All groups"
-                    # The apparatus goes in BOTH places, always: the title names the pairing
-                    # for the figure as a whole, and every legend entry names the box(es)
-                    # behind its own line. They used to be alternatives — the title carried it
-                    # only when every line shared one pairing, and the legend only when they
-                    # did not — so two figures side by side disagreed about where to look.
-                    # When the arms differ between lines the title shows the union, which the
-                    # legend then breaks down line by line.
                     _grps = sorted(_facets[key])
-                    _arm_labels = {_arms(g) for g in _grps}
-                    if len(_arm_labels) == 1:
-                        _arm_title = next(iter(_arm_labels))
-                    else:
-                        _lp = _union_boxes(_grps)
-                        _ct = _union_boxes({control_map.get(g) for g in _grps} - {None})
-                        _tags = {_control_tag(g) for g in _grps}
-                        _tag = next(iter(_tags)) if len(_tags) == 1 else "control"
-                        _arm_title = f"{_lp}-LP vs {_ct}-{_tag}" if _lp else ""
-                    if _arm_title:
-                        title += f"  —  {_arm_title}"
                     fig = go.Figure()
                     for grp in _grps:
                         sub = per_day[per_day["group"] == grp].sort_values("day_index")
                         name = str(_gvals.get(grp, {}).get(series_col, grp))
-                        pair = _arms(grp)
                         _elo, _ehi = _err_arrays(sub, grp)
                         fig.add_trace(
                             go.Scatter(
                                 x=sub["day_index"],
                                 y=sub[y_col],
                                 mode="lines+markers",
-                                name=(
-                                    f"{name} ({_boxes(grp)}-LP, n={_n(grp)})"
-                                    if _boxes(grp)
-                                    else f"{name} (n={_n(grp)})"
-                                ),
+                                name=f"{name} (n={_n(grp)})",
                                 line=dict(color=_colour.get(name), width=2.5),
                                 marker=dict(size=8),
                                 error_y=(
@@ -1390,7 +1314,6 @@ with _tab_results:
                                 ),
                                 hovertemplate=(
                                     "day %{x}<br>%{y:.2f} h<br>"
-                                    + pair
                                     + "<br>vs "
                                     + str(control_map.get(grp))
                                     + "<extra>"
@@ -1446,25 +1369,19 @@ with _tab_results:
                     # here rather than crammed into the label.
                     st.caption(f"Difference direction: {_axis_note}.")
 
-                    # Spell the pairing out per line. Which box each arm sat in decides how
-                    # much of a difference can be read as the pulse rather than the
-                    # apparatus, and the legend has no room to say it for both arms.
-                    _note = []
-                    for grp in _grps:
-                        _ctrl = control_map.get(grp)
-                        _nm = str(_gvals.get(grp, {}).get(series_col, grp))
-                        _note.append(
-                            f"- **{_nm}** — pulsed in **{_boxes_or(grp)}** "
-                            f"(n={_n(grp)}) vs **{_boxes_or(_ctrl)}** "
-                            f"{_control_tag(grp)} (n={_n(_ctrl)})"
-                            + (
-                                "  ·  *same box, so no box effect*"
-                                if _boxes(grp) and _boxes(grp) == _boxes(_ctrl)
-                                else ""
-                            )
-                        )
+                    # Which group each line is measured against, spelled out. The
+                    # legend has room for a line's own name and its n, not for its
+                    # control's, and "vs its matched control" is not an answer when
+                    # four genotypes are on screen.
+                    _note = [
+                        f"- **{_gvals.get(g, {}).get(series_col, g)}** (n={_n(g)}) "
+                        f"vs **{control_map.get(g)}** (n={_n(control_map.get(g))})"
+                        for g in _grps
+                    ]
                     if _note:
-                        st.markdown("**What is compared with what**\n\n" + "\n".join(_note))
+                        st.markdown(
+                            "**What is compared with what**\n\n" + "\n".join(_note)
+                        )
 
                 # what actually got drawn, for the workbook in the table tab
                 st.session_state["_ps_plotted_groups"] = list(others)
@@ -1495,34 +1412,11 @@ with _tab_results:
                 )
 
             with tab_table:
-                # Flybox is not a grouping column — flies from several boxes are pooled into
-                # one group on purpose — so the box cannot come from the group id itself. Tag
-                # it on for display instead, keeping the raw ids in their own columns so
-                # nothing that keys off them is lost.
-                def _boxed(grp):
-                    """'Mito-gfp_noLP_pie', or '..._bun+pie' when a group pools two boxes."""
-                    if grp is None:
-                        return grp
-                    b = _boxes(grp)
-                    return f"{grp}_{b}" if b else str(grp)
-
-                def _label_frame(df):
-                    out = df.copy()
-                    if "group" in out.columns:
-                        out.insert(0, "group_id", out["group"])
-                        out["group"] = out["group"].map(_boxed)
-                    if "control_group" in out.columns:
-                        out.insert(2, "control_group_id", out["control_group"])
-                        out["control_group"] = out["control_group"].map(_boxed)
-                    return out
-
-                per_day_labelled = _label_frame(per_day)
-                st.dataframe(per_day_labelled, width="stretch")
-                if _desc:
-                    st.caption(
-                        f"`group` and `control_group` carry the {_desc} they came from; "
-                        "`group_id` and `control_group_id` are the raw ids the analysis keys on."
-                    )
+                # Group ids exactly as the analysis keys on them. Every label used to
+                # be suffixed with the flybox its flies sat in, with the raw id kept
+                # in a second column — so the exported `group` column disagreed with
+                # the one every other sheet, page and figure uses.
+                st.dataframe(per_day, width="stretch")
 
                 def _phase_workbook_sheets():
                     """The sheets of the per-day workbook.
@@ -1541,15 +1435,14 @@ with _tab_results:
                             return df
                         return df.merge(_boot, on=["group", "day_index"], how="left")
 
-                    sheets = [("per_day", _label_frame(_with_boot(per_day)))]
+                    sheets = [("per_day", _with_boot(per_day))]
                     if _plotted:
                         sub = per_day[per_day["group"].isin(_plotted)].copy()
-                        sheets.append(("per_day_plotted", _label_frame(_with_boot(sub))))
+                        sheets.append(("per_day_plotted", _with_boot(sub)))
                         # A day-by-group grid: the layout to read a shift off by eye, and the
                         # one that pastes straight into a figure or a stats package.
                         if not sub.empty:
                             _mat = sub.copy()
-                            _mat["group"] = _mat["group"].map(_boxed)
                             sheets.append((
                                 "matrix",
                                 _mat.pivot_table(
@@ -1561,8 +1454,8 @@ with _tab_results:
                         pd.DataFrame(
                             [
                                 {
-                                    "group": _boxed(g),
-                                    "compared against": _boxed(c) or "— none —",
+                                    "group": g,
+                                    "compared against": c or "— none —",
                                     "group_id": g,
                                     "control_group_id": c or "",
                                 }
@@ -1577,9 +1470,7 @@ with _tab_results:
                         ),
                     ))
                     _sign_txt = (
-                        "noLP - LP (a delay reads negative)"
-                        if _sign_note == "control_minus_group"
-                        else "LP - noLP (a delay reads positive)"
+                        "control minus pulsed (a delay reads negative, an advance positive)"
                     )
                     sheets.append((
                         "notes",
@@ -1603,7 +1494,7 @@ with _tab_results:
                                 },
                                 {
                                     "field": "groups plotted",
-                                    "value": ", ".join(_boxed(g) for g in _plotted)
+                                    "value": ", ".join(_plotted)
                                     if _plotted
                                     else "(figures not built yet)",
                                 },
@@ -1623,7 +1514,7 @@ with _tab_results:
                 )
                 st.download_button(
                     "Download per-day (CSV)",
-                    per_day_labelled.to_csv(index=False).encode("utf-8"),
+                    per_day.to_csv(index=False).encode("utf-8"),
                     file_name="phase_difference_vs_control_per_day.csv",
                     mime="text/csv",
                 )
@@ -1631,7 +1522,7 @@ with _tab_results:
                 st.dataframe(
                     pd.DataFrame(
                         [
-                            {"group": _boxed(g), "compared against": _boxed(c) or "— none —"}
+                            {"group": g, "compared against": c or "— none —"}
                             for g, c in sorted(control_map.items())
                         ]
                     ),

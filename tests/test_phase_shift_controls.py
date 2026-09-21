@@ -404,16 +404,18 @@ def test_the_page_builds_the_phase_response_from_the_same_click(app, pulse_ds):
     assert int(pres["dropped"]["n_total"].sum()) == pulse_ds.sizes["id"]
 
 
-def test_one_pulse_time_says_so_instead_of_drawing_a_curve(app, pulse_ds):
+def test_too_few_pulse_times_says_so_instead_of_drawing_a_curve(app, pulse_ds):
     """The lab's own data is currently single-timepoint, so this is the message most
-    people will meet first. A one-point "curve" would imply a shape nobody measured."""
+    people will meet first. Three points is the floor: two admit exactly one line,
+    so a "curve" through them is the slope of the only line they allow."""
     at = app(ds=pulse_ds, page="phase_shift")
     run = [b for b in at.button if "Run Group Phase Comparison" in b.label]
     at = run[0].click().run()
     assert not at.exception
-    assert any("one point is not a curve" in i.value for i in at.info), (
-        [i.value for i in at.info]
-    )
+    assert any(
+        "only contains 1 timepoint" in i.value and "At least 3 timepoints" in i.value
+        for i in at.info
+    ), [i.value for i in at.info]
 
 
 def test_the_page_stops_cleanly_without_a_pulse_column(app, master_ds):
