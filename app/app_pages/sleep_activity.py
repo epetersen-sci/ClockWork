@@ -337,8 +337,12 @@ def _totals_violins(variable, y_label, key):
         ("Day Only", "Subjective day" if _dd else "Day"),
         ("Night Only", "Subjective night" if _dd else "Night"),
     ]
-    # One group order for all three, so the panels line up when read down the page.
+    # One group order for all three, so the columns line up across the panels.
     _order = sorted(per_fly["Group"].astype(str).unique())
+    # Side by side. Full width each, the three were so broad that comparing a
+    # group's day against its night meant scrolling between them — which is the
+    # comparison the three-panel split exists to make easy.
+    _cols = st.columns(3)
     for i, (col, name) in enumerate(panels):
         fig, _ = plotting.group_violins(
             per_fly,
@@ -348,7 +352,8 @@ def _totals_violins(variable, y_label, key):
             colour=plotting.MEASURE_COLOURS[i],
             groups=_order,
         )
-        charts.plotly_chart(fig, width="stretch", theme=None)
+        with _cols[i]:
+            charts.plotly_chart(fig, width="stretch", theme=None)
 
     tbl = _cached_summary_table(
         dataset_fingerprint(ds),
@@ -364,7 +369,12 @@ def _totals_violins(variable, y_label, key):
     # then remembering which file was which.
     ex.save_excel_button(
         f"Save {variable.capitalize()} totals (.xlsx)",
-        [("summary", None if tbl.empty else _summary_frame(tbl)), ("per_fly", per_fly)],
+        [
+            ("summary", None if tbl.empty else _summary_frame(tbl)),
+            # Group means only on the EXPORTED copy: the violins above are drawn
+            # from `per_fly` itself, and a Mean row in there would plot as a fly.
+            ("per_fly", ex.with_group_means(per_fly)),
+        ],
         ds,
         f"{variable}_totals",
         key=f"dl_{key}_totals",
@@ -430,13 +440,18 @@ with tab_activity:
                 "Save binned activity (.xlsx)",
                 [
                     ("group_summary", _pivot),
-                    ("per_fly", _act_pf),
+                    (
+                        "per_fly",
+                        ex.per_fly_wide(_act_pf, value_col="activity"),
+                    ),
                 ],
                 ds,
                 "activity_binned",
                 key="dl_act",
                 help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
-                "grouped-table order, and the per-fly time course behind it.",
+                "grouped-table order, and the per-fly time course behind it — one "
+                "row per fly, one column per ZT bin, with a mean row closing each "
+                "group.",
             )
         except Exception:
             pass
@@ -515,13 +530,18 @@ with tab_sleep:
                 "Save binned sleep (.xlsx)",
                 [
                     ("group_summary", _pivot_sl),
-                    ("per_fly", _sl_pf),
+                    (
+                        "per_fly",
+                        ex.per_fly_wide(_sl_pf, value_col="sleep"),
+                    ),
                 ],
                 ds,
                 "sleep_binned",
                 key="dl_sleep",
                 help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
-                "grouped-table order, and the per-fly time course behind it.",
+                "grouped-table order, and the per-fly time course behind it — one "
+                "row per fly, one column per ZT bin, with a mean row closing each "
+                "group.",
             )
         except Exception:
             pass

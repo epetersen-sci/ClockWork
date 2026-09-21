@@ -261,3 +261,87 @@ class TestTheErrorNamesItsOwnCause:
         assert said, "a failure must be reported"
         assert "MultiIndex columns" in said[0]
         assert "openpyxl" not in said[0], said[0]
+
+
+class TestThePerFlySheetIsReadable:
+    """A per-fly time course is the right shape for a stats package and the wrong
+    one for a person: 36 flies at 30-minute bins is 1,728 rows in one column, and
+    reading one fly's day means scrolling past every other fly's."""
+
+    @pytest.fixture
+    def long_course(self):
+        return pd.DataFrame(
+            {
+                "ID": ["a", "a", "b", "b", "c", "c"],
+                "Group": ["ctrl", "ctrl", "ctrl", "ctrl", "mut", "mut"],
+                "zt_hours": [0.0, 0.5, 0.0, 0.5, 0.0, 0.5],
+                "sleep": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+            }
+        )
+
+    def test_one_row_per_fly(self, long_course):
+        wide = ex.per_fly_wide(long_course, value_col="sleep")
+        flies = wide[wide["ID"] != "Mean"]
+        assert len(flies) == 3
+        assert set(flies["ID"]) == {"a", "b", "c"}
+
+    def test_one_column_per_bin_labelled_as_a_time(self, long_course):
+        wide = ex.per_fly_wide(long_course, value_col="sleep")
+        assert "ZT0" in wide.columns and "ZT0.5" in wide.columns, list(wide.columns)
+
+    def test_each_group_is_closed_by_its_own_mean(self, long_course):
+        wide = ex.per_fly_wide(long_course, value_col="sleep")
+        means = wide[wide["ID"] == "Mean"]
+        assert list(means["Group"]) == ["ctrl", "mut"]
+        # ctrl holds flies a and b: (10 + 30) / 2 at ZT0.
+        assert float(means[means["Group"] == "ctrl"]["ZT0"].iloc[0]) == 20.0
+        assert float(means[means["Group"] == "mut"]["ZT0"].iloc[0]) == 50.0
+
+    def test_the_values_survive_the_reshape(self, long_course):
+        wide = ex.per_fly_wide(long_course, value_col="sleep")
+        row = wide[wide["ID"] == "b"].iloc[0]
+        assert float(row["ZT0"]) == 30.0
+        assert float(row["ZT0.5"]) == 40.0
+
+    def test_an_empty_course_is_returned_untouched(self):
+        empty = pd.DataFrame(columns=["ID", "Group", "zt_hours", "sleep"])
+        assert ex.per_fly_wide(empty, value_col="sleep").empty
+
+
+class TestGroupMeansCloseEachSection:
+    @pytest.fixture
+    def totals(self):
+        return pd.DataFrame(
+            {
+                "ID": ["a", "b", "c"],
+                "Group": ["ctrl", "ctrl", "mut"],
+                "All Day": [10.0, 30.0, 50.0],
+                "Day Only": [4.0, 6.0, 8.0],
+            }
+        )
+
+    def test_a_mean_row_follows_every_group(self, totals):
+        out = ex.with_group_means(totals)
+        assert len(out) == len(totals) + 2
+        assert float(out[(out["Group"] == "ctrl") & (out["ID"] == "Mean")]["All Day"].iloc[0]) == 20.0
+
+    def test_the_flies_are_still_recoverable(self, totals):
+        """The label goes in ID, not a column of its own, so the sheet still loads
+        as a table and one filter gets the flies back."""
+        out = ex.with_group_means(totals)
+        flies = out[out["ID"] != "Mean"].reset_index(drop=True)
+        pd.testing.assert_frame_equal(flies, totals)
+
+    def test_a_text_column_is_left_blank_rather_than_carried(self):
+        """Carrying the first fly's value onto the mean row would read as data."""
+        df = pd.DataFrame(
+            {"ID": ["a", "b"], "Group": ["ctrl", "ctrl"], "note": ["x", "y"], "v": [1.0, 3.0]}
+        )
+        out = ex.with_group_means(df)
+        mean = out[out["ID"] == "Mean"].iloc[0]
+        assert mean["note"] == ""
+        assert float(mean["v"]) == 2.0
+
+    def test_a_frame_with_no_group_column_is_untouched(self):
+        df = pd.DataFrame({"ID": ["a"], "v": [1.0]})
+        pd.testing.assert_frame_equal(ex.with_group_means(df), df)

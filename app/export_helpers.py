@@ -431,3 +431,56 @@ def save_group_average_scalograms(group_averages, out_dir, ds=None):
         ds.attrs["cwt_group_average_paths"] = json.dumps(saved)
         ds.attrs["cwt_group_average_dir"] = out_dir
     return saved
+
+
+def with_group_means(df, *, group_col="Group", id_col="ID", label="Mean"):
+    """One ``Mean`` row after each group's block, so the sheet reads by eye.
+
+    A per-fly sheet is a wall of numbers with no landmark in it. A mean row
+    closes each genotype's section and answers the first question anyone asks of
+    the block above it, without opening a second file to find out.
+
+    The label goes in ``id_col`` rather than in a column of its own, so the sheet
+    still loads as a table: a reader filtering ``ID != "Mean"`` gets exactly the
+    flies back. Non-numeric columns are left blank on the mean row rather than
+    carrying the first fly's value, which would read as data.
+    """
+    import pandas as pd
+
+    if df is None or df.empty or group_col not in df.columns:
+        return df
+    numeric = [c for c in df.columns if c not in (group_col, id_col)]
+    blocks = []
+    for grp, block in df.groupby(group_col, sort=True):
+        blocks.append(block)
+        row = {group_col: grp, id_col: label}
+        for c in numeric:
+            vals = pd.to_numeric(block[c], errors="coerce")
+            row[c] = vals.mean() if vals.notna().any() else ""
+        blocks.append(pd.DataFrame([row], columns=df.columns))
+    return pd.concat(blocks, ignore_index=True)
+
+
+def per_fly_wide(long_df, *, value_col, bin_col="zt_hours", id_col="ID", group_col="Group"):
+    """A long per-fly time course as ONE ROW PER FLY, one column per bin.
+
+    The long form — a row per fly per ZT bin — is the right shape for a stats
+    package and the wrong one for a person: a 36-fly recording at 30-minute bins
+    is 1,728 rows in a single column of numbers, and reading one fly's day means
+    scrolling past every other fly's.
+
+    Wide, with a mean row closing each group (see :func:`with_group_means`), is
+    the shape you can actually look at. The long form is not lost — it is what
+    the group summary sheet beside it is built from.
+    """
+
+    if long_df is None or long_df.empty:
+        return long_df
+    wide = long_df.pivot_table(
+        index=[group_col, id_col], columns=bin_col, values=value_col, aggfunc="mean"
+    )
+    # ZT-labelled headers: a bare 7.5 in a header row is not obviously an hour.
+    wide.columns = [f"ZT{c:g}" if isinstance(c, (int, float)) else str(c) for c in wide.columns]
+    wide = wide.reset_index()
+    wide.columns.name = None
+    return with_group_means(wide, group_col=group_col, id_col=id_col)

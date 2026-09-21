@@ -360,6 +360,9 @@ if _has_state_masks and st.checkbox(
         # chart this replaces made state-versus-state the easy one instead.
         _ss_unit = "% of classified sleep" if _ss_pct else "minutes"
         _ss_order = sorted(_ss_per_fly["Group"].astype(str).unique())
+        # Side by side, so the three states are compared by eye rather than by
+        # scrolling — same reasoning as the totals on Activity & Sleep.
+        _ss_cols = st.columns(3)
         for _i, _state in enumerate(("Short", "Intermediate", "Long")):
             if _state not in _ss_per_fly.columns:
                 continue
@@ -371,14 +374,17 @@ if _has_state_masks and st.checkbox(
                 colour=plotting.MEASURE_COLOURS[_i],
                 groups=_ss_order,
             )
-            charts.plotly_chart(_fig, width="stretch")
+            with _ss_cols[_i]:
+                charts.plotly_chart(_fig, width="stretch")
 
         _ss_group = plotting.sleep_state_totals_bars(phase_ds, as_percent=_ss_pct)[1]
         ex.save_excel_button(
             "Save sleep-state totals (.xlsx)",
             [
                 ("summary", _ss_group),
-                ("per_fly", _ss_per_fly),
+                # Mean row per genotype on the exported copy only — the violins
+                # above read _ss_per_fly itself.
+                ("per_fly", ex.with_group_means(_ss_per_fly)),
             ],
             ds,
             "sleep_state_totals",
