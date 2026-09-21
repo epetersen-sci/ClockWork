@@ -127,9 +127,10 @@ class TestCollectingWhatWasDrawn:
         assert f"Save {drawn} figure" in label
 
     def test_a_page_without_charts_offers_nothing(self, app, master_ds):
-        """hmm_analysis has CSV exports and no plotly charts, so a PNG button there
-        would be permanently disabled furniture."""
-        at = app(ds=master_ds, page="hmm_analysis")
+        """The HMM page draws matplotlib figures and exports CSVs — no plotly
+        charts at all — so a PNG button there would be permanently disabled
+        furniture."""
+        at = app(ds=master_ds, page="hmm")
         assert not any("as PNG" in b.label for b in at.button)
 
     def test_figures_do_not_accumulate_across_reruns(self, app, master_ds):

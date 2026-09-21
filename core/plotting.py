@@ -13,6 +13,8 @@ daily_pattern_line()              — ZT-binned mean ± SEM line plot per group
 sleep_bout_duration_lines()       — Per-fly sleep bout duration curves (KDE/survival) by group
 group_spectrum_plot()             — Generic mean±SEM curve overlay per group on a shared x-axis
 summary_bars()                    — Grouped bar chart: total activity/sleep by day/night/all-day
+summary_violins()                 — The same totals as per-fly distributions, one
+                                    violin per group per half of the cycle
 single_fly_scalogram_plotly()        — Interactive Plotly scalogram for one fly
 group_ridge_density_plotly()         — Plotly ridge density of CWT periods per group
 phase_shift_actogram()            — Double-plotted actogram for one fly with the
@@ -4467,6 +4469,8 @@ def phase_response_violins(
     show_points=True,
     title="Phase response per fly",
     y_title="Phase shift (h)",
+    x_title=None,
+    split_title=None,
 ):
     """Every fly's own phase response, as one violin per treated group.
 
@@ -4491,6 +4495,13 @@ def phase_response_violins(
         Drawn side by side WITHIN each column instead of getting columns of its
         own — pulse intensity, normally, so two intensities of the same dose can
         be compared without hunting across the axis.
+    x_title, split_title : str, optional
+        What to CALL the axis and the legend. The caller passes these because it
+        knows the names the Import page used, and the coords do not: two metadata
+        columns are stored under different coord names (``pulse_time`` becomes
+        ``pulse_zt_hour``), so a figure that labels itself from its column names
+        renames the user's own columns back at them. Defaults to the column names
+        when nothing is passed.
 
     Returns
     -------
@@ -4573,12 +4584,12 @@ def phase_response_violins(
         plot_bgcolor="white",
         legend=dict(
             orientation="h", yanchor="top", y=-0.28, x=0,
-            title=str(trace_col).replace("_", " "),
+            title=split_title or str(trace_col).replace("_", " "),
         ),
         margin=dict(l=70, r=30, t=60, b=140),
     )
     fig.update_xaxes(
-        title=" x ".join(str(c).replace("_", " ") for c in major_cols),
+        title=x_title or " x ".join(str(c).replace("_", " ") for c in major_cols),
         categoryorder="array",
         categoryarray=order,
         tickangle=-30,
@@ -4591,3 +4602,110 @@ def phase_response_violins(
         font=dict(size=11, color="#666666"),
     )
     return fig, drawn
+
+
+#: The day/night columns ``per_fly_summary_table`` produces, and what to call
+#: them on a figure. "All Day" is left out on purpose: it is Day + Night, so
+#: drawing it beside them puts a third violin on the axis that carries nothing
+#: the other two do not already say. It stays in the CSV, where a total is
+#: useful and costs no space.
+_SUMMARY_PERIODS = (("Day Only", "Day"), ("Night Only", "Night"))
+
+
+def summary_violins(
+    per_fly,
+    *,
+    value_label="minutes",
+    title="Day/night totals",
+    phase_label="LD",
+    periods=_SUMMARY_PERIODS,
+    show_points=True,
+):
+    """Per-fly day and night totals as violins, one pair per group.
+
+    The bar version of this plots a group mean with a SEM whisker, which is four
+    numbers standing in for thirty flies. Two groups can share a mean and a SEM
+    and still be obviously different — one tight, one bimodal — and a bar cannot
+    show it. The flies are already computed either way (``per_fly_summary_table``
+    is what the bars' mean is taken over), so this costs nothing but the drawing.
+
+    Parameters
+    ----------
+    per_fly : pd.DataFrame
+        ``plotting.per_fly_summary_table`` output: ``ID``, ``Group``, and one
+        column per period.
+    phase_label : {'LD', 'DD'}
+        Under DD the halves are subjective, so they are named CT day and CT night
+        rather than day and night — calling them day and night there would name a
+        light cycle that was not running.
+
+    Returns
+    -------
+    (go.Figure, pd.DataFrame)
+        The figure, and the long-form frame actually drawn.
+    """
+    fig = go.Figure()
+    if per_fly is None or per_fly.empty:
+        return fig, pd.DataFrame()
+
+    present = [(col, name) for col, name in periods if col in per_fly.columns]
+    if not present:
+        return fig, pd.DataFrame()
+
+    rows = []
+    for col, name in present:
+        sub = per_fly[["ID", "Group", col]].copy()
+        sub = sub[pd.to_numeric(sub[col], errors="coerce").notna()]
+        sub["period"] = f"CT {name.lower()}" if phase_label == "DD" else name
+        sub["value"] = pd.to_numeric(sub[col])
+        rows.append(sub[["ID", "Group", "period", "value"]])
+    long = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    if long.empty:
+        return fig, long
+
+    groups = sorted(long["Group"].astype(str).unique())
+    for period in long["period"].unique():
+        sub = long[long["period"] == period]
+        fig.add_trace(
+            go.Violin(
+                x=sub["Group"].astype(str),
+                y=np.asarray(sub["value"], dtype=float),
+                name=str(period),
+                legendgroup=str(period),
+                scalegroup=str(period),
+                line=dict(width=1.3),
+                opacity=0.6,
+                points="all" if show_points else False,
+                jitter=0.3,
+                pointpos=0,
+                marker=dict(size=4, opacity=0.6, color="#333333"),
+                meanline=dict(visible=True),
+                box=dict(visible=False),
+                spanmode="hard",
+                hoverinfo="y+name+x",
+            )
+        )
+    # Colour carries the period (two traces), so the group axis is left to the
+    # x labels — colouring by group as well would give every violin its own hue
+    # and make the day/night comparison the harder one to see.
+    for trace, colour in zip(fig.data, ("#3B76AF", "#2C3E50")):
+        trace.line.color = colour
+        trace.fillcolor = colour
+
+    fig.update_layout(
+        title=title,
+        violinmode="group",
+        height=440,
+        plot_bgcolor="white",
+        legend=dict(orientation="h", yanchor="top", y=-0.2, x=0),
+        margin=dict(l=70, r=30, t=60, b=110),
+    )
+    fig.update_xaxes(
+        title="group",
+        categoryorder="array",
+        categoryarray=groups,
+        tickangle=-25,
+        showgrid=False,
+    )
+    fig.update_yaxes(title=value_label, showgrid=True, gridcolor="#eeeeee", rangemode="tozero")
+    return fig, long

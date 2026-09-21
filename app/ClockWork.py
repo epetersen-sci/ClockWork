@@ -68,10 +68,15 @@ if __name__ == "__main__":
     # Sections are the "folders" in the sidebar. st.navigation supports exactly
     # one level of them — a dict of section label -> pages — so this is as nested
     # as Streamlit goes. Order within each section follows the data-dependency
-    # order the work actually takes, which is why HMM model selection precedes
-    # HMM analysis (it chooses the parameters that page consumes) and why
-    # Groups & subsets precedes Curate & split (subset before you curate, and
-    # the curation heatmap draws its y-axis from the group coord).
+    # order the work actually takes, which is why Groups & subsets precedes
+    # Curate & split (subset before you curate, and the curation heatmap draws
+    # its y-axis from the group coord).
+    #
+    # Two former pages are gone, both because they were STEPS rather than
+    # destinations. Sleep analysis is now the control at the top of the Sleep
+    # tab, beside the figures it produces; HMM model selection is the first tab
+    # of HMM analysis, beside the run it parameterises. Nobody opens an app to
+    # run a step.
     page = st.navigation(
         {
             "": [
@@ -126,15 +131,10 @@ if __name__ == "__main__":
                     icon=":material/light_mode:",
                 ),
             ],
-            "Sleep & activity": [
-                st.Page(
-                    "app_pages/sleep_detection.py",
-                    title="Sleep analysis",
-                    icon=":material/bedtime:",
-                ),
+            "Activity & Sleep": [
                 st.Page(
                     "app_pages/sleep_activity.py",
-                    title="Sleep & activity",
+                    title="Activity & Sleep",
                     icon=":material/stacked_line_chart:",
                 ),
                 st.Page(
@@ -148,12 +148,7 @@ if __name__ == "__main__":
                     icon=":material/alarm:",
                 ),
                 st.Page(
-                    "app_pages/hmm_model_selection.py",
-                    title="HMM model selection",
-                    icon=":material/tune:",
-                ),
-                st.Page(
-                    "app_pages/hmm_analysis.py",
+                    "app_pages/hmm.py",
                     title="HMM analysis",
                     icon=":material/psychology:",
                 ),
@@ -171,7 +166,7 @@ if __name__ == "__main__":
                 ),
             ],
         },
-        # 17 pages. Without this the menu collapses to ten with a "View 7 more"
+        # 15 pages. Without this the menu collapses to ten with a "View 5 more"
         # button, which hides a whole section behind a click.
         expanded=True,
     )

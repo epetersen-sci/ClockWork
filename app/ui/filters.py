@@ -96,8 +96,14 @@ def bin_size_sidebar(key, *, label="Bin size (minutes)", default=30):
     return st.sidebar.slider(label, 5, 60, default, step=5, key=key)
 
 
-def _column_for_coord(ds):
-    """``{coord name: the metadata column it came from}`` — the renames, reversed."""
+def column_for_coord(ds):
+    """``{coord name: the metadata column it came from}`` — the renames, reversed.
+
+    Public because a page legitimately needs it: a figure axis should carry the
+    name the user ticked on Import (``pulse_time``), not the coord it is stored
+    under (``pulse_zt_hour``), and a page reaching for a private name to get
+    there is backlog item 8 all over again.
+    """
     import dam_utilities
 
     return {v: k for k, v in dam_utilities.METADATA_COORD_RENAMES.items()}
@@ -118,7 +124,7 @@ def group_by_options(ds):
     """
     import dam_utilities
 
-    back = _column_for_coord(ds)
+    back = column_for_coord(ds)
     options = [back.get(c, c) for c in dam_utilities.group_defining_coords(ds)]
     default = [back.get(c, c) for c in dam_utilities.get_group_coord_names(ds)]
     default = [c for c in default if c in options]

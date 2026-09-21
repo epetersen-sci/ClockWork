@@ -25,7 +25,8 @@ analyses = detect_analyses(ds)
 
 if not analyses.get("sleep", False):
     st.warning(
-        "Sleep analysis has not been run. Go to **Sleep analysis** and run it first."
+        "Sleep has not been detected yet. Run it from the top of the **Sleep** tab "
+        "on **Activity & Sleep**, then come back."
     )
     st.stop()
 

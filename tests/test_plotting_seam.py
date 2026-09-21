@@ -21,7 +21,16 @@ from conftest import REPO_ROOT
 
 import plotting
 
-ANALYSIS_MODULES = {"sleep_analysis", "rhythmicity_classification", "periodograms"}
+ANALYSIS_MODULES = {
+    "sleep_analysis",
+    "rhythmicity_classification",
+    "periodograms",
+    # Added with the phase response curve. Its two renderers take the frames
+    # compute_phase_response produces and draw them, and the cheapest way for
+    # that to rot is for one of them to start computing a summary itself behind
+    # a deferred import — which is exactly how item 7 happened.
+    "phase_shift",
+}
 
 
 def _function_level_imports(path):

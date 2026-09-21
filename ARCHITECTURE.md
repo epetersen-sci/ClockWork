@@ -224,6 +224,35 @@ disagree.
 
 ---
 
+## 11. A page writes the master; it only ever reads its own view
+
+Most pages narrow what they show — a sidebar group filter, an LD/DD epoch, a
+`select_phase` mask. That narrowed object is a VIEW, for drawing. Anything that
+writes back to the dataset must take `st.session_state.dataset` and write
+`st.session_state.dataset`, never the page-local name, however convenient it is
+that `ds` is right there.
+
+The failure is silent and permanent: the narrowed object is a real dataset with
+real flies missing, so writing it back looks like it worked, and the flies are
+gone from every page afterwards.
+
+A shared helper that writes — `ui.sleep_run` is the one — should reach for the
+master itself rather than accept a dataset argument. Then no caller can get it
+wrong, and the rule is enforced by the signature instead of by everybody
+remembering it.
+
+> **Earned by:** sleep detection, twice. It began at the top of Sleep & activity,
+> wrapped in `@st.fragment` purely so it would execute before that page's group
+> filter rebound `ds` — a rerun-ordering trick standing in for the rule. It was
+> then moved to a page of its own, which fixed it by removing the filter rather
+> than by addressing the write. When the 2026-09 reorganisation put it back on
+> the page (a step is not a destination; nobody opens an app to run one), the
+> hazard came back with it, and the fix this time was the rule.
+> `tests/test_sleep_reorganisation.py` narrows the filter to one group, runs
+> detection and asserts every fly is still on the master.
+
+---
+
 ## When a rule is in the way
 
 Say so, in the commit, with what it cost to follow it. These are load-bearing but

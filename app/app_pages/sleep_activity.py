@@ -1,12 +1,21 @@
 """
-Sleep & activity — the descriptive plots, in three tabs.
+Activity & Sleep — the descriptive plots, one tab per measure.
 
-Daily profiles (activity and sleep patterns), Bouts & states (per-fly bout
-duration curves and short/intermediate/long totals), and Day/night totals.
-Every chart has a matching group-level and per-fly CSV export.
+**Activity**: the daily pattern, then the day/night totals behind it.
+**Sleep**: the same two, plus the bout-duration curves, and the sleep detection
+that produces all of them. Every chart has a matching group-level and per-fly
+CSV export.
 
-Read-only with respect to the dataset: everything here renders results that the
-**Sleep analysis** page computed. That page is where the 5-minute rule runs.
+The three old tabs were cut by kind of plot — daily profiles, bouts, day/night
+totals — so each held half an activity answer and half a sleep one, and reading
+"what does sleep look like in this genotype" meant visiting all three and
+assembling it yourself.
+
+Sleep detection lives on the Sleep tab rather than on a page of its own, via
+``ui.sleep_run``. It is the only thing on this page that writes to the dataset,
+and it does so through the MASTER, never through the group-filtered view bound
+below — which is precisely the hazard that used to justify a separate page. See
+that module's docstring.
 
 ONE EPOCH AT A TIME, chosen in the sidebar and defaulting to LD. This page used
 to bin the whole recording onto a single ZT axis with no epoch selection at
@@ -39,7 +48,7 @@ from dataset_meta import (
     dataset_fingerprint,
     dataset_phase,
 )
-from ui import charts
+from ui import charts, sleep_run
 from ui.filters import DISPLAY_GROUPS_KEY, bin_size_sidebar, group_filter_sidebar
 from ui.guards import require_dataset
 
@@ -263,11 +272,84 @@ selected_temperatures = None
 
 bin_size = bin_size_sidebar(key="viz_bin_size")
 
-tab_profiles, tab_bouts, tab_totals = st.tabs(
-    ["Daily profiles", "Bouts & states", "Day/night totals"]
+# One tab per MEASURE, not per kind of plot. The three old tabs — daily
+# profiles, bouts, day/night totals — each held half an activity answer and half
+# a sleep one, so "what does sleep look like here" meant visiting all three and
+# assembling it yourself. Each tab now runs from the daily pattern down to the
+# totals for one measure, which is the order the question is actually asked in.
+# Keyed so the selection lives in session state and SURVIVES A RERUN. Detecting
+# sleep ends in one, and without the key that rerun dropped you back on the
+# Activity tab — away from the button you had just pressed and from the figures
+# it had just produced. (No on_change="rerun" with it: that makes the tabs lazy,
+# so only the open tab is drawn, and the page's PNG export would then silently
+# cover half of what you thought was on screen.)
+tab_activity, tab_sleep = st.tabs(["Activity", "Sleep"], key="sleep_activity_tab")
+
+# Which half of the cycle the totals are named after. Hoisted above both tabs
+# because both use it, and because it depends on the epoch chosen in the sidebar
+# rather than on anything either tab does.
+_ds_phase_label = phase_used or dataset_phase(ds)
+_summary_subhead_suffix = (
+    " (DD — subjective time)"
+    if _ds_phase_label == PHASE_DD
+    else (" (LD — Day/Night)" if _ds_phase_label == PHASE_LD else " (Day/Night)")
 )
 
-with tab_profiles:
+
+def _totals_violins(variable, title, y_label, key):
+    """Per-fly day/night totals as violins, with the group table beside them.
+
+    Violins rather than the bars this page used to draw: the bar was a group mean
+    with a SEM whisker, four numbers standing in for thirty flies, and two groups
+    can share both and still be obviously different — one tight, one bimodal. The
+    per-fly values were already being computed to export them, so the
+    distribution costs nothing but the drawing.
+    """
+    per_fly = plotting.per_fly_summary_table(
+        ds,
+        variable,
+        tuple(selected_genotypes) if selected_genotypes else None,
+        tuple(selected_temperatures) if selected_temperatures else None,
+        bin_size,
+    )
+    if per_fly.empty:
+        st.info(f"No {variable} data to summarise for the current selection.")
+        return
+    fig, _long = plotting.summary_violins(
+        per_fly,
+        value_label=y_label,
+        title=title,
+        phase_label=_ds_phase_label,
+    )
+    charts.plotly_chart(fig, width="stretch", theme=None)
+
+    tbl = _cached_summary_table(
+        dataset_fingerprint(ds),
+        ds,
+        variable,
+        tuple(selected_genotypes) if selected_genotypes else None,
+        tuple(selected_temperatures) if selected_temperatures else None,
+        bin_size,
+        _ds_phase_label,
+    )
+    if not tbl.empty:
+        ex.save_csv_button(
+            f"Save {variable.capitalize()} Summary (group mean±SEM) to working folder",
+            _summary_csv(tbl),
+            ds,
+            f"{variable}_summary.csv",
+            key=f"dl_{key}_summary",
+        )
+    ex.save_df_button(
+        f"Save per-fly {variable.capitalize()} totals (for stats) to working folder",
+        per_fly,
+        ds,
+        f"{variable}_totals_per_fly.csv",
+        key=f"dl_{key}_summary_perfly",
+    )
+
+
+with tab_activity:
     # ============================================================
     # Daily Activity Pattern
     # ============================================================
@@ -338,6 +420,29 @@ with tab_profiles:
 
     st.divider()
 
+    st.subheader(f"Activity Summary{_summary_subhead_suffix}")
+    if _ds_phase_label == PHASE_DD:
+        st.caption(
+            "**DD note:** the bin labels are subjective time relative to the "
+            "last lights-on transition (CT). Anchoring is reliable when the "
+            "DD split was applied with a clean discard-first-DD-day boundary. "
+            "If your recording had large data gaps at the DD start, the CT "
+            "alignment may drift — verify the actogram before publishing."
+        )
+    if "activity" in ds.data_vars:
+        _totals_violins("activity", f"Activity Summary{_summary_subhead_suffix}",
+                        "activity (counts)", "act")
+
+
+with tab_sleep:
+    # The analysis that produces everything below it, offered where the answer is
+    # wanted rather than on a page of its own. ui.sleep_run computes on the MASTER,
+    # never on this page's group-filtered view — see that module's docstring for
+    # why that distinction is load-bearing here of all places.
+    sleep_run.show_last_message("sleep_activity")
+    sleep_run.ensure_sleep(key_prefix="sleep_activity")
+    st.divider()
+
     if analyses["sleep"]:
         st.subheader("Daily Sleep Pattern")
         _ds_fp_sl = dataset_fingerprint(ds)
@@ -401,8 +506,12 @@ with tab_profiles:
 
         st.divider()
 
-with tab_bouts:
-    if analyses["sleep"]:
+        st.subheader(f"Sleep Summary{_summary_subhead_suffix}")
+        _totals_violins("sleep", f"Sleep Summary{_summary_subhead_suffix}",
+                        "sleep (minutes)", "sleep")
+
+        st.divider()
+
         # Sleep Bout Duration
         st.subheader("Sleep Bout Duration")
         if "duration" in ds.data_vars:
@@ -421,7 +530,12 @@ with tab_bouts:
                 )
             with _bd_col2:
                 bout_show_individual = st.checkbox(
-                    "Show individual flies", value=True, key="bout_show_individual"
+                    "Show individual flies",
+                    value=False,
+                    key="bout_show_individual",
+                    help="One faint line per fly behind the group curves. Useful for "
+                    "spotting a single fly driving a group; off by default because on "
+                    "a few hundred flies it is a texture rather than a reading.",
                 )
             bout_method = "kde" if _bd_method_label.startswith("KDE") else "survival"
 
@@ -468,158 +582,8 @@ with tab_bouts:
                 key="dl_bouts_summary",
             )
 
-        st.divider()
-
-        # ============================================================
-        # Sleep-State Totals (Abhilash short / intermediate / long)
-        # ============================================================
-        if any(v in ds.data_vars for v in ("sleep_short", "sleep_intermediate", "sleep_long")):
-            st.subheader("Sleep-State Totals by Genotype")
-            st.caption(
-                "Total time in each sleep state — **short / intermediate / long** bouts "
-                "(Abhilash et al. 2026) — per genotype, from the **Sleep State Thresholds** "
-                "set in Sleep Analysis above. Group mean per fly ± SEM."
-            )
-            ss_pct = st.checkbox(
-                "Show as % of each fly's classified sleep", value=False, key="ss_state_pct"
-            )
-            ss_fig, ss_df = plotting.sleep_state_totals_bars(
-                ds,
-                selected_genotypes=selected_genotypes,
-                selected_temperatures=selected_temperatures,
-                as_percent=ss_pct,
-            )
-            if ss_fig is not None:
-                charts.plotly_chart(ss_fig, width="stretch")
-            if ss_df is not None and not ss_df.empty:
-                ex.save_df_button(
-                    "Save Sleep-State Totals (group mean±SEM) to working folder",
-                    ss_df,
-                    ds,
-                    "sleep_state_totals.csv",
-                    key="dl_sleep_states",
-                )
-                # Per-fly totals (the raw values behind the group bars) for your own stats:
-                # one row per fly, one column per state (Short / Intermediate / Long).
-                _ss_perfly = plotting.per_fly_sleep_state_totals(
-                    ds, selected_genotypes, selected_temperatures, as_percent=ss_pct
-                )
-                ex.save_df_button(
-                    "Save per-fly Sleep-State totals (for stats) to working folder",
-                    _ss_perfly,
-                    ds,
-                    "sleep_state_totals_per_fly.csv",
-                    key="dl_sleep_states_perfly",
-                )
-            st.divider()
     else:
-        st.info("Run **Sleep analysis** first — these views read its bout output.")
-
-with tab_totals:
-    # ============================================================
-    # Summary Bars
-    # ============================================================
-    _ds_phase_label = phase_used or dataset_phase(ds)
-    _summary_subhead_suffix = (
-        " (DD — subjective time)"
-        if _ds_phase_label == PHASE_DD
-        else (" (LD — Day/Night)" if _ds_phase_label == PHASE_LD else " (Day/Night)")
-    )
-    st.subheader(f"Activity Summary{_summary_subhead_suffix}")
-    if _ds_phase_label == PHASE_DD:
-        st.caption(
-            "**DD note:** the bin labels are subjective time relative to the "
-            "last lights-on transition (CT). Anchoring is reliable when the "
-            "DD split was applied with a clean discard-first-DD-day boundary. "
-            "If your recording had large data gaps at the DD start, the CT "
-            "alignment may drift — verify the actogram before publishing."
+        st.info(
+            "Nothing to show until sleep has been detected — every figure in this "
+            "tab reads the bouts it produces. The control is at the top."
         )
-    if "activity" in ds.data_vars:
-        fig = _cached_summary_bars(
-            dataset_fingerprint(ds),
-            ds,
-            "activity",
-            tuple(selected_genotypes) if selected_genotypes else None,
-            tuple(selected_temperatures) if selected_temperatures else None,
-            bin_size,
-            _ds_phase_label,
-        )
-        charts.plotly_chart(fig, width="stretch")
-        _act_tbl = _cached_summary_table(
-            dataset_fingerprint(ds),
-            ds,
-            "activity",
-            tuple(selected_genotypes) if selected_genotypes else None,
-            tuple(selected_temperatures) if selected_temperatures else None,
-            bin_size,
-            _ds_phase_label,
-        )
-        if not _act_tbl.empty:
-            ex.save_csv_button(
-                "Save Activity Summary (group mean±SEM) to working folder",
-                _summary_csv(_act_tbl),
-                ds,
-                "activity_summary.csv",
-                key="dl_act_summary",
-            )
-            # Per-fly totals (the raw values behind the group summary) so you can run
-            # your own stats — one row per fly: ID, Group, All Day / Day / Night totals.
-            _act_perfly = plotting.per_fly_summary_table(
-                ds,
-                "activity",
-                tuple(selected_genotypes) if selected_genotypes else None,
-                tuple(selected_temperatures) if selected_temperatures else None,
-                bin_size,
-            )
-            ex.save_df_button(
-                "Save per-fly Activity totals (for stats) to working folder",
-                _act_perfly,
-                ds,
-                "activity_totals_per_fly.csv",
-                key="dl_act_summary_perfly",
-            )
-
-    if analyses["sleep"]:
-        st.subheader(f"Sleep Summary{_summary_subhead_suffix}")
-        fig = _cached_summary_bars(
-            dataset_fingerprint(ds),
-            ds,
-            "sleep",
-            tuple(selected_genotypes) if selected_genotypes else None,
-            tuple(selected_temperatures) if selected_temperatures else None,
-            bin_size,
-            _ds_phase_label,
-        )
-        charts.plotly_chart(fig, width="stretch")
-        _sleep_tbl = _cached_summary_table(
-            dataset_fingerprint(ds),
-            ds,
-            "sleep",
-            tuple(selected_genotypes) if selected_genotypes else None,
-            tuple(selected_temperatures) if selected_temperatures else None,
-            bin_size,
-            _ds_phase_label,
-        )
-        if not _sleep_tbl.empty:
-            ex.save_csv_button(
-                "Save Sleep Summary (group mean±SEM) to working folder",
-                _summary_csv(_sleep_tbl),
-                ds,
-                "sleep_summary.csv",
-                key="dl_sleep_summary",
-            )
-            # Per-fly totals (the raw values behind the group summary) for your own stats.
-            _sleep_perfly = plotting.per_fly_summary_table(
-                ds,
-                "sleep",
-                tuple(selected_genotypes) if selected_genotypes else None,
-                tuple(selected_temperatures) if selected_temperatures else None,
-                bin_size,
-            )
-            ex.save_df_button(
-                "Save per-fly Sleep totals (for stats) to working folder",
-                _sleep_perfly,
-                ds,
-                "sleep_totals_per_fly.csv",
-                key="dl_sleep_summary_perfly",
-            )

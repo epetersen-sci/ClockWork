@@ -202,7 +202,7 @@ else:
                 # ds_dd / ds_ld stay LOCAL: they are reported on below, then
                 # dropped. They used to be cached in session_state, which meant
                 # four files had to keep that copy in sync with the master — and
-                # sleep_detection.py had to regenerate both on every run to stop
+                # sleep detection had to regenerate both on every run to stop
                 # them going stale. The split PARAMETERS are recorded on the
                 # master instead, so any consumer reproduces the same slice.
                 # Mark master as split-applied (but keep all timepoints).

@@ -26,7 +26,7 @@ from calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
-from ui import charts, status
+from ui import charts, filters, status
 from ui.guards import require_dataset
 
 st.caption(
@@ -928,11 +928,24 @@ with _tab_results:
                         "their distribution and its line is the mean — the same "
                         "number the curve above plots.",
                     )
+                    # Named the way Import named them. Two of these columns are
+                    # stored under a different coord name than the one that was
+                    # ticked (pulse_time -> pulse_zt_hour), and a figure that
+                    # labels itself from the coords renames the user's own
+                    # columns back at them.
+                    _back = filters.column_for_coord(ds)
                     _fig_v, _drawn_v = plotting.phase_response_violins(
                         _treated,
                         major_cols=_major,
                         split_col=_split,
                         show_points=_show_pts,
+                        x_title=" x ".join(
+                            _back.get(_zt_coord if c == "zt" else c, c).replace("_", " ")
+                            for c in _major
+                        ),
+                        split_title=(
+                            _back.get(_split, _split).replace("_", " ") if _split else None
+                        ),
                     )
                     charts.plotly_chart(
                         _fig_v, filename="phase_response_per_fly", width="stretch"
