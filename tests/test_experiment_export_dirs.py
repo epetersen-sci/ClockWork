@@ -46,7 +46,18 @@ class TestNameFromMetadataFilename:
         assert experiment_name_from_path("METADATA_exp3.XLSX") == "exp3"
 
     def test_the_directory_is_ignored(self):
+        """Both separators, on every platform.
+
+        This asserted only the Windows spelling, and passed on a Windows
+        machine for the wrong reason: ``os.path.basename`` found the directory
+        because the OS running the test agreed with the path. On CI it found no
+        directory at all, kept the lot, and named the export folder
+        ``D_runs_july_exp2``. Which OS reads the string must not change what
+        the file is called.
+        """
         assert experiment_name_from_path(r"D:\runs\july\metadata_exp2.csv") == "exp2"
+        assert experiment_name_from_path("/runs/july/metadata_exp2.csv") == "exp2"
+        assert experiment_name_from_path("./metadata_exp2.csv") == "exp2"
 
     def test_punctuation_becomes_underscores(self):
         assert experiment_name_from_path("metadata-exp 4.2.csv") == "exp_4_2"

@@ -170,7 +170,18 @@ def experiment_name_from_path(metadata_path):
     import os
     import re
 
-    stem = os.path.splitext(os.path.basename(str(metadata_path or "")))[0]
+    # Both separators, not os.path.basename. basename follows the convention
+    # of whatever machine is running, so a Windows path read on Linux has no
+    # directory part at all: the whole string becomes the "filename", every
+    # directory in it survives the split below, and a run ends up exporting to
+    # a folder named after its own drive letter. CI caught exactly that.
+    #
+    # Which OS reads the string should not change what the file is called. A
+    # literal backslash IS legal in a POSIX filename, but this domain does not
+    # produce one, and a pasted Windows path is far likelier than a file named
+    # with a backslash in it.
+    tail = str(metadata_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = os.path.splitext(tail)[0]
     kept = [p for p in re.split(r"[^A-Za-z0-9]+", stem) if p and p.lower() != "metadata"]
     return sanitize_experiment_name("_".join(kept))
 
