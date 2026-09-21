@@ -278,6 +278,9 @@ def save_figures_png_button(label, figures, ds, key, *, scale=2, subfolder=None,
 def save_excel_button(label, sheets, ds, filename, key, *, help=None, subfolder=None):
     """Write a multi-sheet ``.xlsx`` into the working folder, in one click.
 
+    ``filename`` is a STEM: ``.xlsx`` is appended when it carries no extension, so
+    no caller has to remember the format it asked for.
+
     ``sheets`` is an iterable of ``(sheet_name, df)``, or a zero-argument callable
     returning one. An empty or None frame is skipped, so a sheet whose analysis
     produced nothing is simply absent rather than present and blank. Returns the
@@ -319,20 +322,47 @@ def save_excel_button(label, sheets, ds, filename, key, *, help=None, subfolder=
                 st.info("Nothing to export.")
                 return None
             path = os.path.join(_export_dir(ds, subfolder), filename)
+            # Callers name the workbook, not the format — they pass "sleep_totals",
+            # not "sleep_totals.xlsx". Without this the file lands with no
+            # extension, which Windows will not open and which looks for all the
+            # world like a successful export: the button even reports where it
+            # went.
+            if not os.path.splitext(path)[1]:
+                path += ".xlsx"
             with pd.ExcelWriter(path, engine="openpyxl") as xl:
                 for name, df in resolved:
+                    # Keep the index when it carries something. A ZT table is
+                    # indexed by the bin and has (group, stat) MultiIndex columns
+                    # — pandas REFUSES index=False for those outright — while a
+                    # per-fly table is a plain RangeIndex whose numbers are noise
+                    # in a spreadsheet.
+                    keep_index = (
+                        isinstance(df.columns, pd.MultiIndex)
+                        or isinstance(df.index, pd.MultiIndex)
+                        or df.index.name is not None
+                    )
                     # Excel's own limit, which openpyxl raises on rather than
                     # trimming. Callers here pass short names, so this is a guard
                     # against a crash, not a naming policy.
-                    df.to_excel(xl, sheet_name=str(name)[:31], index=False)
+                    df.to_excel(xl, sheet_name=str(name)[:31], index=keep_index)
             _remember(key, f"Saved {len(resolved)} sheet(s) to `{path}`")
             _show_remembered(key)
             return path
-        except Exception as e:
+        except ImportError as e:
+            # The one failure the package really explains. openpyxl is in
+            # requirements.txt, so a missing one is a broken environment rather
+            # than an optional extra, and the error names it.
             st.error(
                 f"Excel export failed: {e}. Writing .xlsx needs the `openpyxl` "
                 "package (`pip install openpyxl`)."
             )
+            return None
+        except Exception as e:
+            # Everything else reports ITSELF. This used to blame openpyxl for any
+            # exception at all, so a pandas refusal to write MultiIndex columns
+            # came out as "install openpyxl" — with openpyxl installed, and the
+            # real cause nowhere on screen.
+            st.error(f"Excel export failed: {e}")
             return None
     _show_remembered(key)
     return None

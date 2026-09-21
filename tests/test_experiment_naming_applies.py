@@ -66,11 +66,22 @@ class TestApplyingToTheLoadedDataset:
 
 
 class TestSyncingFromTheDataset:
+    """``sync_from_dataset`` parks the name and ``take_pending`` hands it over.
+
+    Two steps rather than one assignment, because Streamlit forbids writing a
+    widget's key once that widget exists on the current run — and the thing that
+    knows the name (loading a .nc) runs long after the field is drawn. Tested as
+    a pair: either half alone pins a mechanism rather than the behaviour. The
+    end-to-end version, through the real Import page, is in
+    tests/test_workbook_exports.py.
+    """
+
     def test_it_takes_the_name_from_the_dataset(self):
         import streamlit as st
 
         st.session_state[experiment.KEY] = "left over from the last import"
         experiment.sync_from_dataset(xr.Dataset(attrs={"experiment_name": "exp8"}))
+        experiment.take_pending()  # what name_control does before the widget
         assert st.session_state[experiment.KEY] == "exp8"
 
     def test_a_dataset_without_a_name_clears_the_field(self):
@@ -80,7 +91,28 @@ class TestSyncingFromTheDataset:
 
         st.session_state[experiment.KEY] = "exp7"
         experiment.sync_from_dataset(xr.Dataset())
+        experiment.take_pending()
         assert st.session_state[experiment.KEY] == ""
+
+    def test_the_name_survives_until_the_field_can_take_it(self):
+        """The bug this shape exists for: the loader runs AFTER the widget, so the
+        name has to wait rather than be written (and raise, and be swallowed)."""
+        import streamlit as st
+
+        st.session_state[experiment.KEY] = "exp7"
+        experiment.sync_from_dataset(xr.Dataset(attrs={"experiment_name": "exp8"}))
+        assert st.session_state[experiment.KEY] == "exp7", (
+            "the field must NOT be written while the widget owns it"
+        )
+        assert st.session_state[experiment.PENDING] == "exp8"
+
+    def test_nothing_parked_leaves_the_field_alone(self):
+        import streamlit as st
+
+        st.session_state.pop(experiment.PENDING, None)
+        st.session_state[experiment.KEY] = "typed by hand"
+        experiment.take_pending()
+        assert st.session_state[experiment.KEY] == "typed by hand"
 
 
 class TestApplyToLoadedIsASafeNoOp:

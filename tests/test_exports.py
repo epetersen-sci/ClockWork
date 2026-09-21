@@ -97,9 +97,14 @@ class TestBoutDataframeIsSingleSourceOfTruth:
             encoding="utf-8"
         )
         assert '"sleep_bouts.csv"' in export
-        assert '"sleep_bouts_filtered.csv"' in activity
+        # Activity & Sleep ships a workbook now, so the stem is what has to differ;
+        # the extension is appended by save_excel_button.
+        assert '"sleep_bouts_filtered"' in activity
         assert '"sleep_bouts.csv"' not in activity, (
             "same filename, different contents: whichever the user opened last won"
+        )
+        assert '"sleep_bouts"' not in activity, (
+            "and the stem alone collides just as badly once .xlsx is appended"
         )
 
 

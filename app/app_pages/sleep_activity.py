@@ -429,7 +429,7 @@ with tab_activity:
             ex.save_excel_button(
                 "Save binned activity (.xlsx)",
                 [
-                    ("group_summary", _pivot.reset_index()),
+                    ("group_summary", _pivot),
                     ("per_fly", _act_pf),
                 ],
                 ds,
@@ -514,7 +514,7 @@ with tab_sleep:
             ex.save_excel_button(
                 "Save binned sleep (.xlsx)",
                 [
-                    ("group_summary", _pivot_sl.reset_index()),
+                    ("group_summary", _pivot_sl),
                     ("per_fly", _sl_pf),
                 ],
                 ds,
