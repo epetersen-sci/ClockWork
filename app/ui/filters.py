@@ -96,49 +96,52 @@ def bin_size_sidebar(key, *, label="Bin size (minutes)", default=30):
     return st.sidebar.slider(label, 5, 60, default, step=5, key=key)
 
 
-#: The dataset's own per-fly grouping, offered as a pickable "column" alongside the
-#: metadata coords. Its values are the labels built at import from whichever columns
-#: were ticked there, so selecting it reproduces those groups exactly.
-GROUP_COORD = "group"
+def _column_for_coord(ds):
+    """``{coord name: the metadata column it came from}`` — the renames, reversed."""
+    import dam_utilities
+
+    return {v: k for k, v in dam_utilities.METADATA_COORD_RENAMES.items()}
 
 
 def group_by_options(ds):
-    """``(options, default)`` for a "one panel/figure per …" picker.
+    """``(options, default)`` for a "one panel/figure per …" picker, in METADATA
+    COLUMN names — the same names the Import page shows.
 
-    The default is the dataset's OWN grouping — the ``group`` coord — so a page
-    draws the groups defined on Import without having to reconstruct them.
+    The picker speaks the user's language: you ticked ``pulse_time`` on Import, so
+    that is the chip you see here. Two of those columns are stored as coords under
+    different names (``pulse_time`` -> ``pulse_zt_hour``), because the value is
+    parsed on the way in; :func:`group_by_coords` does that translation, so no page
+    has to know about it.
 
-    Reconstructing them is what went wrong. Defaulting to
-    ``attrs['group_columns']`` looks right, but that records the metadata COLUMNS
-    ticked at import, and two of them are stored under different coord names
-    (``pulse_time`` -> ``pulse_zt_hour``). Filtering that list down to real coords
-    silently dropped them, so a dataset grouped by genotype + pulse time + pulse
-    duration came out grouped by genotype alone — a different partition, presented
-    as the default. The ``group`` coord already holds the answer, and is what
-    Curate & split and the group filters use, which is why those pages looked right
-    while these two did not.
-
-    The metadata coords still follow it, so a page can be re-grouped on the fly.
+    The default is whatever was ticked on Import, so a page opens on the grouping
+    the dataset already has rather than one it guessed at.
     """
     import dam_utilities
 
-    options = []
-    if GROUP_COORD in ds.coords:
-        options.append(GROUP_COORD)
-    options += [c for c in dam_utilities.group_defining_coords(ds) if c != GROUP_COORD]
-    default = [GROUP_COORD] if GROUP_COORD in ds.coords else options[:1]
-    return options, default
+    back = _column_for_coord(ds)
+    options = [back.get(c, c) for c in dam_utilities.group_defining_coords(ds)]
+    default = [back.get(c, c) for c in dam_utilities.get_group_coord_names(ds)]
+    default = [c for c in default if c in options]
+    return options, (default or options[:1])
 
 
-def group_by_label(ds, column):
-    """How a :func:`group_by_options` entry reads in a picker.
+def group_by_coords(ds, columns):
+    """The coord names for a selection made in :func:`group_by_options`' terms."""
+    import dam_utilities
 
-    ``group`` is not a metadata column and naming it one is confusing, so it says
-    what it is and which columns built it.
+    return tuple(dam_utilities.METADATA_COORD_RENAMES.get(c, c) for c in columns)
+
+
+def is_import_grouping(ds, columns):
+    """True when ``columns`` is exactly the grouping chosen at Import.
+
+    When it is, a page should label its panels from ``ds['group']`` rather than
+    rebuilding them: the stored labels carry the metadata's own values (``ZT21``),
+    while rebuilding from coords gives the parsed ones (``21.0``). Same partition,
+    uglier names.
     """
     import dam_utilities
 
-    if column != GROUP_COORD:
-        return str(column)
-    cols = dam_utilities.get_group_columns(ds)
-    return f"the groups defined at import ({', '.join(cols)})" if cols else "the groups defined at import"
+    return list(group_by_coords(ds, columns)) == list(
+        dam_utilities.get_group_coord_names(ds)
+    )

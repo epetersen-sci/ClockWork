@@ -65,9 +65,9 @@ else:
 # ============================================================
 st.subheader("Groups")
 
-# The dataset's OWN grouping leads — see ui.filters.group_by_options for why
-# rebuilding it from attrs['group_columns'] dropped the pulse columns. The metadata
-# coords follow, so this can still be re-grouped on the fly.
+# The picker speaks metadata COLUMN names — the same ones ticked on Import — and
+# defaults to that grouping, so the box shows what you chose without needing to
+# announce itself. ui.filters does the column->coord translation.
 _coord_opts, _default = filters.group_by_options(ds)
 if not _coord_opts:
     st.error("This dataset has no categorical metadata coordinates to group by.")
@@ -77,24 +77,32 @@ group_by = st.multiselect(
     "One actogram per",
     _coord_opts,
     default=_default,
-    format_func=lambda c: filters.group_by_label(ds, c),
-    help="Defaults to the groups you defined on the Import page, so these panels "
-    "match the groups the rest of the app uses. Pick metadata columns instead to "
-    "re-group just this page.",
+    help="A group is one combination of these, and each gets its own actogram.",
 )
 if not group_by:
     st.error("Pick at least one column.")
     st.stop()
-group_by = tuple(group_by)
 
-_labels, _cols = ps_module.group_labels(ds, group_by)
+# Label the panels from ds['group'] while the selection IS the import grouping: the
+# stored labels carry the metadata's own values (ZT21), where rebuilding from coords
+# gives the parsed ones (21.0). Same flies either way — only the names differ.
+# Everything downstream groups by _label_by, never by the picker's column names:
+# the two disagree the moment a renamed column is chosen, and a mismatch here is
+# silent — the splits end up keyed by labels no panel has.
+_label_by = (
+    ("group",)
+    if filters.is_import_grouping(ds, group_by)
+    else filters.group_by_coords(ds, group_by)
+)
+
+_labels, _cols = ps_module.group_labels(ds, _label_by)
 _groups = sorted(set(_labels))
 _counts = {g: int((_labels == g).sum()) for g in _groups}
 
 # Name each panel by the apparatus its flies sat in, without grouping on it. A group
 # holding more than one box shows all of them rather than silently picking one.
 _box_col = next(
-    (c for c in ("flybox", "Monitor") if c in ds.coords and c not in group_by), None
+    (c for c in ("flybox", "Monitor") if c in ds.coords and c not in _label_by), None
 )
 _box_vals = np.asarray(ds[_box_col].values).astype(str) if _box_col else None
 
@@ -190,7 +198,7 @@ if not selected:
 # Section 3: Draw
 # ============================================================
 try:
-    res = act_module.compute_group_actograms(ds, group_by, bin_minutes=int(bin_minutes))
+    res = act_module.compute_group_actograms(ds, _label_by, bin_minutes=int(bin_minutes))
 except Exception as exc:
     st.error(f"Could not build the actograms: {exc}")
     st.stop()
@@ -216,7 +224,7 @@ if mark_ld:
     elif _phase == PHASE_DD:
         _splits = dict.fromkeys(_groups)
     else:
-        _splits, _split_disagree = act_module.group_split_minutes(ds, group_by)
+        _splits, _split_disagree = act_module.group_split_minutes(ds, _label_by)
     _no_boundary = [g for g in selected if _splits.get(g) is None]
     if _no_boundary and _phase != PHASE_DD:
         st.warning(

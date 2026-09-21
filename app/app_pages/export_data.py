@@ -58,7 +58,11 @@ with tab_dataset:
     if _has_phase_datasets:
         save_phase_datasets = st.checkbox(
             "Also save DD and LD phase datasets separately",
-            value=True,
+            # Off by default: the master carries both phases and every analysis page
+            # derives the view it needs, so the split files are a convenience for
+            # taking a phase elsewhere rather than something the app itself reads.
+            # Writing three files when one was asked for is the surprising default.
+            value=False,
             key="save_phase_datasets",
             help="Saves each phase as its own NetCDF file (e.g. analyzed_dataset_DD.nc, analyzed_dataset_LD.nc) "
             "alongside the master dataset.",

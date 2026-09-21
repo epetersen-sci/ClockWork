@@ -156,27 +156,42 @@ class TestAttrsSurviveNetCDF:
 
 
 class TestPagesDefaultToTheDatasetGrouping:
-    def test_the_actogram_picker_leads_with_the_group_coord(self, pulse_ds_built):
+    def test_the_picker_speaks_metadata_column_names(self, pulse_ds_built):
+        """The chips say what you ticked on Import — `pulse_time`, not
+        `pulse_zt_hour`. A picker that renames your columns back at you is its own
+        small confusion."""
         from ui import filters
 
         options, default = filters.group_by_options(pulse_ds_built)
-        assert default == ["group"]
-        assert options[0] == "group"
-        assert "pulse_zt_hour" in options, "re-grouping must still be possible"
+        assert default == ["genotype", "pulse_time", "pulse_duration_min"]
+        assert "pulse_time" in options and "pulse_zt_hour" not in options
 
-    def test_the_group_option_says_what_it_is(self, pulse_ds_built):
+    def test_the_selection_translates_back_to_coords(self, pulse_ds_built):
         from ui import filters
 
-        label = filters.group_by_label(pulse_ds_built, "group")
-        assert "import" in label.lower()
-        # It names the columns behind it, so the picker is self-explaining.
-        for col in ("genotype", "pulse_time", "pulse_duration_min"):
-            assert col in label
+        assert filters.group_by_coords(
+            pulse_ds_built, ["genotype", "pulse_time", "pulse_duration_min"]
+        ) == ("genotype", "pulse_zt_hour", "pulse_duration_minutes")
+
+    def test_the_import_grouping_is_recognised_so_labels_stay_readable(self, pulse_ds_built):
+        """When the selection IS the import grouping, a page labels from ds['group'],
+        whose labels carry the metadata's own values (ZT21) rather than the parsed
+        ones (21.0). Same flies, better names."""
+        from ui import filters
+
+        assert filters.is_import_grouping(
+            pulse_ds_built, ["genotype", "pulse_time", "pulse_duration_min"]
+        )
+        assert not filters.is_import_grouping(pulse_ds_built, ["genotype"])
 
     def test_a_dataset_with_no_group_coord_falls_back(self, pulse_ds_built):
         from ui import filters
 
         bare = pulse_ds_built.drop_vars("group")
         options, default = filters.group_by_options(bare)
-        assert "group" not in options
-        assert default and default[0] in options
+        assert default and all(c in options for c in default)
+        # The recorded grouping is still readable even with the coord gone, so a page
+        # can rebuild the same partition from columns — it just cannot shortcut to
+        # ds['group'] for the labels.
+        assert filters.is_import_grouping(bare, default)
+        assert "group" not in bare.coords

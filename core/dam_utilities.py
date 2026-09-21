@@ -452,10 +452,13 @@ METADATA_COORD_RENAMES = {
     "pulse_duration_min": "pulse_duration_minutes",
 }
 
+#: Columns that are never sensible grouping factors. `region_id` and `id` identify
+#: individual flies, so grouping on them gives one fly per group; the datetimes are
+#: timing, not treatment. `Monitor` is deliberately NOT here: a monitor is a physical
+#: device, and monitor-level effects are a real thing to go looking for.
 GROUP_EXCLUDE_COLUMNS = (
     "file",
     "region_id",
-    "Monitor",
     "id",
     "start_datetime",
     "stop_datetime",
@@ -707,10 +710,15 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     # below) because a blank cell — an unpulsed control cohort — makes their unique
     # list a mix of strings/numbers and NaN, which NetCDF cannot serialize as an
     # attribute. The per-fly coordinate is the durable record either way.
+    # `Monitor` is KEPT as a per-fly coord: a monitor is a physical device and
+    # monitor-level effects are a real thing to look for, so it has to be groupable.
+    # `region_id` stays out — it separates individual flies, which is what the `id`
+    # coord already does, so as a grouping factor it would just be "one fly per
+    # group". The pulse pair is excluded here and attached below under the names
+    # their PARSED values deserve (see METADATA_COORD_RENAMES).
     exclude_columns = [
         "file",
         "region_id",
-        "Monitor",
         "id",
         "pulse_time",
         "pulse_duration_min",
