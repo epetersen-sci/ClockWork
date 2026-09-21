@@ -94,3 +94,60 @@ def bin_size_sidebar(key, *, label="Bin size (minutes)", default=30):
     """ZT bin-size slider. Its own function so it stops rendering underneath the
     "Filter groups" subheader, which is where it currently appears to belong."""
     return st.sidebar.slider(label, 5, 60, default, step=5, key=key)
+
+
+def column_for_coord(ds):
+    """``{coord name: the metadata column it came from}`` — the renames, reversed.
+
+    Public because a page legitimately needs it: a figure axis should carry the
+    name the user ticked on Import (``pulse_time``), not the coord it is stored
+    under (``pulse_zt_hour``), and a page reaching for a private name to get
+    there is backlog item 8 all over again.
+    """
+    import dam_utilities
+
+    return {v: k for k, v in dam_utilities.METADATA_COORD_RENAMES.items()}
+
+
+def group_by_options(ds):
+    """``(options, default)`` for a "one panel/figure per …" picker, in METADATA
+    COLUMN names — the same names the Import page shows.
+
+    The picker speaks the user's language: you ticked ``pulse_time`` on Import, so
+    that is the chip you see here. Two of those columns are stored as coords under
+    different names (``pulse_time`` -> ``pulse_zt_hour``), because the value is
+    parsed on the way in; :func:`group_by_coords` does that translation, so no page
+    has to know about it.
+
+    The default is whatever was ticked on Import, so a page opens on the grouping
+    the dataset already has rather than one it guessed at.
+    """
+    import dam_utilities
+
+    back = column_for_coord(ds)
+    options = [back.get(c, c) for c in dam_utilities.group_defining_coords(ds)]
+    default = [back.get(c, c) for c in dam_utilities.get_group_coord_names(ds)]
+    default = [c for c in default if c in options]
+    return options, (default or options[:1])
+
+
+def group_by_coords(ds, columns):
+    """The coord names for a selection made in :func:`group_by_options`' terms."""
+    import dam_utilities
+
+    return tuple(dam_utilities.METADATA_COORD_RENAMES.get(c, c) for c in columns)
+
+
+def is_import_grouping(ds, columns):
+    """True when ``columns`` is exactly the grouping chosen at Import.
+
+    When it is, a page should label its panels from ``ds['group']`` rather than
+    rebuilding them: the stored labels carry the metadata's own values (``ZT21``),
+    while rebuilding from coords gives the parsed ones (``21.0``). Same partition,
+    uglier names.
+    """
+    import dam_utilities
+
+    return list(group_by_coords(ds, columns)) == list(
+        dam_utilities.get_group_coord_names(ds)
+    )

@@ -21,7 +21,7 @@ from dataset_meta import (
     stamp_phase,
 )
 from load_and_save_datasets import load_dataset_from_netcdf
-from ui import status
+from ui import experiment, file_dialogs, status
 from ui.state import clear_dataset_state
 
 
@@ -64,6 +64,22 @@ tab_fresh, tab_netcdf, tab_combine = st.tabs(
 with tab_fresh:
     st.subheader("Import Raw DAM Data")
 
+    # Above the two text inputs on purpose: these buttons write into the inputs'
+    # session-state keys, and Streamlit only permits that before the widget for a
+    # key is created on the same run.
+    _browse_meta, _browse_dir = st.columns(2)
+    with _browse_meta:
+        file_dialogs.browse_metadata_file(
+            initial=st.session_state.get("working_dir"),
+            metadata_target="metadata_path_input",
+            data_dir_target="data_dir_input",
+        )
+    with _browse_dir:
+        file_dialogs.browse_data_folder(
+            initial=st.session_state.get("working_dir"),
+            data_dir_target="data_dir_input",
+        )
+
     data_dir = st.text_input(
         "Data directory (folder containing MonitorXXX.txt files)",
         value=st.session_state.get("working_dir", ""),
@@ -74,6 +90,19 @@ with tab_fresh:
         value="",
         key="metadata_path_input",
     )
+
+    # Re-guess the experiment name whenever the metadata file changes, and write it
+    # into the field's session key BEFORE the widget is created — the only point at
+    # which Streamlit allows that. Guarded on the path it was derived from, so a
+    # name the user typed survives every rerun and is replaced only when they point
+    # at a different metadata file (where keeping the old run's name would be worse
+    # than losing an edit).
+    if st.session_state.get("_experiment_name_source") != metadata_path:
+        st.session_state["_experiment_name_source"] = metadata_path
+        st.session_state[experiment.KEY] = dam_utilities.experiment_name_from_path(metadata_path)
+
+    experiment.name_control()
+
     gap_threshold = st.number_input("Gap threshold (hours)", min_value=0.1, value=1.0, step=0.5)
 
     with st.expander("Metadata file format"):
@@ -233,6 +262,14 @@ with tab_fresh:
                 options=_grp_candidates,
                 default=_grp_default,
                 key="group_columns_select",
+                # Without this the selection is gone the moment you leave the page:
+                # Streamlit drops a keyed widget's value once the widget stops being
+                # rendered, and a page switch is exactly that. Coming back to Import
+                # then showed the DEFAULT — genotype + temperature — while the loaded
+                # dataset was still grouped by whatever had actually been ticked, so
+                # the page contradicted the data it had just built. `persist_state` is
+                # Streamlit's own answer; ui/filters.py uses it for the same reason.
+                persist_state="session",
                 help="Which metadata factors define the comparison 'group' used throughout "
                 "the analysis (e.g. add 'sex', or use genotype alone). Datetime, monitor, "
                 "region and id columns are excluded automatically. "
@@ -314,6 +351,14 @@ with tab_fresh:
                         # files. A plain string, so it survives the NetCDF round-trip
                         # (a reloaded .nc still exports to that folder when it exists).
                         ds.attrs["source_data_dir"] = st.session_state.get("working_dir") or ""
+                        # The experiment's name, read off the metadata file. It names
+                        # the export folder, so a paired run whose two metadata files
+                        # share a working folder keeps its figures apart. Plain string
+                        # for the same reason source_data_dir is one: a reloaded .nc
+                        # still exports into its own experiment's folder.
+                        ds.attrs["experiment_name"] = dam_utilities.sanitize_experiment_name(
+                            st.session_state.get(experiment.KEY)
+                        )
                         # Carry the import-time integrity counters onto the
                         # dataset so a reloaded .nc can still report its own
                         # quality. Plain ints only — see
@@ -341,6 +386,11 @@ with tab_fresh:
 # ============================================================
 with tab_netcdf:
     st.subheader("Load Existing NetCDF File")
+
+    file_dialogs.browse_netcdf_file(
+        initial=st.session_state.get("working_dir"),
+        nc_target="nc_path_input",
+    )
 
     nc_path = st.text_input(
         "Path to NetCDF file (.nc)",
@@ -438,6 +488,10 @@ with tab_netcdf:
                 st.session_state.dataset = ds
                 st.session_state.dataset_path = _nc_path
                 st.session_state.working_dir = os.path.abspath(os.path.dirname(_nc_path))
+                # Take the name from the FILE, even when it has none: whatever the
+                # last import left in the field must not follow this dataset around
+                # and send its exports to the previous experiment's folder.
+                experiment.sync_from_dataset(ds)
 
                 analyses = detect_analyses(ds)
                 st.session_state.analyses = analyses
@@ -588,6 +642,11 @@ with tab_combine:
 
                 combined = xr.concat(datasets, dim="id")
                 combined = dam_utilities.ensure_numpy_backed(combined)
+                # concat keeps the FIRST input's attrs, so a combination of two
+                # experiments would inherit one of their names and export as though
+                # it were that experiment. It is its own thing: no name, plain folder.
+                combined.attrs["experiment_name"] = ""
+                experiment.sync_from_dataset(combined)
 
                 # Combined datasets inherit no clear partitioning from
                 # their constituents; stamp 'full' unless every input

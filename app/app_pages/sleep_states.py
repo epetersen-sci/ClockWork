@@ -8,10 +8,11 @@ profiles and bout initiation probability (Fig 2), rose plots and circadian
 gating (Fig 3), scalograms and period-vs-amplitude (Fig 5), and ultradian
 rhythmicity (Fig 6).
 
-Read-only with respect to the dataset. Everything here derives from the
-short/intermediate/long masks the **Sleep analysis** page writes, so run that
-first — with the phase you want to look at here, since sleep detection is
-per-epoch.
+The short / intermediate / long BOUNDS live at the top of this page, because
+they are a definition rather than a setting: every panel below is drawn under
+them. Applying them re-cuts the existing bouts and detects nothing again — see
+``core.sleep_analysis.reclassify_sleep_states``. Detection itself, which the
+bouts come from, is on **Activity & Sleep**.
 
 Figure 4 (homeostatic rebound) is deliberately absent: it needs a deprivation
 experiment with matched undisturbed controls, which is a different experimental
@@ -46,11 +47,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import export_helpers as ex
 import plotting
+import sleep_analysis
 import sleep_state_metrics as ssm
+from analysis_detection import detect_analyses
 from dam_utilities import select_phase
 from dataset_meta import dataset_fingerprint, dataset_phase
 from periodograms import sleep_cwt_analysis, ultradian_rhythmicity_chi_sq
+from ui import charts, sleep_run
 from ui.filters import group_filter_sidebar
 from ui.guards import require_dataset
 
@@ -135,8 +140,13 @@ def _cached_chi_sq(fp, group, _cwt, states):
 # ---------------------------------------------------------------------------
 
 stamped = dataset_phase(ds)
-phase_options = ["DD", "LD"]
-default_phase = "DD" if stamped in (None, "full", "DD") else stamped
+phase_options = ["LD", "DD"]
+# LD leads. The circadian measures here are cleanest in DD, with no light cycle
+# driving them, and that is why DD used to be the default — but it made the page
+# open on an epoch most people had not asked for, and on a dataset whose sleep
+# analysis was run on LD it opened on an epoch with no data at all. Whichever
+# epoch is chosen, it is now the only one drawn.
+default_phase = "LD" if stamped in (None, "full", "LD") else stamped
 phase = st.sidebar.radio(
     "Phase",
     phase_options,
@@ -145,9 +155,10 @@ phase = st.sidebar.radio(
     # widget id is generated and nothing can select the non-default epoch.
     key="sleep_states_phase",
     help=(
-        "DD is the default because the circadian measures here are cleanest "
-        "without a light cycle driving them. A dataset already stamped with a "
-        "single epoch can only be shown in that epoch."
+        "Every figure on this page shows this epoch and no other. LD is the "
+        "default; DD is where the circadian measures are cleanest, with no "
+        "light cycle driving them. A dataset already stamped with a single "
+        "epoch can only be shown in that epoch."
     ),
 )
 
@@ -183,9 +194,9 @@ group_values, all_groups, selected_groups, phase_ds = group_filter_sidebar(
 states_declared = ssm.available_states(phase_ds)
 if not states_declared:
     st.warning(
-        "This dataset has no sleep-state masks. Run **Sleep & activity → Sleep "
-        f"analysis** on the {phase_used} epoch first — the states here come from "
-        "the `sleep_short` / `sleep_intermediate` / `sleep_long` variables it writes."
+        "This dataset has no sleep-state masks. Detect sleep from the **Sleep** "
+        "tab on **Activity & Sleep** first — the states here come from the "
+        "`sleep_short` / `sleep_intermediate` / `sleep_long` variables it writes."
     )
     st.stop()
 
@@ -218,9 +229,8 @@ if not states_present:
     st.warning(
         f"Every sleep-state minute in the {phase_used} epoch of this dataset is "
         "missing, so nothing on this page can be computed. Sleep detection is "
-        "per-epoch: **Sleep & activity → Sleep analysis** marks the minutes "
-        f"outside the epoch it ran on as missing, and it was not run on "
-        f"{phase_used}. " + hint,
+        "per-epoch: detection marks the minutes outside the epoch it ran on as "
+        f"missing, and it was not run on {phase_used}. " + hint,
         icon=":material/warning:",
     )
     st.stop()
@@ -238,6 +248,152 @@ st.caption(
     f"{phase_ds.sizes['id']} flies · {phase_used} epoch · "
     f"states: {', '.join(states_present)}"
 )
+
+# ---------------------------------------------------------------------------
+# Sleep State Thresholds — the two numbers every figure below depends on
+# ---------------------------------------------------------------------------
+# At the top because they are a DEFINITION, not a setting: "short sleep" means
+# whatever this says it means, and every panel on this page is drawn under that
+# definition. They were on the old Sleep analysis page, a page away from
+# everything they govern.
+#
+# Applying them does NOT re-detect sleep. Where short ends moves no bout
+# boundary — it re-cuts a table of bouts that already exists — so this runs
+# reclassify_sleep_states, which skips the per-fly detection pass entirely.
+# Changing the IMMOBILITY threshold is the one that invalidates both, and it
+# lives with detection on Activity & Sleep.
+st.subheader("Sleep State Thresholds")
+_sleep_def = sleep_run.sleep_definition(st.session_state.get("dataset"))
+if _sleep_def:
+    st.caption(_sleep_def)
+
+_th_msg = st.session_state.pop("_sleep_states_msg", None)
+if _th_msg:
+    st.success(_th_msg)
+
+_th_short, _th_inter, _th_go = st.columns([1, 1, 1])
+with _th_short:
+    _short_max = st.number_input(
+        "Short sleep ends at (minutes)",
+        min_value=5,
+        max_value=120,
+        value=int(ds.attrs.get("sleep_short_max_min") or 30),
+        step=5,
+        key="ss_short_max",
+        help="Bouts shorter than this are short sleep. The paper's DAM default "
+        "is 30 min (Abhilash et al. 2026).",
+    )
+with _th_inter:
+    _inter_max = st.number_input(
+        "Intermediate sleep ends at (minutes)",
+        min_value=int(_short_max) + 1,
+        max_value=360,
+        value=max(int(ds.attrs.get("sleep_inter_max_min") or 60), int(_short_max) + 1),
+        step=5,
+        key="ss_inter_max",
+        help="Bouts up to this are intermediate; anything longer is long sleep. "
+        "The paper's default is 60 min.",
+    )
+with _th_go:
+    st.caption("&nbsp;", unsafe_allow_html=True)
+    _changed = (
+        float(_short_max) != float(ds.attrs.get("sleep_short_max_min") or 30)
+        or float(_inter_max) != float(ds.attrs.get("sleep_inter_max_min") or 60)
+    )
+    if st.button(
+        "Re-classify bouts",
+        type="primary" if _changed else "secondary",
+        disabled=not _changed,
+        key="ss_apply_thresholds",
+        help="Re-cuts the existing bouts at these boundaries. Seconds, not "
+        "minutes — no bout is detected again.",
+    ):
+        try:
+            _master = sleep_analysis.reclassify_sleep_states(
+                st.session_state["dataset"],
+                short_max_min=float(_short_max),
+                inter_max_min=float(_inter_max),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.dataset = _master
+            st.session_state.analyses = detect_analyses(_master)
+            st.session_state["_sleep_states_msg"] = (
+                f"Bouts re-classified: short below {int(_short_max)} min, "
+                f"intermediate below {int(_inter_max)} min."
+            )
+            st.rerun()
+
+st.caption(
+    "These bounds are provisional and DAM-specific. The paper sets them from its "
+    "own supplemental methods; check yours against your recording before "
+    "publishing a state breakdown."
+)
+
+# What those thresholds produced, right under the control that set them — behind
+# a tick box, not an expander. Every tab on this page is gated so nothing is
+# computed unseen, and an expander's body runs whether or not it is open, which
+# would have made this the one figure on the page that always costs something.
+_has_state_masks = any(
+    v in phase_ds.data_vars for v in ("sleep_short", "sleep_intermediate", "sleep_long")
+)
+if _has_state_masks and st.checkbox(
+    "Show how much sleep falls in each state",
+    value=False,
+    key="ss_show_totals",
+    help="Each fly's time in short, intermediate and long sleep, under the bounds "
+    "set above.",
+):
+    _ss_pct = st.checkbox(
+        "Show as % of each fly's classified sleep", value=False, key="ss_state_pct"
+    )
+    _ss_per_fly = plotting.per_fly_sleep_state_totals(
+        phase_ds, None, None, as_percent=_ss_pct
+    )
+    if _ss_per_fly.empty:
+        st.info("No classified sleep in this epoch for the current group selection.")
+    else:
+        # One panel per state, groups on the x axis — the same treatment the
+        # activity and sleep totals get, and for the same reason: the experiment
+        # varies genotype, so that has to be the easy comparison. The grouped bar
+        # chart this replaces made state-versus-state the easy one instead.
+        _ss_unit = "% of classified sleep" if _ss_pct else "minutes"
+        _ss_order = sorted(_ss_per_fly["Group"].astype(str).unique())
+        # Side by side, so the three states are compared by eye rather than by
+        # scrolling — same reasoning as the totals on Activity & Sleep.
+        _ss_cols = st.columns(3)
+        for _i, _state in enumerate(("Short", "Intermediate", "Long")):
+            if _state not in _ss_per_fly.columns:
+                continue
+            _fig, _ = plotting.group_violins(
+                _ss_per_fly,
+                _state,
+                title=f"{_state} sleep",
+                y_title=_ss_unit,
+                colour=plotting.MEASURE_COLOURS[_i],
+                groups=_ss_order,
+            )
+            with _ss_cols[_i]:
+                charts.plotly_chart(_fig, width="stretch")
+
+        _ss_group = plotting.sleep_state_totals_bars(phase_ds, as_percent=_ss_pct)[1]
+        ex.save_excel_button(
+            "Save sleep-state totals (.xlsx)",
+            [
+                ("summary", _ss_group),
+                # Mean row per genotype on the exported copy only — the violins
+                # above read _ss_per_fly itself.
+                ("per_fly", ex.with_group_means(_ss_per_fly)),
+            ],
+            ds,
+            "sleep_state_totals",
+            key="dl_sleep_states",
+            help="Two sheets: the group mean ± SEM per state, and the per-fly "
+            "values behind it.",
+        )
+
+st.divider()
 
 # on_change="rerun" makes these dynamic, so `.open` is True only for the
 # selected tab. With the default "ignore" every body below would run on every
@@ -276,30 +432,15 @@ if tab_wave.open:
             "makes every fly's own peak 1.0 and flattens between-fly "
             "differences in profile shape."
         )
-        # Figure 1B prints LD and DD beside each other, because its claim is
-        # that the waveform SHAPES survive the loss of the light cycle. Showing
-        # only the selected epoch loses that comparison, so both are drawn when
-        # the dataset carries both. Same flies in each panel.
-        fly_ids = phase_ds["id"].values
-        epochs = {}
-        for epoch in ("LD", "DD"):
-            if epoch == phase_used:
-                epochs[epoch] = phase_ds
-                continue
-            try:
-                other, other_used = select_phase(ds, phase=epoch)
-            except (ValueError, KeyError):
-                continue  # this dataset holds only the one epoch
-            try:
-                other = other.sel(id=fly_ids)
-            except KeyError:
-                continue
-            # Skip an epoch sleep analysis did not run on rather than binning
-            # 189 flies x 4 all-missing masks to produce a panel that gets
-            # filtered out below anyway.
-            if not ssm.states_with_data(other):
-                continue
-            epochs[other_used] = other
+        # ONE epoch — whichever the sidebar selects.
+        #
+        # This panel used to draw LD beside DD, because the paper's Figure 1B does:
+        # its claim is that the waveform SHAPES survive the loss of the light cycle,
+        # which needs both to be seen together. That comparison is gone by request —
+        # the sidebar selector should govern what is on screen, and a page that
+        # answered it everywhere except here was the more confusing of the two.
+        # Restoring it means putting the other epoch back into `epochs` below.
+        epochs = {phase_used: phase_ds}
 
         panels = [(name, _cached_waveforms(dataset_fingerprint(sub), sub, bin_size_min))
                   for name, sub in epochs.items()]
@@ -334,7 +475,7 @@ if tab_wave.open:
                     continue
                 for column, (name, frame) in zip(st.columns(len(rows)), rows):
                     with column:
-                        st.plotly_chart(
+                        charts.plotly_chart(
                             plotting.normalized_waveform_overlay(
                                 frame,
                                 phase_label=name,
@@ -389,7 +530,7 @@ if tab_init.open:
             st.warning(
                 "No per-bout table in this dataset, so initiation probability "
                 "cannot be computed — the profiles below are still valid. "
-                "Re-run **Sleep analysis**, which writes `start_time` and "
+                "Re-detect sleep on **Activity & Sleep**, which writes `start_time` and "
                 "`sleep_state` alongside the masks."
             )
             init_stats = None
@@ -408,7 +549,7 @@ if tab_init.open:
             g_prof = prof_stats[prof_stats["group"] == group]
             left, right = st.columns(2)
             with left:
-                st.plotly_chart(
+                charts.plotly_chart(
                     plotting.state_profile_plot(
                         g_prof,
                         phase_label=phase_used,
@@ -421,7 +562,7 @@ if tab_init.open:
                 if init_stats is None:
                     st.empty()
                 else:
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.initiation_probability_plot(
                             init_stats[init_stats["group"] == group],
                             activity_stats=g_prof[g_prof["state"] == "activity"],
@@ -460,7 +601,7 @@ if tab_rose.open:
         # "Temporal organisation of sleep states — <group>" as the figure
         # title, so the heading repeated the group label directly above it.
         for group in groups:
-            st.plotly_chart(
+            charts.plotly_chart(
                 plotting.rose_plot_with_activity(
                     prof_stats[prof_stats["group"] == group],
                     group=group,
@@ -489,7 +630,7 @@ if tab_rose.open:
                 g_stats = circular[circular["group"] == group]
                 if g_stats.empty:
                     continue
-                st.plotly_chart(
+                charts.plotly_chart(
                     plotting.polar_gating_plot(
                         g_stats,
                         gates[gates["group"] == group],
@@ -729,7 +870,7 @@ if tab_scal.open:
                 if not surfaces:
                     st.info("The wavelet run produced no surfaces for these states.")
                 else:
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.sleep_state_scalogram(
                             surfaces,
                             axes,
@@ -739,7 +880,7 @@ if tab_scal.open:
                         ),
                         width="stretch",
                     )
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.period_amplitude_plot(
                             spectra,
                             axes,
@@ -822,7 +963,7 @@ if tab_ultra.open:
                     cropped[state] = cwt[surf_key].values[rows]
                     cropped_axes[state] = periods[rows]
                 if cropped:
-                    st.plotly_chart(
+                    charts.plotly_chart(
                         plotting.sleep_state_scalogram(
                             cropped,
                             cropped_axes,
@@ -832,7 +973,7 @@ if tab_ultra.open:
                         ),
                         width="stretch",
                     )
-                st.plotly_chart(
+                charts.plotly_chart(
                     plotting.ultradian_amplitude_plot(
                         amp,
                         bin_size_min=CWT_BIN_MIN,
@@ -925,7 +1066,7 @@ if tab_ultra.open:
                     if not len(chi.data_vars):
                         st.info("No periodogram could be computed.")
                     else:
-                        st.plotly_chart(
+                        charts.plotly_chart(
                             plotting.chi_sq_periodogram_plot(
                                 chi,
                                 states=tuple(states_present),

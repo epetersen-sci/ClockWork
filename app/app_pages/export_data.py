@@ -13,10 +13,18 @@ import sleep_analysis
 from analysis_detection import detect_analyses
 from dataset_meta import is_split_applied
 from load_and_save_datasets import save_dataset_to_netcdf
+from ui import experiment
 from ui.guards import require_dataset
 
 ds = require_dataset()
 analyses = detect_analyses(ds)
+
+# Renaming the experiment here renames the folder every "save to working folder"
+# button on every page writes into, including the ones on Sleep & activity and
+# Periodograms. It is offered on this page as well as at import because a dataset
+# reloaded from .nc never passes through the import field, and because this is
+# where someone goes when they want to know where their files went.
+experiment.name_control()
 
 # Three kinds of output, three tabs: the dataset itself, the raw/binned
 # tables, and the per-analysis result exports.
@@ -50,7 +58,11 @@ with tab_dataset:
     if _has_phase_datasets:
         save_phase_datasets = st.checkbox(
             "Also save DD and LD phase datasets separately",
-            value=True,
+            # Off by default: the master carries both phases and every analysis page
+            # derives the view it needs, so the split files are a convenience for
+            # taking a phase elsewhere rather than something the app itself reads.
+            # Writing three files when one was asked for is the surprising default.
+            value=False,
             key="save_phase_datasets",
             help="Saves each phase as its own NetCDF file (e.g. analyzed_dataset_DD.nc, analyzed_dataset_LD.nc) "
             "alongside the master dataset.",
@@ -204,7 +216,7 @@ with tab_tables:
                         .reset_index(drop=True)
                     )
                     st.download_button(
-                        "Download Per-Fly CSV (for stats)",
+                        "Download Per-Fly CSV",
                         per_fly_df.to_csv(index=False),
                         f"{export_var}_per_fly.csv",
                         "text/csv",

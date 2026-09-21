@@ -13,11 +13,17 @@ daily_pattern_line()              — ZT-binned mean ± SEM line plot per group
 sleep_bout_duration_lines()       — Per-fly sleep bout duration curves (KDE/survival) by group
 group_spectrum_plot()             — Generic mean±SEM curve overlay per group on a shared x-axis
 summary_bars()                    — Grouped bar chart: total activity/sleep by day/night/all-day
+group_violins()                   — One measure as per-fly distributions, one violin
+                                    per group (the distribution behind a group bar)
 single_fly_scalogram_plotly()        — Interactive Plotly scalogram for one fly
 group_ridge_density_plotly()         — Plotly ridge density of CWT periods per group
 phase_shift_actogram()            — Double-plotted actogram for one fly with the
                                     light pulse, daily phase markers and the
                                     pre/post-pulse regression fits overlaid
+phase_response_curve()            — Mean phase shift against the circadian time of
+                                    the pulse: the PRC itself
+phase_response_violins()          — The per-fly responses those means are taken
+                                    over, one violin per treated group
 save_group_average_scalogram_png()   — Disk-saved per-group 2D averaged CWT
                                        periodogram (matplotlib PNG; rendered via
                                        st.image to bypass Streamlit's plotly
@@ -182,7 +188,15 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
             tickvals.append(ids_ord[mid])
             ticktext.append(grp_ord[i])
             i = j
-        fig.update_yaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        # automargin, or the labels are clipped. Group names are metadata strings of
+        # any length ("dsOpa1(67159)+Ldhmut-ZT21-60.0"), and plotly's default 80 px
+        # left margin cut them mid-word — an exported heatmap read "er-none-0.0" for
+        # "per-none-0.0", with the axis title overprinting what was left. This is the
+        # y-axis counterpart of what apply_category_ticks does for group names on an
+        # x axis; it is the only other axis in this module carrying them.
+        fig.update_yaxes(
+            tickmode="array", tickvals=tickvals, ticktext=ticktext, automargin=True
+        )
         fig.update_layout(yaxis_title="Group")
 
     return fig
@@ -4240,3 +4254,449 @@ def phase_shift_actogram(
         showgrid=False,
     )
     return fig
+
+
+# ============================================================================
+# Phase response curve — two views of one per-fly quantity
+# ============================================================================
+#
+# Both renderers below draw ``core.phase_shift.compute_phase_response``'s
+# per-fly response, in hours, signed so that an ADVANCE is positive. The curve
+# plots the group means and the violins plot the flies those means are taken
+# over — ``summarize_phase_response`` is a groupby of the very frame the
+# violins receive, so the two views cannot disagree about what was measured,
+# only about how much of it they show.
+#
+# Neither function computes a response, matches a control or decides which
+# flies are drawable. They are handed frames and they draw them (ARCHITECTURE
+# rule 10), which is also why the "only one pulse time" case is the caller's
+# message rather than a title baked into an empty figure here.
+
+#: Warm, high-separation line colours. Deliberately not ``_get_group_colors``'s
+#: tab10: a PRC usually carries three or four genotypes and reads better with a
+#: palette whose neighbours differ in hue rather than in brightness.
+_PRC_PALETTE = [
+    "#E8722C", "#16A085", "#E86FA0", "#3B76AF", "#8E6BBF",
+    "#B5892B", "#5B8C3E", "#C0453B", "#7F8C8D", "#00838F",
+]
+_PRC_DASHES = ["solid", "dash", "dot", "dashdot", "longdash"]
+
+
+def _prc_join(values):
+    """``('Mito', 60.0)`` becomes ``'Mito · 60'`` — one label from several columns.
+
+    A whole number prints without its decimal even when it arrives as the string
+    ``'60.0'``, which is how a duration read back off a coord looks. Three
+    factors joined into one axis label is already long; ``.0`` three times over
+    is pure noise.
+    """
+    out = []
+    for v in values:
+        num = _as_number(v)
+        if num is not None and float(num).is_integer():
+            out.append(str(int(num)))
+        elif num is not None:
+            out.append(f"{num:g}")
+        else:
+            out.append(str(v))
+    return " · ".join(out)
+
+
+def _as_number(value):
+    """``value`` as a float, or None when it is not a number in any spelling."""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if np.isfinite(num) else None
+
+
+def _numeric_sort_key(frame, columns):
+    """Sort keys for ``columns``, numeric where the column is numeric in disguise.
+
+    Coord values reach a page as STRINGS — ``_group_meta`` casts them — so a
+    pulse duration sorts ``'100'`` before ``'20'`` under plain text ordering, and
+    the dose axis comes out in an order nobody would choose. Coerce per column
+    and fall back to text only for the columns that genuinely are text.
+    """
+    keys = {}
+    for col in columns:
+        as_num = pd.to_numeric(frame[col], errors="coerce")
+        keys[col] = as_num if as_num.notna().all() else frame[col].astype(str)
+    return keys
+
+
+def _zt_ticks(zts):
+    """``[15.0, 21.0]`` gives tick positions and ``ZT15`` / ``ZT21.5`` labels."""
+    text = []
+    for z in zts:
+        text.append(f"ZT{int(z)}" if float(z).is_integer() else f"ZT{z:g}")
+    return list(zts), text
+
+
+def phase_response_curve(
+    summary,
+    *,
+    series_cols=("genotype",),
+    zt_col="zt",
+    error="sem",
+    title="Phase response curve",
+    y_title="Phase shift (h)",
+):
+    """The PRC itself: mean phase shift against the circadian time of the pulse.
+
+    Parameters
+    ----------
+    summary : pd.DataFrame
+        ``core.phase_shift.summarize_phase_response`` output — one row per
+        (pulse time x series), with ``mean``, ``sd``, ``sem`` and ``n``.
+    series_cols : sequence of str
+        Columns that separate the lines. The FIRST picks the colour (genotype,
+        normally) and any others pick the dash pattern, so a genotype's
+        20-minute and 60-minute arms are the same hue in two line styles rather
+        than two unrelated colours.
+    error : {'sem', 'sd', None}
+        Error bars come straight from the per-fly spread, which is why this
+        figure needs no bootstrap: the response is measured once per fly, so the
+        flies ARE the replicates. (The group-level "phase over time" comparison
+        has no per-fly values to average and does need one.)
+
+    Notes
+    -----
+    Only the pulse times actually present get a tick. Padding the axis out to a
+    full 24 h would draw a curve through circadian times this experiment never
+    tested, which is the one thing a PRC must not imply.
+    """
+    fig = go.Figure()
+    if summary is None or len(summary) == 0:
+        return fig
+
+    series_cols = [c for c in series_cols if c in summary.columns]
+    zts = sorted({float(z) for z in summary[zt_col] if np.isfinite(z)})
+
+    if series_cols:
+        keys = sorted(
+            {tuple(r[c] for c in series_cols) for _, r in summary.iterrows()},
+            key=lambda k: tuple(str(v) for v in k),
+        )
+    else:
+        keys = [()]
+
+    # Colour follows the first column and dash the rest, so the legend stays
+    # readable when a genotype appears at more than one pulse duration.
+    colour_keys = sorted({str(k[0]) for k in keys}) if series_cols else [""]
+    colour_of = {v: _PRC_PALETTE[i % len(_PRC_PALETTE)] for i, v in enumerate(colour_keys)}
+    dash_keys = sorted({tuple(str(v) for v in k[1:]) for k in keys}) if series_cols else [()]
+    dash_of = {v: _PRC_DASHES[i % len(_PRC_DASHES)] for i, v in enumerate(dash_keys)}
+
+    for key in keys:
+        sub = summary
+        for col, val in zip(series_cols, key):
+            sub = sub[sub[col] == val]
+        sub = sub.sort_values(zt_col)
+        if sub.empty:
+            continue
+        err = None
+        if error and error in sub.columns:
+            vals = np.asarray(sub[error], dtype=float)
+            if np.isfinite(vals).any():
+                err = dict(type="data", array=vals, visible=True, thickness=1.2, width=4)
+        name = _prc_join(key) if key else "all flies"
+        fig.add_trace(
+            go.Scatter(
+                x=np.asarray(sub[zt_col], dtype=float),
+                y=np.asarray(sub["mean"], dtype=float),
+                error_y=err,
+                mode="lines+markers",
+                name=name,
+                line=dict(
+                    color=colour_of.get(str(key[0]) if key else "", _PRC_PALETTE[0]),
+                    width=2,
+                    dash=dash_of.get(tuple(str(v) for v in key[1:]), "solid"),
+                ),
+                marker=dict(size=9),
+                customdata=np.asarray(sub["n"], dtype=float).reshape(-1, 1),
+                hovertemplate=(
+                    f"<b>{name}</b><br>ZT%{{x}}<br>"
+                    "shift %{y:.2f} h<br>n = %{customdata[0]:.0f}<extra></extra>"
+                ),
+            )
+        )
+
+    # Zero is where an unpulsed fly sits by construction, so it is the line the
+    # whole figure is read against rather than decoration.
+    fig.add_hline(y=0, line=dict(color="#999999", width=1, dash="dash"))
+
+    tickvals, ticktext = _zt_ticks(zts)
+    fig.update_layout(
+        title=title,
+        height=430,
+        plot_bgcolor="white",
+        legend=dict(orientation="h", yanchor="top", y=-0.16, x=0),
+        margin=dict(l=70, r=30, t=60, b=80),
+    )
+    fig.update_xaxes(
+        title="Circadian time of the pulse",
+        tickmode="array",
+        tickvals=tickvals,
+        ticktext=ticktext,
+        showgrid=True,
+        gridcolor="#eeeeee",
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        title=y_title,
+        showgrid=True,
+        gridcolor="#eeeeee",
+        zeroline=False,
+    )
+    # Which way is which, said on the figure rather than in a page caption the
+    # exported PNG would leave behind.
+    fig.add_annotation(
+        x=0, y=1, xref="paper", yref="paper", xanchor="left", yanchor="bottom",
+        text="advance positive / delay negative", showarrow=False,
+        font=dict(size=11, color="#666666"),
+    )
+    return fig
+
+
+def phase_response_violins(
+    per_fly,
+    *,
+    major_cols=("genotype", "zt", "pulse_duration_minutes"),
+    split_col=None,
+    value_col="response_hours",
+    show_points=True,
+    title="Phase response per fly",
+    y_title="Phase shift (h)",
+    x_title=None,
+    split_title=None,
+):
+    """Every fly's own phase response, as one violin per treated group.
+
+    The curve above plots these distributions' means; this is what they are
+    means OF. A group whose violin is three hours tall has not measured a shift
+    to the precision its marker on the line implies, and that is not visible
+    from the line.
+
+    Parameters
+    ----------
+    per_fly : pd.DataFrame
+        ``compute_phase_response(...)['per_fly']``, already filtered to the
+        flies that should be drawn. Rows whose ``value_col`` is NaN are dropped
+        here — a fly with no detectable peak has no response to show — but the
+        COUNT of those is the caller's to report, since it belongs with the rest
+        of the drop bookkeeping rather than buried inside a figure.
+    major_cols : sequence of str
+        The x axis: one column per combination of these, sorted by them in
+        order. Genotype x pulse time x duration is the usual reading, which puts
+        a genotype's doses next to each other.
+    split_col : str, optional
+        Drawn side by side WITHIN each column instead of getting columns of its
+        own — pulse intensity, normally, so two intensities of the same dose can
+        be compared without hunting across the axis.
+    x_title, split_title : str, optional
+        What to CALL the axis and the legend. The caller passes these because it
+        knows the names the Import page used, and the coords do not: two metadata
+        columns are stored under different coord names (``pulse_time`` becomes
+        ``pulse_zt_hour``), so a figure that labels itself from its column names
+        renames the user's own columns back at them. Defaults to the column names
+        when nothing is passed.
+
+    Returns
+    -------
+    (go.Figure, pd.DataFrame)
+        The figure, and the rows actually drawn.
+    """
+    fig = go.Figure()
+    if per_fly is None or len(per_fly) == 0:
+        return fig, pd.DataFrame()
+
+    major_cols = [c for c in major_cols if c in per_fly.columns]
+    if not major_cols and "group" in per_fly.columns:
+        major_cols = ["group"]
+
+    drawn = per_fly[np.isfinite(np.asarray(per_fly[value_col], dtype=float))].copy()
+    if drawn.empty or not major_cols:
+        return fig, drawn
+
+    drawn["_x"] = [
+        _prc_join(tuple(r[c] for c in major_cols)) for _, r in drawn.iterrows()
+    ]
+    # Sort on the underlying values, not on the joined string, and numerically
+    # wherever the column allows it — see _numeric_sort_key.
+    _uniq = drawn[[*major_cols, "_x"]].drop_duplicates()
+    _keys = _numeric_sort_key(_uniq, major_cols)
+    order = (
+        _uniq.assign(**{f"_k{i}": k for i, k in enumerate(_keys.values())})
+        .sort_values([f"_k{i}" for i in range(len(major_cols))], kind="stable")["_x"]
+        .tolist()
+    )
+
+    if split_col and split_col in drawn.columns:
+        # Numbers before text, each in its own order: a mixed column (intensities
+        # plus a "none") otherwise raises rather than sorting.
+        split_vals = sorted(
+            {v for v in drawn[split_col] if _as_number(v) is not None or str(v) != "nan"},
+            key=lambda v: (0, _as_number(v), "") if _as_number(v) is not None else (1, 0.0, str(v)),
+        )
+        trace_col = split_col
+    else:
+        split_vals = sorted({str(v) for v in drawn[major_cols[0]]})
+        trace_col = major_cols[0]
+
+    colour_of = {
+        str(v): _PRC_PALETTE[i % len(_PRC_PALETTE)] for i, v in enumerate(split_vals)
+    }
+
+    for val in split_vals:
+        sub = drawn[drawn[trace_col].astype(str) == str(val)]
+        if sub.empty:
+            continue
+        fig.add_trace(
+            go.Violin(
+                x=sub["_x"],
+                y=np.asarray(sub[value_col], dtype=float),
+                name=_prc_join((val,)),
+                legendgroup=str(val),
+                scalegroup=str(val),
+                line=dict(color=colour_of[str(val)], width=1.4),
+                fillcolor=colour_of[str(val)],
+                opacity=0.55,
+                points="all" if show_points else False,
+                jitter=0.3,
+                pointpos=0,
+                marker=dict(size=4, opacity=0.65, color="#333333"),
+                meanline=dict(visible=True),
+                box=dict(visible=False),
+                spanmode="hard",
+                hoverinfo="y+name",
+            )
+        )
+
+    fig.add_hline(y=0, line=dict(color="#999999", width=1, dash="dash"))
+    fig.update_layout(
+        title=title,
+        # Side by side only matters when two traces land on the same column;
+        # when they do, this is what stops plotly overlaying them.
+        violinmode="group",
+        height=460,
+        plot_bgcolor="white",
+        legend=dict(
+            orientation="h", yanchor="top", y=-0.28, x=0,
+            title=split_title or str(trace_col).replace("_", " "),
+        ),
+        margin=dict(l=70, r=30, t=60, b=140),
+    )
+    fig.update_xaxes(
+        title=x_title or " x ".join(str(c).replace("_", " ") for c in major_cols),
+        categoryorder="array",
+        categoryarray=order,
+        tickangle=-30,
+        showgrid=False,
+    )
+    fig.update_yaxes(title=y_title, showgrid=True, gridcolor="#eeeeee", zeroline=False)
+    fig.add_annotation(
+        x=0, y=1, xref="paper", yref="paper", xanchor="left", yanchor="bottom",
+        text="advance positive / delay negative", showarrow=False,
+        font=dict(size=11, color="#666666"),
+    )
+    return fig, drawn
+
+
+
+#: One violin colour per measure, so the three panels of a set are told apart at a
+#: glance without the colour ever encoding a group (the x axis does that).
+#:
+#: Public because the pages index into it to keep a set of panels distinct, and a
+#: page reaching for a private name is backlog item 8 again.
+MEASURE_COLOURS = ("#3B76AF", "#E8722C", "#2C3E50", "#16A085", "#8E6BBF", "#B5892B")
+
+
+def group_violins(
+    per_fly,
+    value_col,
+    *,
+    group_col="Group",
+    title=None,
+    y_title="minutes",
+    show_points=True,
+    colour=MEASURE_COLOURS[0],
+    groups=None,
+):
+    """One violin per group, for ONE measure. The distribution behind a group bar.
+
+    A bar chart of these plots a group mean with a SEM whisker: four numbers
+    standing in for thirty flies. Two groups can share both and still be obviously
+    different — one tight, one bimodal — and the bar cannot show it. The per-fly
+    values are computed either way (a group mean IS their mean), so the
+    distribution costs nothing but the drawing.
+
+    ONE measure per figure, deliberately. Putting day and night side by side in one
+    figure makes the day-versus-night step the salient comparison and the
+    group-versus-group one the hard one, which is backwards: the experiment varies
+    genotype, not time of day. Three panels, each answering "how do the groups
+    differ in this one number", is the reading the design asks for.
+
+    Parameters
+    ----------
+    per_fly : pd.DataFrame
+        One row per fly, with ``group_col`` and ``value_col`` among its columns —
+        ``per_fly_summary_table`` and ``per_fly_sleep_state_totals`` both qualify.
+    groups : sequence, optional
+        Fixes the x order across a set of panels. Without it a group that is absent
+        from one measure shifts every later column, and three panels meant to be
+        read down a page no longer line up.
+
+    Returns
+    -------
+    (go.Figure, pd.DataFrame)
+        The figure, and the rows actually drawn.
+    """
+    fig = go.Figure()
+    if per_fly is None or per_fly.empty or value_col not in per_fly.columns:
+        return fig, pd.DataFrame()
+
+    drawn = per_fly[[group_col, value_col]].copy()
+    drawn[value_col] = pd.to_numeric(drawn[value_col], errors="coerce")
+    drawn = drawn[drawn[value_col].notna()]
+    if drawn.empty:
+        return fig, drawn
+
+    order = list(groups) if groups is not None else sorted(
+        drawn[group_col].astype(str).unique()
+    )
+    fig.add_trace(
+        go.Violin(
+            x=drawn[group_col].astype(str),
+            y=np.asarray(drawn[value_col], dtype=float),
+            name=str(value_col),
+            line=dict(color=colour, width=1.3),
+            fillcolor=colour,
+            opacity=0.55,
+            points="all" if show_points else False,
+            jitter=0.3,
+            pointpos=0,
+            marker=dict(size=4, opacity=0.65, color="#333333"),
+            meanline=dict(visible=True),
+            box=dict(visible=False),
+            spanmode="hard",
+            showlegend=False,
+            hoverinfo="y+x",
+        )
+    )
+    fig.update_layout(
+        title=title or str(value_col),
+        height=380,
+        plot_bgcolor="white",
+        margin=dict(l=70, r=30, t=60, b=110),
+    )
+    fig.update_xaxes(
+        title="group",
+        categoryorder="array",
+        categoryarray=order,
+        tickangle=-25,
+        showgrid=False,
+    )
+    fig.update_yaxes(title=y_title, showgrid=True, gridcolor="#eeeeee", rangemode="tozero")
+    return fig, drawn

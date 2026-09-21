@@ -16,6 +16,7 @@ import streamlit as st
 import export_helpers as ex
 import plotting
 from dataset_meta import dataset_fingerprint
+from ui import charts
 from ui.filters import DISPLAY_GROUPS_KEY, group_filter_sidebar, resolve_group_coord
 from ui.guards import require_dataset
 
@@ -189,7 +190,7 @@ for key, var, axis_name, title, plot_kw, normalize, freq_to_period in SECTIONS:
         )
         # theme=None: the figure's own styling (black text, transparent bg) drives both
         # the on-screen chart and the "Download plot as PNG" export (see group_spectrum_plot).
-        st.plotly_chart(fig, width="stretch", theme=None)
+        charts.plotly_chart(fig, width="stretch", theme=None)
         if spec_df is not None and not spec_df.empty:
             ex.save_df_button(
                 f"Save {title} group-average to working folder",

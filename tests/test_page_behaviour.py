@@ -17,7 +17,7 @@ class TestHMMPhasePicker:
     """Item 3: cross-validation must run on an explicitly chosen phase."""
 
     def test_phase_radio_offers_ld_and_dd_defaulting_to_ld(self, app, master_ds):
-        at = app(ds=master_ds, page="hmm_model_selection")
+        at = app(ds=master_ds, page="hmm")
         radio = at.radio(key="cv_phase_choice")
         assert radio.options == ["LD", "DD"]
         assert radio.value == "LD"
@@ -28,7 +28,7 @@ class TestHMMPhasePicker:
         and the page must report THAT or the picker looks inert."""
         counts = {}
         for phase in ("LD", "DD"):
-            at = app(ds=master_ds, page="hmm_model_selection", cv_phase_choice=phase)
+            at = app(ds=master_ds, page="hmm", cv_phase_choice=phase)
             assert not at.exception
             fold = next(c for c in _captions(at) if "fold holds out" in c)
             counts[phase] = fold
@@ -37,19 +37,23 @@ class TestHMMPhasePicker:
         )
 
     def test_no_transition_falls_back_to_full_recording(self, app, unsplit_ds):
-        """Mirrors hmm_analysis's else branch: say so rather than silently
+        """Mirrors the analysis tab's else branch: say so rather than silently
         cross-validating on a mix the user did not choose."""
-        at = app(ds=unsplit_ds, page="hmm_model_selection")
+        at = app(ds=unsplit_ds, page="hmm")
         assert not at.exception
-        assert not at.radio  # no phase picker when there is no boundary
+        # By key, not `not at.radio`: the two HMM views share a page now, so the
+        # analysis tab's own widgets are on screen too and a bare count would be
+        # asserting something about a different tab.
+        assert "cv_phase_choice" not in at.session_state
         assert any("full recording" in c for c in _captions(at))
 
     def test_phase_mismatch_warning_is_shown(self, app, master_ds):
-        """The two HMM pages keep unlinked widget keys, so the note telling the
-        user to match the phase by hand is the only thing preventing a model
-        selected on LD being used for a DD fit."""
-        at = app(ds=master_ds, page="hmm_model_selection")
-        assert any("HMM Analysis" in i.value for i in at.info)
+        """The two HMM views keep unlinked widget keys — one page now, but still
+        two phase pickers — so the note telling the user to match the phase by
+        hand is the only thing preventing a model selected on LD being used for
+        a DD fit."""
+        at = app(ds=master_ds, page="hmm")
+        assert any("**Analysis** tab" in i.value for i in at.info)
 
 
 class TestSharedGroupFilter:
@@ -94,9 +98,13 @@ class TestSplitStateDrivesThePhaseUI:
     """Items 4 + 5: split state is read from the master's attrs, not from caches."""
 
     def test_sleep_page_offers_the_phase_radio_on_a_split_master(self, app, master_ds):
-        at = app(ds=master_ds, page="sleep_detection")
+        """Sleep detection is not a page any more, so the phase choice this asks
+        about is the VIEWING one in the Activity & Sleep sidebar. Detection itself
+        no longer asks: it always runs on the whole recording, which is what makes
+        the epoch a viewing choice on every page downstream."""
+        at = app(ds=master_ds, page="sleep_activity")
         assert not at.exception
-        assert at.radio, "a split-applied master should offer the LD/DD choice"
+        assert at.radio(key="sleep_activity_phase").options == ["LD", "DD"]
 
     def test_reloaded_split_master_still_reports_split(self, app, master_ds):
         """A .nc round-trip turns split_applied into a NUMPY int, which is not a

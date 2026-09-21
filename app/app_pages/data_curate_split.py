@@ -9,6 +9,7 @@ import dam_utilities
 import plotting
 from analysis_detection import detect_analyses
 from dataset_meta import PHASE_FULL, dataset_phase, is_split_applied
+from ui import charts
 from ui.guards import require_dataset
 
 ds = require_dataset()
@@ -201,7 +202,7 @@ else:
                 # ds_dd / ds_ld stay LOCAL: they are reported on below, then
                 # dropped. They used to be cached in session_state, which meant
                 # four files had to keep that copy in sync with the master — and
-                # sleep_detection.py had to regenerate both on every run to stop
+                # sleep detection had to regenerate both on every run to stop
                 # them going stale. The split PARAMETERS are recorded on the
                 # master instead, so any consumer reproduces the same slice.
                 # Mark master as split-applied (but keep all timepoints).
@@ -333,13 +334,13 @@ else:
                     fig_ld = plotting.dataset_to_heatmap(
                         ds_ld, heatmap_var, f"{_var_label} — LD Phase"
                     )
-                    st.plotly_chart(fig_ld, width="stretch")
+                    charts.plotly_chart(fig_ld, width="stretch")
 
                     st.markdown(f"**DD phase — {_var_label}**")
                     fig_dd = plotting.dataset_to_heatmap(
                         ds_dd, heatmap_var, f"{_var_label} — DD Phase"
                     )
-                    st.plotly_chart(fig_dd, width="stretch")
+                    charts.plotly_chart(fig_dd, width="stretch")
                 else:
                     # Single phase (already split, or only LD data)
                     # dataset_phase() always returns a label, so 'full' (an
@@ -350,7 +351,7 @@ else:
                     _title_suffix = f" — {_phase_label} Phase" if _phase_label else ""
                     title = f"{_var_label}{_title_suffix}"
                     fig = plotting.dataset_to_heatmap(ds, heatmap_var, title)
-                    st.plotly_chart(fig, width="stretch")
+                    charts.plotly_chart(fig, width="stretch")
 
                 # Show curated/removed flies if requested
                 if show_curated and _has_dead_data:
@@ -360,7 +361,7 @@ else:
                         fig_dead = plotting.dataset_to_heatmap(
                             dead_ds, heatmap_var, f"{_var_label} — Removed Flies (Curation)"
                         )
-                        st.plotly_chart(fig_dead, width="stretch")
+                        charts.plotly_chart(fig_dead, width="stretch")
 
                 # Download button for main dataset
                 df_heat = ds[heatmap_var].to_pandas()

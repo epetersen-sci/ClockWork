@@ -28,14 +28,14 @@ any point and reload without recomputing.
   - [Import](#import)
   - [Groups & subsets](#groups--subsets)
   - [Curate & split](#curate--split)
+  - [Actograms](#actograms)
   - [Period analysis](#period-analysis)
   - [Periodograms](#periodograms)
   - [Rhythmicity](#rhythmicity)
   - [Phase shift](#phase-shift)
-  - [Sleep analysis](#sleep-analysis)
-  - [Sleep & activity](#sleep--activity)
+  - [Activity & Sleep](#activity--sleep)
+  - [Sleep states](#sleep-states)
   - [Sleep deprivation](#sleep-deprivation)
-  - [HMM model selection](#hmm-model-selection)
   - [HMM analysis](#hmm-analysis)
   - [Save & export](#save--export)
   - [SCAMP export](#scamp-export)
@@ -54,7 +54,7 @@ any point and reload without recomputing.
 - [Thresholds and defaults](#thresholds-and-defaults)
 - [Data model](#data-model)
 - [References](#references)
-- [Backlog](BACKLOG.md) — known issues deferred from the page reorganization
+- [Backlog](BACKLOG.md) — known issues, written down rather than fixed on the spot
 
 ---
 
@@ -127,12 +127,13 @@ taken, append `--server.port 8502`.
    of groups before you spend time curating flies you will drop.
 5. **Data → Curate & split** → curate dead flies → apply the LD/DD split →
    generate the heatmap to check the result.
-6. **Sleep & activity → Sleep analysis** → run it. Every sleep-dependent page
-   downstream (**Sleep & activity**, **Sleep deprivation**, **Save & export**)
-   reads the result from here.
-7. Then whichever analysis you need: **Period analysis** for circadian period,
-   **Sleep & activity** for sleep/activity profiles, **HMM analysis** for
-   sleep-state structure, **Phase shift** for light-pulse experiments.
+6. **Activity & Sleep → Sleep** → detect sleep. Every sleep-dependent page
+   downstream (**Sleep states**, **Sleep deprivation**, **Save & export**) reads
+   the result from here.
+7. Then whichever analysis you need: **Actograms** to see the raw pattern,
+   **Period analysis** for circadian period, **Activity & Sleep** for
+   sleep/activity profiles, **HMM analysis** for sleep-state structure,
+   **Phase shift** for light-pulse experiments.
 8. **Export → Save & export** → save the dataset as `.nc` so you never have to
    recompute.
 
@@ -175,17 +176,21 @@ group the flies.
 | `first_DD_day` | For DD/LD work | `2025-01-18 09:00:00` | **CT0 (subjective morning) of the first full DD day** — not the last lights-off. Without it there is no LD/DD split and period analysis silently runs on the combined record. |
 | `region_id` | Situational | `1-16`, `5`, `1,3,5`, `65-96` | Which channels this row covers. Blank → channels **1–32 only**. Required on non-DAM monitor sources (e.g. FlyBox) — see [Format rules](#format-rules). |
 | `pulse_time` | Phase shift only | `ZT15` | Light-pulse time as a ZT hour. Accepts `ZT15`, `zt15`, `ZT 15`, `15`, `15.5`. Leave **blank** for unpulsed controls (blank means "no pulse"; `0` would mean ZT0). |
-| `pulse_duration_min` | Optional | `60` | Pulse length. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. |
-| `condition` | Recommended | `ZT15_60min` | Default second grouping key for phase-shift comparisons. |
+| `pulse_duration_min` | Phase shift | `60` | Pulse length in minutes. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. **Write `0`, not a blank, for unpulsed controls** — that 0 is how phase shift identifies them. |
+| `pulse_intensity` | Optional | `100` | Pulse intensity, in whatever unit your rig reports. Not required, but when present it is what separates two arms that share a genotype, time and duration, and phase shift draws those side by side. |
+| `condition` | Optional | `ZT15_60min` | A readable label for an arm. Once a grouping factor in its own right for phase shift; the control is now found from `pulse_duration_min` instead, so this is just another column you can group by. |
 | `temperature` | Optional | `25C` | Historically the second half of the default group label. |
 | `sex`, `treatment`, `incubator`, `notes`, … | Optional | `M` | **Any column you invent** becomes a per-fly coordinate and an eligible grouping factor. |
 
 Do **not** add an `id` column — ClockWork computes it as
 `YYYYMMDD_Monitor_Region` (e.g. `20250115_17_5`).
 
-Columns excluded from grouping: `file`, `region_id`, `Monitor`, `id`,
-`start_datetime`, `stop_datetime`, `first_DD_day`, and any datetime-typed
-column. Everything else is offered in the **"Group-defining metadata columns"**
+Columns excluded from grouping: `file`, `region_id`, `id`, `start_datetime`,
+`stop_datetime`, `first_DD_day`, and any datetime-typed column. `Monitor` is
+**not** excluded — a monitor is a physical device and monitor-level effects are
+a real thing to look for, so it can be grouped and faceted on like any other
+column. `region_id` stays out because it separates individual flies, which the
+`id` coordinate already does. Everything else is offered in the **"Group-defining metadata columns"**
 selector at import, and can be re-grouped later on **Data → Groups & subsets**
 ("Redefine groups") without re-importing — including on a dataset reloaded from
 `.nc`, where the raw monitor files may no longer be to hand. Regrouping clears
@@ -198,11 +203,11 @@ every cached analysis result, because `group` feeds all of them.
 | Loading and validation | `Monitor`, `start_datetime`, `stop_datetime` |
 | Creating the dataset | the above **plus** `genotype` |
 | Period analysis (DD) | `first_DD_day` — without it the split doesn't exist and LD+DD get analysed together |
-| Sleep / activity (LD) | `first_DD_day`, and `start_datetime` set to ZT0 |
-| Phase shift | `pulse_time` (**hard requirement**, the module stops without it) + `first_DD_day`; `pulse_duration_min` and `condition` recommended |
+| Activity & Sleep (LD) | `first_DD_day`, and `start_datetime` set to ZT0 |
+| Phase shift | `pulse_time` (**hard requirement**, the page stops without it) and `first_DD_day` to anchor it. `pulse_duration_min` in practice too: it is how the unpulsed control is identified, and without it every group is reported blank for want of one. `pulse_intensity` optional |
 | Sleep deprivation | `first_DD_day` (LD-only analysis). The SD day, start ZT and duration are entered in the UI, not the metadata |
 | SCAMP export | nothing extra; monitor and region are recovered from the fly ID |
-| Grouping / faceting only | `temperature`, `sex`, `condition`, `notes`, or anything else you add |
+| Grouping / faceting only | `Monitor`, `temperature`, `sex`, `condition`, `notes`, or anything else you add |
 
 ### Format rules
 
@@ -253,8 +258,8 @@ the order the sidebar lists them in.
 %%{init: {"flowchart": {"htmlLabels": true, "wrappingWidth": 400, "curve": "linear"}}}%%
 flowchart LR
     A["<b>DATA</b><br/><br/>Import<br/>Groups &amp; subsets<br/>Curate &amp; split"]
-    B["<b>CIRCADIAN ANALYSIS</b><br/><br/>Period analysis<br/>Periodograms<br/>Rhythmicity<br/>Phase shift"]
-    C["<b>SLEEP &amp; ACTIVITY</b><br/><br/>Sleep analysis<br/>Sleep &amp; activity<br/>Sleep deprivation<br/>HMM model selection<br/>HMM analysis"]
+    B["<b>CIRCADIAN ANALYSIS</b><br/><br/>Actograms<br/>Period analysis<br/>Periodograms<br/>Rhythmicity<br/>Phase shift"]
+    C["<b>ACTIVITY &amp; SLEEP</b><br/><br/>Activity &amp; Sleep<br/>Sleep states<br/>Sleep deprivation<br/>HMM analysis"]
     D["<b>EXPORT</b><br/><br/>Save &amp; export<br/>SCAMP export"]
 
     A --> B --> D
@@ -265,23 +270,27 @@ flowchart LR
 ```
 
 **Data** builds the dataset every other module reads, so run it first.
-**Circadian analysis** and **Sleep & activity** write their results onto that
+**Circadian analysis** and **Activity & Sleep** write their results onto that
 dataset; the two tracks are independent of each other, so run only what you
 need. **Export** writes the whole dataset to disk, capturing whatever you have
 completed.
 
-Within each section the order is the order the work actually takes. Three pairs
-are worth knowing about:
+Within each section the order is the order the work actually takes. Two
+dependencies are worth knowing about:
 
 - **Periodograms** and **Rhythmicity** both read what **Period analysis**
   computed and stay empty until it has run. Rhythmicity shares its phase and
   period-range controls with Period analysis — the period range is *also* the
   classification window, so changing it on either page changes both.
-- **HMM model selection** cross-validates to pick a state count and emission
-  model, which you then enter in **HMM analysis**. It passes no data, only the
-  parameter choice, so skip it if you already know your settings.
-- **Sleep analysis** produces the sleep variables that **Sleep & activity**,
-  **Sleep deprivation** and the sleep exports all read.
+- Sleep detection runs from the top of **Activity & Sleep**'s Sleep tab.
+  **Sleep states**, **Sleep deprivation**, the HMM agreement statistic and the
+  sleep exports all read what it produces.
+
+Two things work the same way everywhere. Any page's figures can be written to
+the working folder as PNGs at twice screen resolution, with the button that
+appears under whatever that page drew. And the sidebar's group filter narrows
+the view for plotting only; it never touches the dataset, so nothing you untick
+there is lost.
 
 ### Import
 
@@ -292,8 +301,16 @@ completed analysis. **Combine Datasets** concatenates several `.nc` files into
 one, disambiguating duplicate fly IDs.
 
 This is also where you choose which metadata columns define your comparison
-groups — the `group` coordinate every downstream comparison, plot and export
+groups, the `group` coordinate every downstream comparison, plot and export
 uses.
+
+Name the experiment here too. The name decides which folder exports land in, so
+two experiments sharing a working folder stop overwriting each other's figures.
+It is stored with the dataset and comes back with a reloaded `.nc`; editing it
+renames the dataset there and then.
+
+Paths can be typed or picked with a native file dialog. For the data folder,
+pick any `MonitorXXX.txt` inside it and the folder itself is used.
 
 **Produces:** the master dataset. **Every other module depends on this one.**
 
@@ -326,6 +343,23 @@ with flies ordered into contiguous group blocks and the y-axis labelled by group
 name. This is how you check that curation and the split did what you expected.
 
 **Produces:** `is_alive`, `moving`, and the LD and DD partitions.
+
+### Actograms
+
+Double-plotted actograms, one panel per group, following SCAMP's `actogram2.m`.
+Three panels across by default, since actograms are read by comparing them, with
+a slider from one to four.
+
+Panels default to the grouping you chose at Import rather than to genotype
+alone, so what you see is the partition your dataset actually has. LD days are
+shaded and the first DD day is marked with a dashed line, both on by default
+when the metadata can answer where DD starts. Where the free-run begins is the
+first thing anyone reads off an actogram.
+
+Once curation has run this page draws curated flies only and says so, along with
+the window and minimum-alive threshold behind the call. Before curation it draws
+every imported fly, including any that died mid-recording, and says that
+instead.
 
 ### Period analysis
 
@@ -373,48 +407,84 @@ the same values, because the period range is also the classification window.
 
 ### Phase shift
 
-Measures each fly's phase shift after a light pulse. Requires `pulse_time` in
-the metadata.
+Measures how far each fly's rhythm moved after a light pulse. Needs `pulse_time`
+in the metadata and `first_DD_day` to anchor it, plus `pulse_duration_min` for
+the reason below.
 
-Two reference modes, and they are separate workflows rather than two halves of
-one: against an **unpulsed control group** (per-day group-average peak matching,
-following the lab's `peakphaseplot.m`), or against **each fly's own pre-pulse
-rhythm** (per-fly regression extrapolated across the pulse, which needs several
-pre-pulse days).
+**Setup** and **Results** are separate tabs, with the run button at the foot of
+Setup.
 
-Two marker methods: **peak matching** (the default — median error ~1 min on the
-validation cohort) or **onset regression** (Aschoff / Daan-Pittendrigh style —
-noisier, median ~3 min but a long tail; check the actogram before trusting it).
+The unpulsed control is found from the pulse itself: a group whose pulse
+duration is 0 got no pulse, whatever else the metadata calls it. Each group is
+compared against the unpulsed group matching it on everything except the pulse,
+so an `Hr38` arm is measured against unpulsed `Hr38`, and one control serves
+every dose that genotype received. A group with no match is reported blank
+rather than measured against another genotype's control.
 
-A single-fly preview actogram lets you check marker detection before running the
-cohort. Results include a per-group box plot, a breakdown of *why*
-any flies abstained, per-fly double-plotted actograms with the fitted pre- and
-post-pulse lines overlaid, and CSV exports including the exact parameters used.
+Results come in two tabs.
 
-### Sleep analysis
+**Phase Response Curves** holds the PRC itself, mean shift against the circadian
+time of the pulse, and violins of the per-fly responses those means are taken
+over. Both are the same computation, so the line cannot disagree with the
+distribution behind it. An advance reads positive. Control flies are used to
+compute the responses but are not drawn, and a fly whose phase cannot be
+determined is dropped and counted rather than treated as no shift. A curve needs
+three pulse times; with fewer, the violins are still drawn and the curve says
+why it is absent.
 
-Applies the 5-minute immobility rule and classifies each bout as short,
-intermediate or long. Pick the phase (LD is the standard reference), the
-immobility threshold, and the state duration bounds, then run.
+**Phase over Time** is the per-day group comparison: each group's daily peak
+time against its control's, faceted, with an optional bootstrap interval over
+flies.
 
-This is a pipeline step, not a plot: it writes `sleep`, the per-state sleep
-masks and the per-bout table back onto the master dataset. **Sleep & activity**,
-**Sleep deprivation**, the HMM agreement statistic and the sleep exports all
-read what it produces.
+Peak matching is the marker method, following the lab's `peakphaseplot.m`.
+Advanced Parameters holds the detection settings and the starting-offset
+correction, which is on by default. Two cohorts are rarely at the same phase
+before the pulse, and without the correction that offset rides through every
+later day.
 
-### Sleep & activity
+### Activity & Sleep
 
-The descriptive-plots module, in three tabs.
+Two tabs, one per measure. Each runs from the daily pattern down to the totals,
+so one tab answers one question instead of half of two.
 
-**Daily profiles** — daily activity profile and daily sleep profile.
-**Bouts & states** — per-fly sleep bout duration curves (log-duration KDE or
-survival/CCDF, mean ± SEM per group with a group-comparison significance test)
-and sleep-state totals (short / intermediate / long, as percentage or absolute).
-**Day/night totals** — activity and sleep summaries, using subjective time bins
-when the data is DD.
+**Activity** shows the daily activity profile, then total, day and night
+activity as three panels of violins side by side, groups along the x axis.
 
-A ZT bin-size slider and a group filter in the sidebar apply throughout. Every
-chart has a matching group-level and per-fly CSV export.
+**Sleep** starts with sleep detection, then gives the same two views for sleep,
+then per-fly bout-duration curves at the foot (log-duration KDE or
+survival/CCDF, with a group-comparison test).
+
+Detection is the 5-minute immobility rule. It runs from here rather than from a
+page of its own, and on the whole recording, so the LD/DD choice stays a viewing
+decision on every page downstream. Whatever rule is currently in force gets
+printed wherever sleep is shown, since every number on the page is sleep by that
+rule.
+
+Violins rather than bars. A bar is a group mean and a SEM whisker, four numbers
+standing in for thirty flies, and two groups can share both while being
+obviously different.
+
+A ZT bin-size slider and a group filter in the sidebar apply throughout. Each
+chart pairs its group summary with the per-fly rows behind it in one `.xlsx`,
+one sheet each, with a mean row closing every genotype.
+
+### Sleep states
+
+The Abhilash et al. 2026 figures, on your data.
+
+The short and intermediate bounds sit at the top, because they are a definition
+rather than a setting: every panel below is drawn under them. Applying a change
+re-cuts the bouts detection already found. It does not detect anything again, so
+it takes seconds rather than minutes.
+
+Five tabs below that: **Waveforms**, **Initiation**, **Rose & gating**,
+**Scalograms**, **Ultradian**. Each is faceted by genotype, and only the tab you
+are on is computed. Nineteen figures on 189 flies is not worth building for the
+one you wanted.
+
+Figure 4 of the paper, homeostatic rebound, is deliberately absent. It needs a
+deprivation experiment with matched undisturbed controls, which has its own
+page.
 
 ### Sleep deprivation
 
@@ -431,31 +501,28 @@ Note the scope: this is a **descriptive within-cohort readout** with no
 undisturbed-control arm and no significance test. It describes an observed
 change; it does not test a hypothesis.
 
-### HMM model selection
-
-k-fold cross-validation to pick the HMM's parameters *before* committing to a
-full run. Produces held-out log-likelihood (read the elbow), AIC and BIC per
-emission model, and an agreement-with-threshold-sleep percentage.
-
-Log-likelihood, AIC and BIC are only comparable **within one emission model**,
-because Poisson, Bernoulli and Gaussian likelihoods live on different scales. To
-compare *across* emission models, use the agreement percentage.
-
-> Its data source currently differs from HMM analysis's — see
-> [`BACKLOG.md`](BACKLOG.md) item 3.
-
 ### HMM analysis
 
-Fits a Hidden Markov Model of sleep state to the activity data. Choose the
-phase (LD, DD, both together, or both fitted separately) and one of three
-presets — see [Hidden Markov sleep states](#hidden-markov-sleep-states) for what
-each one is and when to pick it. The advanced expander exposes state count,
-training scope, emission model, transition constraints, restarts and decoding
-method.
+Two tabs, in the order the work takes.
 
-Results appear in four tabs: state occupancy summary, hypnogram heatmap,
-occupancy by group, and time-of-day views (group time-course across ZT and
-state fractions by day section).
+**Model selection** cross-validates to pick the state count and emission model
+before you commit to a full run. It reports held-out log-likelihood (read the
+elbow), AIC and BIC per emission model, and an agreement-with-threshold-sleep
+percentage. Log-likelihood, AIC and BIC compare only **within one emission
+model**, because Poisson, Bernoulli and Gaussian likelihoods sit on different
+scales. To compare across them, use the agreement percentage.
+
+**Analysis** fits the model. Choose the phase (LD, DD, both together, or both
+fitted separately) and one of three presets; see
+[Hidden Markov sleep states](#hidden-markov-sleep-states) for what each one is
+and when to pick it. The advanced expander exposes state count, training scope,
+emission model, transition constraints, restarts and decoding method. Results
+appear in four tabs: state occupancy summary, hypnogram heatmap, occupancy by
+group, and time-of-day views.
+
+The two tabs keep separate phase pickers and pass no data between them, only the
+parameter choice you carry across. Match the phase by hand, or the model you
+selected will not describe the data you fit.
 
 ### Save & export
 

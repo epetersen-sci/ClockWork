@@ -135,6 +135,91 @@ def resolve_export_dir(ds=None, working_dir=None):
     return os.path.abspath(working_dir) if working_dir else os.getcwd()
 
 
+def sanitize_experiment_name(name):
+    """Filename-safe form of an experiment name, since it becomes a folder name.
+
+    Runs of anything that is not a letter or digit collapse to one underscore, so
+    a name typed as ``"exp 8 (repeat)"`` cannot produce a path separator, a drive
+    letter or a character Windows refuses. Capped at 60 characters because the
+    result is only one component of a path that already includes the user's
+    working folder.
+    """
+    import re
+
+    return "_".join(p for p in re.split(r"[^A-Za-z0-9]+", str(name or "")) if p)[:60]
+
+
+def experiment_name_from_path(metadata_path):
+    """Short experiment name guessed from the metadata file's name.
+
+    Only a STARTING POINT — the import page offers it in an editable field, because
+    a filename is a weak source: the convention is not enforced anywhere, and a file
+    named plainly ``metadata.xlsx`` carries nothing at all.
+
+    The word ``metadata`` is what every one of these files has in common, so it
+    carries no information and is dropped; what is left names the run::
+
+        metadata_exp8_8_18_26.xlsx -> 'exp8_8_18_26'
+        exp6_metadata.csv          -> 'exp6'
+        metadata.csv               -> ''          (nothing left to name it with)
+
+    Returns ``''`` when the name held nothing but ``metadata``, which callers treat
+    as "no experiment name": exports then land in the unsuffixed folder, exactly
+    where they went before this existed.
+    """
+    import os
+    import re
+
+    # Both separators, not os.path.basename. basename follows the convention
+    # of whatever machine is running, so a Windows path read on Linux has no
+    # directory part at all: the whole string becomes the "filename", every
+    # directory in it survives the split below, and a run ends up exporting to
+    # a folder named after its own drive letter. CI caught exactly that.
+    #
+    # Which OS reads the string should not change what the file is called. A
+    # literal backslash IS legal in a POSIX filename, but this domain does not
+    # produce one, and a pasted Windows path is far likelier than a file named
+    # with a backslash in it.
+    tail = str(metadata_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = os.path.splitext(tail)[0]
+    kept = [p for p in re.split(r"[^A-Za-z0-9]+", stem) if p and p.lower() != "metadata"]
+    return sanitize_experiment_name("_".join(kept))
+
+
+def experiment_suffix_for_name(name):
+    """The suffix a given name would produce: ``'exp 8'`` -> ``'_exp_8'``, ``''`` -> ``''``.
+
+    Split out so the import page can show the user which folder their typed name
+    will create, BEFORE the dataset exists to be asked. Both paths therefore format
+    the name the same way, instead of the preview and the real thing agreeing only
+    by inspection.
+    """
+    clean = sanitize_experiment_name(name)
+    return f"_{clean}" if clean else ""
+
+
+def experiment_suffix(ds=None):
+    """``'_exp8_8_18_26'`` to append to an export folder name, or ``''``.
+
+    Two experiments routinely share one working folder — the metadata files of a
+    paired run sit side by side — so without this their exports land in the same
+    ``Graph Exports/`` and the second overwrites the first.
+
+    The DATASET is the only authority. The name is stamped into
+    ``attrs['experiment_name']`` at load and rides through the NetCDF round-trip,
+    so a reloaded ``.nc`` still exports beside its own experiment. Reading it from
+    anywhere else — a session key, the current text input — would let a name left
+    over from the previously loaded experiment redirect this one's exports, which
+    is a silent wrong answer rather than a visible failure. A dataset saved before
+    the name existed simply has none and exports exactly where it always did.
+    """
+    _attrs = getattr(ds, "attrs", None) if ds is not None else None
+    name = _attrs.get("experiment_name") if _attrs else ""
+    # Sanitised on the way out as well as in, so a dataset stamped before the rule
+    # existed — or edited by hand — still cannot put a separator in a folder name.
+    return experiment_suffix_for_name(name)
+
+
 def read_data_and_metadata(metadata_path, data_folder):
     """
     Convenience wrapper: load raw DAM data and metadata in one call.
@@ -369,10 +454,22 @@ def convert_to_relative_time(dam_data: pd.DataFrame, metadata: pd.DataFrame = No
 # Columns that can NEVER define a group: per-fly ids / filenames / monitor+region
 # numbers, and the experiment-timing columns. Datetime-typed columns are excluded
 # additionally by dtype in group_defining_columns (robust to future column names).
+#: Metadata columns stored as a per-id coord under a DIFFERENT name. The value is
+#: transformed on the way in — "ZT21" is parsed to the float 21.0 — so the coord
+#: cannot simply carry the column's name and values. Anything that has to get from a
+#: metadata column name to the coord holding it goes through this.
+METADATA_COORD_RENAMES = {
+    "pulse_time": "pulse_zt_hour",
+    "pulse_duration_min": "pulse_duration_minutes",
+}
+
+#: Columns that are never sensible grouping factors. `region_id` and `id` identify
+#: individual flies, so grouping on them gives one fly per group; the datetimes are
+#: timing, not treatment. `Monitor` is deliberately NOT here: a monitor is a physical
+#: device, and monitor-level effects are a real thing to go looking for.
 GROUP_EXCLUDE_COLUMNS = (
     "file",
     "region_id",
-    "Monitor",
     "id",
     "start_datetime",
     "stop_datetime",
@@ -449,6 +546,24 @@ def get_group_columns(ds):
     return [str(v) for v in np.atleast_1d(val)]
 
 
+def get_group_coord_names(ds):
+    """The per-id COORD names behind ``ds['group']``.
+
+    :func:`get_group_columns` returns the metadata COLUMNS that were ticked, which
+    is the right record of the choice but not always readable off the dataset —
+    ``pulse_time`` is stored as ``pulse_zt_hour``. Use this wherever the grouping
+    has to be re-derived from coords (a "one figure per …" picker), and
+    ``get_group_columns`` wherever the question is which columns were chosen.
+
+    Falls back to mapping the columns through :data:`METADATA_COORD_RENAMES` for
+    datasets saved before the attr existed, so an older ``.nc`` still resolves.
+    """
+    recorded = ds.attrs.get("group_coord_names")
+    if recorded is not None:
+        return [str(v) for v in np.atleast_1d(recorded)]
+    return [METADATA_COORD_RENAMES.get(c, c) for c in get_group_columns(ds)]
+
+
 def group_defining_coords(ds):
     """The :func:`group_defining_columns` question, asked of a BUILT dataset.
 
@@ -467,6 +582,12 @@ def group_defining_coords(ds):
     :data:`GROUP_EXCLUDE_COLUMNS` and datetime dtype, so the timing columns do
     not offer themselves as grouping factors.
     """
+    # `metadata_coords` is written at import and names every per-id coord that came
+    # from the metadata, including those stored under a different name than their
+    # column. Prefer it: the attr-key test below cannot see those, because the
+    # columns they came from have no attr of their own (see create_xarray_dataset).
+    recorded = [str(v) for v in np.atleast_1d(ds.attrs.get("metadata_coords", []))]
+
     out = []
     for name, coord in ds.coords.items():
         col = str(name)
@@ -474,7 +595,9 @@ def group_defining_coords(ds):
             continue
         if col in GROUP_EXCLUDE_COLUMNS or col == "group":
             continue
-        if col not in ds.attrs:
+        # Falls back to the attr-key test for datasets written before
+        # `metadata_coords` existed, so an older .nc still offers what it can.
+        if col not in recorded and col not in ds.attrs:
             continue
         if np.issubdtype(coord.dtype, np.datetime64):
             continue
@@ -598,10 +721,15 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     # below) because a blank cell — an unpulsed control cohort — makes their unique
     # list a mix of strings/numbers and NaN, which NetCDF cannot serialize as an
     # attribute. The per-fly coordinate is the durable record either way.
+    # `Monitor` is KEPT as a per-fly coord: a monitor is a physical device and
+    # monitor-level effects are a real thing to look for, so it has to be groupable.
+    # `region_id` stays out — it separates individual flies, which is what the `id`
+    # coord already does, so as a grouping factor it would just be "one fly per
+    # group". The pulse pair is excluded here and attached below under the names
+    # their PARSED values deserve (see METADATA_COORD_RENAMES).
     exclude_columns = [
         "file",
         "region_id",
-        "Monitor",
         "id",
         "pulse_time",
         "pulse_duration_min",
@@ -700,6 +828,26 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     for col in properties:
         coords[col] = ("id", _as_numpy_array(metadata.set_index("id")[col]))
 
+    # Which per-id coords came FROM THE METADATA — including the two stored under a
+    # different name than their column (``pulse_time`` -> ``pulse_zt_hour``,
+    # ``pulse_duration_min`` -> ``pulse_duration_minutes``).
+    #
+    # This is not the same list as ``group_columns``, which records the metadata
+    # COLUMNS the user ticked. A page that wants to re-derive a grouping needs names
+    # it can actually read off the dataset, and for the pulse columns those differ —
+    # which is why defaulting a picker to ``group_columns`` quietly dropped them.
+    #
+    # It is also not recoverable from the attrs. ``group_defining_coords`` identifies
+    # metadata coords by "is a per-id coord AND an attr key", and the pulse columns
+    # deliberately have no attr: their unique values mix strings, numbers and the NaN
+    # of an unpulsed cohort, which NetCDF cannot serialize. A flat list of coord
+    # names can be serialized, so the provenance is recorded directly instead.
+    _meta_coords = list(properties)
+    for _c in ("genotype", "pulse_zt_hour", "pulse_duration_minutes"):
+        if _c in coords and _c not in _meta_coords:
+            _meta_coords.append(_c)
+    attrs["metadata_coords"] = sorted(_meta_coords)
+
     # Combined group label for group-level analysis. ``group_columns`` chooses which
     # metadata factors define the comparison group; when None we reproduce the
     # historical default (genotype[-temperature]) exactly. The chosen columns are
@@ -712,6 +860,13 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     if group_series is not None:
         coords["group"] = ("id", _as_numpy_array(group_series))
         attrs["group_columns"] = list(chosen)
+        # The same choice, as COORD names. `group_columns` is what the user ticked
+        # and is the honest record of that; but two of those columns live under
+        # different coord names, so a page that wants to re-derive the grouping
+        # from coords cannot use it directly and silently dropped them.
+        attrs["group_coord_names"] = [
+            METADATA_COORD_RENAMES.get(c, c) for c in chosen
+        ]
 
     ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
@@ -1185,6 +1340,38 @@ def add_phase_metadata(ds):
     """
     split_minute = _derive_split_minute(ds)
     return ds.assign_coords(split_minute=("id", split_minute))
+
+
+def dd_onset_days(ds):
+    """The distinct days of the recording on which flies are released into DD.
+
+    ``[3]`` for one cohort released on day 3; ``[]`` when the dataset carries no
+    boundary at all. **More than one entry is the signature of a combined dataset**
+    — two runs whose boxes went into DD on different days of their own recordings.
+    That matters wherever days have to be counted from the release rather than from
+    each fly's own start: at the same day index two such cohorts have been
+    free-running for different numbers of days, and the difference between them
+    picks up roughly ``24 - tau`` of drift per day of offset.
+
+    Lives here, beside :func:`add_phase_metadata`, because it is a question about
+    the dataset's phase metadata rather than about any one page — it is derived
+    from the per-fly ``split_minute``, attached from ``first_DD_day`` if it has not
+    been already. Returns ``[]`` rather than raising when the dataset cannot
+    answer, since every caller so far treats "no boundary" as a normal state.
+    """
+    if "split_minute" not in ds.coords and "first_DD_day" not in ds.coords:
+        return []
+    try:
+        split = (
+            ds["split_minute"].values
+            if "split_minute" in ds.coords
+            else add_phase_metadata(ds)["split_minute"].values
+        )
+    except Exception:
+        return []
+    vals = np.asarray(split, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    return sorted({int(round(v / 1440.0)) for v in vals})
 
 
 def _derive_pulse_minute(ds):

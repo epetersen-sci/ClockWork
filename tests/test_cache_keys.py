@@ -17,7 +17,7 @@ import pytest
 
 CACHED_HELPERS = [
     ("app_pages.sleep_activity", "_cached_zt_binned"),
-    ("app_pages.sleep_activity", "_cached_summary_bars"),
+    ("app_pages.sleep_activity", "_cached_per_fly_summary"),
     ("app_pages.sleep_activity", "_cached_daily_pattern"),
     ("app_pages.sleep_activity", "_cached_summary_table"),
     ("app_pages.sleep_activity", "_cached_bout_duration_lines"),

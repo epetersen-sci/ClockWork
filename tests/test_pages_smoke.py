@@ -13,16 +13,15 @@ PAGES = [
     "data_import",
     "data_groups",
     "data_curate_split",
+    "actograms",
     "period_analysis",
     "periodograms",
     "rhythmicity",
     "phase_shift",
-    "sleep_detection",
     "sleep_activity",
     "sleep_states",
     "sleep_deprivation",
-    "hmm_model_selection",
-    "hmm_analysis",
+    "hmm",
     "export_data",
     "export_scamp",
 ]
@@ -47,7 +46,7 @@ def test_page_renders_without_dataset(app, page):
 def test_unsplit_dataset_renders(app, unsplit_ds):
     """A dataset with no LD/DD boundary hits the fallback branch on every page
     that offers a phase choice — the branch the LD/DD fixtures never reach."""
-    for page in ("sleep_detection", "hmm_model_selection", "period_analysis"):
+    for page in ("sleep_activity", "hmm", "period_analysis"):
         at = app(ds=unsplit_ds, page=page)
         assert not at.exception, f"{page} raised on an unsplit dataset: {at.exception}"
 
@@ -89,10 +88,13 @@ def test_sleep_states_tabs_are_gated(app, states_ds):
     # The Waveforms tab draws one panel per genotype per epoch present — this
     # fixture spans LD and DD, and Figure 1B prints them side by side.
     landing = len(at.get("plotly_chart"))
-    assert landing == 2 * n_groups, (
-        f"the Waveforms tab drew {landing} figures, expected {2 * n_groups} "
-        f"({n_groups} genotypes x 2 epochs) — either the facet layout changed "
-        "or another tab's figures rendered too"
+    # One panel per genotype, for the SELECTED epoch only. It used to be two per
+    # genotype because the Waveforms tab drew LD beside DD (the paper's Figure 1B);
+    # every figure on the page now honours the sidebar's Phase selector instead.
+    assert landing == n_groups, (
+        f"the Waveforms tab drew {landing} figures, expected {n_groups} "
+        f"({n_groups} genotypes x 1 epoch) — either the facet layout changed, "
+        "another tab's figures rendered too, or the second epoch came back"
     )
 
     # Selecting a tab through its key is the only route a headless AppTest has;

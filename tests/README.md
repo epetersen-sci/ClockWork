@@ -16,7 +16,7 @@ and exposes the resulting elements as lists you can assert on. That is what the
 
 ```python
 def test_something(app, master_ds):
-    at = app(ds=master_ds, page="hmm_model_selection")
+    at = app(ds=master_ds, page="hmm")
     assert at.radio(key="cv_phase_choice").value == "LD"
 ```
 

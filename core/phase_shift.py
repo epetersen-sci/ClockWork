@@ -71,6 +71,7 @@ Helpers:
 """
 
 import contextlib
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -747,22 +748,621 @@ def group_labels(ds, group_by):
     return np.array(["_".join(vals) for vals in zip(*parts)]), cols
 
 
+def _group_meta(ds, cols, labels):
+    """``{group label: {column: value}}`` — the coord values behind each group label.
+
+    Read from the coords rather than by splitting the label, so a genotype or
+    condition that itself contains '_' still resolves correctly.
+    """
+    values = {c: np.asarray(ds[c].values).astype(str) for c in cols}
+    meta = {}
+    for i, lab in enumerate(labels):
+        if lab not in meta:
+            meta[lab] = {c: values[c][i] for c in cols}
+    return meta
+
+
+def group_extras(ds, labels, groups, describe_by):
+    """``{group: {column: [values present]}}`` for coords not used to define the group.
+
+    Public because the page asks the same question twice: once to preview which
+    apparatus each arm of a control pairing sat in, before anything is computed, and
+    again on the result (where it arrives as ``group_extras``). One implementation
+    means the preview cannot disagree with what the analysis then records — and a
+    page reaching for the private name would be backlog item 8 again.
+
+    Kept as a list rather than a single value: a group that spans two flyboxes is
+    pooling two sub-experiments, and that has to stay visible rather than collapse to
+    whichever value happened to come first.
+    """
+    out = {grp: {} for grp in groups}
+    for col in describe_by:
+        if col not in ds.coords:
+            continue
+        vals = np.asarray(ds[col].values).astype(str)
+        for grp in groups:
+            out[grp][col] = sorted(set(vals[labels == grp].tolist()))
+    return out
+
+
+def build_matched_control_map(
+    ds,
+    control_value,
+    *,
+    group_by=("genotype", "condition"),
+    control_on="condition",
+    match_on=None,
+):
+    """Pair every group with the control group that matches it on ``match_on``.
+
+    Passing a single ``control_group`` to :func:`compute_group_phase_difference` refers
+    every group to one cohort, so an ``Hr38`` light-pulse arm ends up measured against a
+    ``Mito`` unpulsed one and any baseline phase difference between those two genotypes
+    is read as a shift. This builds the within-genotype pairing instead: each group's
+    reference is the group that shares its genotype (or whatever ``match_on`` names) and
+    whose ``control_on`` value is ``control_value``.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset carrying the grouping coords.
+    control_value : str
+        Value of ``control_on`` marking the unpulsed arm, e.g. ``"noLP"``.
+    group_by : sequence of str
+        Coordinates whose combination defines a group — the same value passed to
+        :func:`compute_group_phase_difference`, so the labels line up.
+    control_on : str
+        Coordinate separating control from treated groups (default ``"condition"``).
+    match_on : sequence of str, optional
+        Coordinates the control must share with the group it references. Defaults to
+        every column in ``group_by`` except ``control_on`` — genotype-matched for the
+        standard ``("genotype", "condition")`` grouping.
+
+    Returns
+    -------
+    dict
+        ``{group label: control label or None}``. A group with no matching control maps
+        to ``None`` and :func:`compute_group_phase_difference` reports NaN for it,
+        rather than silently borrowing another genotype's control. A control group maps
+        to itself (its own difference is 0 by construction).
+    """
+    labels, cols = group_labels(ds, group_by)
+    if control_on not in cols:
+        raise ValueError(f"control_on {control_on!r} is not one of the grouping columns {cols}")
+    if match_on is None:
+        match_on = [c for c in cols if c != control_on]
+    match_on = [str(c) for c in match_on]
+    missing = [c for c in match_on if c not in cols]
+    if missing:
+        raise ValueError(
+            f"match_on columns {missing} are not among the grouping columns {cols}"
+        )
+
+    meta = _group_meta(ds, cols, labels)
+    control_value = str(control_value)
+    by_key = {}
+    for grp, m in meta.items():
+        if m[control_on] == control_value:
+            by_key.setdefault(tuple(m[c] for c in match_on), []).append(grp)
+    ambiguous = {k: v for k, v in by_key.items() if len(v) > 1}
+    if ambiguous:
+        raise ValueError(
+            f"More than one {control_value!r} group shares the same {match_on} key: "
+            f"{ambiguous}. The reference would be ambiguous — add the distinguishing "
+            "column to match_on (or to group_by)."
+        )
+    return {
+        grp: by_key.get(tuple(m[c] for c in match_on), [None])[0] for grp, m in meta.items()
+    }
+
+
+DAY_ORIGINS = ("recording_start", "dd_onset")
+DIFFERENCE_SIGNS = ("group_minus_control", "control_minus_group")
+
+
+def _resolve_origin_days(ds, labels, groups, day_origin):
+    """``{group: absolute day index that becomes that group's day 0}``.
+
+    ``"recording_start"`` puts every group's day 0 at its own recording start, so the
+    origin is 0 and nothing moves. ``"dd_onset"`` puts it on the group's first full DD
+    day, read from the per-fly ``split_minute`` boundary.
+    """
+    if day_origin not in DAY_ORIGINS:
+        raise ValueError(f"day_origin must be one of {DAY_ORIGINS}, got {day_origin!r}")
+    if day_origin == "recording_start":
+        return dict.fromkeys(groups, 0)
+
+    import dam_utilities
+
+    if "split_minute" in ds.coords:
+        split = np.asarray(ds["split_minute"].values, dtype=float)
+    else:
+        try:
+            split = np.asarray(
+                dam_utilities.add_phase_metadata(ds)["split_minute"].values, dtype=float
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "day_origin='dd_onset' needs the LD->DD boundary, which comes from the "
+                f"metadata's first_DD_day column: {exc}"
+            ) from exc
+
+    origins = {}
+    for grp in groups:
+        member = labels == grp
+        days = np.rint(split[member] / MINUTES_PER_DAY)
+        distinct = sorted(set(days.tolist()))
+        if len(distinct) > 1:
+            # A group averaged across two different DD-release days has no single
+            # phase to report; say so rather than picking one of them.
+            raise ValueError(
+                f"Group {grp!r} mixes flies released into DD on different days of their "
+                f"recording (day {distinct}). Split them into separate groups, or use "
+                "day_origin='recording_start'."
+            )
+        origins[grp] = int(distinct[0])
+    return origins
+
+
+#: Which days after the pulse the phase response is read from. The pulse is given
+#: late on the last entrained day, so ``pulse_day + 1`` is the first full DD day —
+#: the transient — and is deliberately skipped. Averaging three days rather than
+#: taking one is what keeps a single badly-detected peak from setting the answer.
+RESPONSE_DAYS_AFTER_PULSE = (2, 3, 4)
+
+#: Day offsets averaged as each fly's PRE-pulse baseline, subtracted from its
+#: response. ``-1``, the day BEFORE the pulse day, is the last clean reading of
+#: where this fly sat relative to its control before anything happened.
+#:
+#: Not ``0``: the marker tracker leaves the pulse day out of both its pre- and
+#: post-pulse runs, because that day straddles the pulse. Asking for offset 0 finds
+#: no marker at all and silently applies no correction — which is exactly what
+#: happened on the first run of this, where the corrected and uncorrected numbers
+#: came out byte-identical.
+#:
+#: Set to ``()`` to leave the offset in deliberately.
+BASELINE_DAYS_AFTER_PULSE = (-1,)
+
+#: Coord names that describe the light pulse itself rather than the animal. Groups
+#: differ in these BECAUSE of the treatment, so they are the columns a control is
+#: matched ACROSS rather than on — see :func:`control_map_from_pulse`.
+PULSE_COORDS = ("pulse_zt_hour", "pulse_duration_minutes", "pulse_intensity")
+
+
+def control_map_from_pulse(ds, group_by, *, duration_coord="pulse_duration_minutes"):
+    """Pair every group with its unpulsed control, using the pulse itself.
+
+    A control is a group whose pulse duration is 0: no pulse was given, whatever
+    else the metadata says. That is a property of the experiment rather than of a
+    naming convention, which is the point — the previous version looked for the
+    literal string ``"noLP"`` in a ``condition`` column, so it worked on one lab's
+    spreadsheet and silently found nothing on anybody else's.
+
+    Groups are matched on every grouping column EXCEPT the pulse ones
+    (:data:`PULSE_COORDS`). Those are what the treatment varies, so matching on them
+    would only ever pair a group with itself. Everything else — genotype, sex,
+    whatever else defines the group — must agree, which is what makes the comparison
+    within-genotype. It also means one control serves every pulse a genotype
+    received: the same flies are the right reference for 20 min at ZT21 and for
+    60 min at ZT21.
+
+    Returns
+    -------
+    (dict, list)
+        ``{group label: control label or None}``, and the list of control group
+        labels. A group with no match maps to ``None`` rather than borrowing
+        another genotype's control.
+    """
+    labels, cols = group_labels(ds, group_by)
+    if duration_coord not in ds.coords:
+        raise ValueError(
+            f"No {duration_coord!r} coordinate, so the unpulsed control cannot be "
+            "identified. Add a pulse-duration column to the metadata (0 for the "
+            "unpulsed arm) and reload."
+        )
+
+    meta = _group_meta(ds, cols, labels)
+    durations = np.asarray(ds[duration_coord].values, dtype=float)
+    # A group is a control when every fly in it had no pulse. Mixed groups are a
+    # metadata error rather than a case to guess at, so they simply are not controls.
+    is_control = {}
+    for grp in meta:
+        vals = durations[labels == grp]
+        vals = vals[np.isfinite(vals)]
+        is_control[grp] = bool(vals.size) and bool(np.all(vals == 0))
+
+    match_on = [c for c in cols if c not in PULSE_COORDS]
+    controls = [g for g, c in is_control.items() if c]
+    by_key = {}
+    for grp in controls:
+        by_key.setdefault(tuple(meta[grp][c] for c in match_on), []).append(grp)
+
+    ambiguous = {k: v for k, v in by_key.items() if len(v) > 1}
+    if ambiguous:
+        raise ValueError(
+            f"More than one unpulsed group shares the same {match_on or ['(no columns)']} "
+            f"key: {ambiguous}. Add the column that tells them apart to the grouping."
+        )
+
+    out = {}
+    for grp in meta:
+        if is_control[grp]:
+            out[grp] = grp
+            continue
+        key = tuple(meta[grp][c] for c in match_on)
+        out[grp] = by_key.get(key, [None])[0]
+    return out, sorted(controls)
+
+
+def grouping_suggestion(ds):
+    """What to group by, for the message shown when no control could be matched.
+
+    Genotype nearly always defines a group; the pulse columns are what make a
+    treated arm treated; and a factor like sex belongs in the grouping when it is
+    present, because pooling sexes and then matching one control to both is a
+    different experiment from the one that was run.
+    """
+    import dam_utilities
+
+    available = set(dam_utilities.group_defining_coords(ds))
+    wanted = ["genotype", *PULSE_COORDS, "sex", "block"]
+    return [c for c in wanted if c in available]
+
+
+def _per_fly_day_phase_hours(
+    ds,
+    *,
+    fallback_pulse_minute=None,
+    progress_callback=None,
+    activity_var="activity",
+    filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
+    peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
+    peak_distance_hours=DEFAULT_PHASE_SHIFT_PEAK_DISTANCE_HOURS,
+    search_half_width_hours=DEFAULT_PHASE_SHIFT_MARKER_SEARCH_HALF_WIDTH_HOURS,
+):
+    """``{fly id: {absolute day index: peak time in hours past that day's start}}``.
+
+    The same detection the per-fly page uses — one Butterworth pass over the whole
+    cohort, then :func:`detect_peak_markers` per fly — so a number here and a number
+    there come from one algorithm rather than two that drifted.
+
+    Hours **within the day**, not from the recording start, because that is what a
+    phase is: two flies whose peaks are 24 h apart in absolute time are at the same
+    phase.
+
+    ``fallback_pulse_minute`` is used for flies that had no pulse. The marker tracker
+    splits a record into pre- and post-pulse runs and seeds each independently, so it
+    needs a split point even for a control fly — and the right one is the cohort's,
+    since a control exists precisely to say what the pulsed flies would have done on
+    those same days. Without it the controls raise, which is how this was found.
+    """
+    from dam_utilities import add_phase_metadata, add_pulse_metadata
+    from preprocessing import PreprocessConfig, preprocess_activity
+
+    if "pulse_minute" not in ds.coords:
+        ds = add_pulse_metadata(ds)
+    if "split_minute" not in ds.coords and "first_DD_day" in ds.coords:
+        with contextlib.suppress(ValueError):
+            ds = add_phase_metadata(ds)
+
+    source = (
+        preprocess_activity(
+            ds, PreprocessConfig(lopass_hours=float(filter_hours)), activity_var=activity_var
+        )[activity_var]
+        if filter_hours > 0
+        else ds[activity_var]
+    )
+    values_2d = np.asarray(source.transpose("time", "id").values, dtype=float)
+    minutes = np.asarray(ds["time"].values, dtype=float)
+
+    fly_ids = [str(i) for i in ds["id"].values]
+    pulse_minutes = np.asarray(ds["pulse_minute"].values, dtype=float)
+    split_minutes = (
+        np.asarray(ds["split_minute"].values, dtype=float)
+        if "split_minute" in ds.coords
+        else np.full(len(fly_ids), np.nan)
+    )
+
+    out = {}
+    n = len(fly_ids)
+    for i, fly_id in enumerate(fly_ids):
+        # Per-fly detection is the slow half of a phase response, so the caller
+        # gets to say how far along it is. Reported per fly rather than per
+        # chunk: a cohort of 200 is the common case and a bar that moves once
+        # is not a bar.
+        if progress_callback is not None:
+            progress_callback(i / n if n else 1.0)
+        own_pulse = pulse_minutes[i]
+        if not np.isfinite(own_pulse):
+            own_pulse = fallback_pulse_minute
+        if own_pulse is None or not np.isfinite(own_pulse):
+            out[fly_id] = {}
+            continue
+        markers = detect_peak_markers(
+            minutes,
+            values_2d[:, i],
+            own_pulse,
+            prominence_frac=peak_prominence_frac,
+            distance_hours=peak_distance_hours,
+            search_half_width_hours=search_half_width_hours,
+            split_minute=split_minutes[i] if np.isfinite(split_minutes[i]) else None,
+        )
+        out[fly_id] = {
+            int(day): (float(m) - int(day) * MINUTES_PER_DAY) / 60.0
+            for day, m in markers.items()
+            if np.isfinite(m)
+        }
+    if progress_callback is not None:
+        progress_callback(1.0)
+    return out
+
+
+def compute_phase_response(
+    ds,
+    *,
+    group_by=("genotype", "pulse_zt_hour", "pulse_duration_minutes"),
+    control_map=None,
+    response_days=RESPONSE_DAYS_AFTER_PULSE,
+    baseline_days=BASELINE_DAYS_AFTER_PULSE,
+    duration_coord="pulse_duration_minutes",
+    zt_coord="pulse_zt_hour",
+    progress_callback=None,
+    activity_var="activity",
+    filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
+    peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
+    peak_distance_hours=DEFAULT_PHASE_SHIFT_PEAK_DISTANCE_HOURS,
+    search_half_width_hours=DEFAULT_PHASE_SHIFT_MARKER_SEARCH_HALF_WIDTH_HOURS,
+):
+    """One phase response per FLY, for a phase response curve.
+
+    The quantity, stated once so the graphs cannot disagree about it::
+
+        response(fly) = mean over the response days of
+                        (that day's control-group mean peak time - this fly's peak time)
+
+    **Sign.** Control minus fly, so an ADVANCE — the fly peaking earlier than its
+    control — is POSITIVE, and a delay is negative. That is the convention a PRC is
+    normally drawn in.
+
+    **Per fly, against a group mean.** Every fly in a genotype has the same control
+    mean subtracted, which has two consequences worth knowing. The mean of a group's
+    per-fly responses is exactly (group mean - control mean), so a violin's centre is
+    the group-level phase response and its spread is the real between-fly variation —
+    one computation gives both. And because the subtracted constant is shared, it
+    cancels when two groups are compared, so comparing genotypes to each other, or to
+    the control's own distribution, is sound. What is NOT sound is testing one group
+    against zero and reading it as a test against the control: that ignores the
+    uncertainty in the control mean itself.
+
+    **Days.** ``response_days`` are offsets from the fly's pulse day. The default
+    skips ``+1``, the first full DD day, because it carries the transient.
+
+    **Baseline.** ``baseline_days`` are subtracted from the response, per fly, so
+    what is reported is the change the pulse produced rather than the change plus a
+    constant. Two cohorts are rarely at exactly the same phase beforehand — the
+    pulsed arm and its control usually sit in different boxes — and that offset is
+    present on the response days as much as before them. The default is the pulse
+    day itself, the last clean reading. Pass ``()`` to leave it in; the controls
+    still centre on zero either way, since each is measured against its own mean.
+
+    A fly with no usable peak on any response day gets NaN and is counted in
+    ``n_dropped`` rather than silently thinning its group — per-fly peak detection
+    is markedly noisier than the group-mean detection ``peakphaseplot.m`` was built
+    around, and an arrhythmic fly has no peak to find at all.
+
+    **Pairing.** ``control_map`` is derived from the pulse itself
+    (:func:`control_map_from_pulse`) unless one is passed in, which is how a caller
+    that resolved the pairing some other way — a dataset with no pulse-duration
+    column, where the unpulsed arm is named rather than computed — gets the same
+    analysis.
+
+    Returns
+    -------
+    dict
+        ``per_fly`` (DataFrame: ``id``, ``group``, ``control_group``, ``zt``,
+        ``response_hours``, ``n_days_used``, plus one column per grouping coord),
+        ``control_map``, ``controls``, ``dropped`` (DataFrame: ``group``,
+        ``n_dropped``, ``n_total``), and ``params``.
+    """
+    from dam_utilities import add_pulse_metadata
+
+    if zt_coord not in ds.coords:
+        raise ValueError(f"No {zt_coord!r} coordinate; a PRC needs the pulse time.")
+    if "pulse_minute" not in ds.coords:
+        ds = add_pulse_metadata(ds)
+
+    labels, cols = group_labels(ds, group_by)
+    meta = _group_meta(ds, cols, labels)
+    if control_map is None:
+        control_map, controls = control_map_from_pulse(
+            ds, group_by, duration_coord=duration_coord
+        )
+    else:
+        # A caller that already knows the pairing passes it in, and this does not
+        # go looking for a duration column it may not have. That is the case for a
+        # dataset recorded before anyone wrote pulse durations down: its unpulsed
+        # arm is a string in a `condition` column, which no rule about zero can
+        # find, but the page has already resolved it and there is no reason the
+        # phase response should be the one result such a dataset cannot have.
+        control_map = dict(control_map)
+        controls = sorted({c for c in control_map.values() if c is not None})
+
+    fly_ids = [str(i) for i in ds["id"].values]
+    pulse_minutes = np.asarray(ds["pulse_minute"].values, dtype=float)
+    zt_vals = np.asarray(ds[zt_coord].values, dtype=float)
+
+    # The pulse day, resolved before detection because the control flies need it too.
+    pulsed = pulse_minutes[np.isfinite(pulse_minutes)]
+    if not pulsed.size:
+        raise ValueError(
+            "No fly in this dataset has a light pulse, so there is no phase response "
+            "to measure. Check that pulse_time is set for the treated arm."
+        )
+    median_pulse = float(np.median(pulsed))
+    pulse_day = int(np.floor(median_pulse / MINUTES_PER_DAY))
+    days = [pulse_day + int(d) for d in response_days]
+    base_days = [pulse_day + int(d) for d in (baseline_days or ())]
+
+    phases = _per_fly_day_phase_hours(
+        ds,
+        fallback_pulse_minute=median_pulse,
+        progress_callback=progress_callback,
+        activity_var=activity_var,
+        filter_hours=filter_hours,
+        peak_prominence_frac=peak_prominence_frac,
+        peak_distance_hours=peak_distance_hours,
+        search_half_width_hours=search_half_width_hours,
+    )
+
+    # The control mean per day, over the control flies that HAVE a peak that day.
+    control_day_mean = {}
+    for ctrl in controls:
+        members = [f for f, lab in zip(fly_ids, labels) if lab == ctrl]
+        for day in [*days, *base_days]:
+            vals = [phases[f][day] for f in members if day in phases.get(f, {})]
+            if vals:
+                control_day_mean[(ctrl, day)] = float(np.mean(vals))
+
+    rows, dropped = [], {}
+    for fly_id, lab, zt in zip(fly_ids, labels, zt_vals):
+        ctrl = control_map.get(lab)
+        dropped.setdefault(lab, [0, 0])
+        dropped[lab][1] += 1
+        if ctrl is None:
+            dropped[lab][0] += 1
+            continue
+        # ctrl/fly_id bound as defaults: a closure over the loop variables would
+        # read whichever fly the loop had reached by the time it was called.
+        def _diff(day_list, *, ctrl=ctrl, fly_id=fly_id):
+            out = []
+            for day in day_list:
+                ref = control_day_mean.get((ctrl, day))
+                own = phases.get(fly_id, {}).get(day)
+                if ref is not None and own is not None:
+                    # Control minus fly: an advance reads positive.
+                    out.append(ref - own)
+            return out
+
+        per_day = _diff(days)
+        if not per_day:
+            dropped[lab][0] += 1
+            continue
+        base = _diff(base_days) if base_days else []
+        # A fly with no usable baseline keeps its raw response rather than being
+        # dropped: the offset is a correction, and losing the measurement to fix a
+        # correction is the worse trade. base_used records which it was.
+        offset = float(np.mean(base)) if base else 0.0
+        row = {
+            "id": fly_id,
+            "group": lab,
+            "control_group": ctrl,
+            "zt": float(zt) if np.isfinite(zt) else np.nan,
+            "response_hours": float(np.mean(per_day)) - offset,
+            "response_hours_raw": float(np.mean(per_day)),
+            "n_days_used": len(per_day),
+            "baseline_used": bool(base),
+        }
+        row.update(meta.get(lab, {}))
+        rows.append(row)
+
+    per_fly = pd.DataFrame(rows)
+    drop_df = pd.DataFrame(
+        [
+            {"group": g, "n_dropped": d, "n_total": t}
+            for g, (d, t) in sorted(dropped.items())
+        ]
+    )
+    return {
+        "per_fly": per_fly,
+        "control_map": control_map,
+        "controls": controls,
+        "dropped": drop_df,
+        "params": {
+            "group_by": list(cols),
+            "response_days": [int(d) for d in response_days],
+            "baseline_days": [int(d) for d in (baseline_days or ())],
+            "pulse_day": pulse_day,
+            "filter_hours": float(filter_hours),
+            "peak_prominence_frac": float(peak_prominence_frac),
+            "peak_distance_hours": float(peak_distance_hours),
+            "search_half_width_hours": float(search_half_width_hours),
+            "sign": "control_minus_fly (advance positive, delay negative)",
+        },
+    }
+
+
+def summarize_phase_response(per_fly, by=("zt", "group")):
+    """Group mean, SD, SEM and n of the per-fly responses — the PRC line's points.
+
+    The mean here is the group-level phase response by construction (see
+    :func:`compute_phase_response`), so the line through these points and the
+    violins behind it are the same quantity rather than two estimators that happen
+    to sit near each other.
+    """
+    if per_fly is None or per_fly.empty:
+        return pd.DataFrame(columns=[*by, "mean", "sd", "sem", "n"])
+    g = per_fly.groupby(list(by), dropna=False)["response_hours"]
+    out = g.agg(mean="mean", sd=lambda x: x.std(ddof=1), n="count").reset_index()
+    out["sem"] = out["sd"] / np.sqrt(out["n"].clip(lower=1))
+    out.loc[out["n"] <= 1, ["sd", "sem"]] = np.nan
+    return out
+
+
 def compute_group_phase_difference(
     ds,
     control_group,
     *,
     group_by=("genotype", "condition"),
+    describe_by=(),
+    day_origin="recording_start",
+    baseline_day=None,
+    difference_sign="group_minus_control",
     filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
     peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     peak_distance_hours=DEFAULT_PHASE_SHIFT_PEAK_DISTANCE_HOURS,
     search_half_width_hours=DEFAULT_PHASE_SHIFT_MARKER_SEARCH_HALF_WIDTH_HOURS,
     activity_var="activity",
 ):
-    """Per-day phase difference between each group and an unpulsed control group.
+    """Per-day phase difference between each group and its unpulsed control group.
 
     This is the direct analogue of the lab's ``peakphaseplot.m``: average each
     group's activity, smooth it, take one peak per day, and report the pulsed
     group's peak time minus the control group's on the same day.
+
+    The reference is either one cohort for the whole experiment (pass a group label)
+    or a per-group pairing (pass a mapping, usually from
+    :func:`build_matched_control_map`). Prefer the pairing when the experiment holds
+    more than one genotype: genotypes differ in baseline phase, so measuring an
+    ``Hr38`` pulsed arm against a ``Mito`` unpulsed one reports that genotype
+    difference as part of the shift.
+
+    Aligning days across experiments
+    --------------------------------
+    By default a day is counted from each fly's own ``start_datetime``, which is the
+    right anchor when every group comes from one run. It is the WRONG anchor when the
+    control comes from a different experiment that was released into DD on a different
+    day of its recording: at the same day index the two cohorts would then have been
+    free-running for different numbers of days, and the difference picks up roughly
+    ``24 - tau`` of drift for every day of offset. Pass ``day_origin="dd_onset"`` to
+    count days from each group's own LD->DD boundary instead, so day 0 is the first
+    full DD day in both experiments. Because the pulse is by definition given on the
+    last entrained day (see ``dam_utilities._derive_pulse_minute``), under this origin
+    the pulse always falls on day -1 — a further reason it lines two runs up correctly.
+
+    Taking out the starting offset
+    ------------------------------
+    Two cohorts are rarely at exactly the same phase before the pulse — different
+    flyboxes sit at slightly different phases, and that offset is present on day 1 as
+    much as on the last day. ``baseline_day`` subtracts each group's difference on that
+    day from all of its days, so every group starts at zero and what the plot shows is
+    the CHANGE produced by the pulse rather than the change plus a constant. It is
+    reported in ``phase_difference_from_baseline_hours``; the raw difference is always
+    kept alongside it.
+
+    ``difference_sign`` picks which way round the subtraction reads. The default
+    ``"group_minus_control"`` gives the pulsed group's peak minus its control's, so
+    positive = later = delayed. ``"control_minus_group"`` is the lab's plotting
+    convention (``noLP - LP``), where a delay reads negative.
 
     Use this rather than :func:`compute_phase_shift_analysis` when the protocol does
     not leave enough pre-pulse days to establish each fly's own baseline — which is
@@ -800,17 +1400,43 @@ def compute_group_phase_difference(
     ----------
     ds : xr.Dataset
         Whole dataset on a relative-integer-minute time axis.
-    control_group : str
-        Label of the unpulsed reference group, as built from ``group_by``.
+    control_group : str or mapping
+        Either the label of one unpulsed reference group (as built from ``group_by``),
+        used for every group; or a ``{group: control group}`` mapping so each group is
+        referenced to its own control — see :func:`build_matched_control_map` for the
+        within-genotype pairing. A group mapped to ``None`` gets NaN differences.
     group_by : sequence of str
         Coordinates whose combination defines a group.
+    describe_by : sequence of str
+        Coordinates to record per group without grouping on them — ``("flybox",)``
+        labels each comparison with the apparatus it came from. A group holding more
+        than one value gets all of them, which is how a condition label covering two
+        sub-experiments shows itself.
+    day_origin : {"recording_start", "dd_onset"}
+        Where day 0 sits. ``"recording_start"`` (default) counts from each fly's
+        ``start_datetime``, the historical behaviour. ``"dd_onset"`` counts from the
+        group's LD->DD boundary, which is what makes a control from another
+        experiment comparable; it needs ``first_DD_day`` in the metadata.
+    baseline_day : int, optional
+        Day index whose difference is subtracted from every day of the same group, so
+        each group starts at zero there and the starting offset between the two cohorts
+        drops out. ``None`` (default) leaves the differences as measured.
+    difference_sign : {"group_minus_control", "control_minus_group"}
+        Direction of the subtraction. Default is group minus control (positive =
+        delayed); ``"control_minus_group"`` is the ``noLP - LP`` convention.
 
     Returns
     -------
     dict
-        ``per_day`` (DataFrame: group, day_index, peak_hours, control_peak_hours,
-        phase_difference_hours), ``peak_times`` ({group: {day: hours}}),
-        ``control_group``, and ``params``.
+        ``per_day`` (DataFrame: group, control_group, day_index, peak_hours,
+        control_peak_hours, phase_difference_hours,
+        phase_difference_from_baseline_hours, plus ``absolute_day_index`` and
+        ``peak_hours_from_start`` holding the unaligned values), ``peak_times``
+        ({group: {absolute day: hours from start}}), ``control_group`` (the argument
+        as given), ``control_map`` ({group: control group}, always resolved),
+        ``origin_day`` ({group: absolute day index of that group's day 0}),
+        ``group_values`` ({group: {column: value}}, for faceting without splitting
+        labels), and ``params``.
     """
     from preprocessing import PreprocessConfig, preprocess_activity
 
@@ -825,10 +1451,26 @@ def compute_group_phase_difference(
 
     labels, cols = group_labels(ds, group_by)
     groups = sorted(set(labels))
-    if control_group not in groups:
-        raise ValueError(
-            f"control_group {control_group!r} is not one of the groups present: {groups}"
-        )
+    if isinstance(control_group, Mapping):
+        control_map = {grp: control_group.get(grp) for grp in groups}
+        unknown = sorted({c for c in control_map.values() if c is not None and c not in groups})
+        if unknown:
+            raise ValueError(
+                f"control group(s) {unknown} are not among the groups present: {groups}"
+            )
+        if all(c is None for c in control_map.values()):
+            raise ValueError(
+                "No group has a control group to be referenced to. Check that the control "
+                "arm is present and that its label matches the grouping columns."
+            )
+    else:
+        if control_group not in groups:
+            raise ValueError(
+                f"control_group {control_group!r} is not one of the groups present: {groups}"
+            )
+        control_map = dict.fromkeys(groups, control_group)
+
+    origin_day = _resolve_origin_days(ds, labels, groups, day_origin)
 
     minutes = time_vals.astype(float)
     dt_min = float(np.median(np.diff(minutes))) if minutes.size > 1 else 1.0
@@ -878,34 +1520,195 @@ def compute_group_phase_difference(
         )
         peak_times[grp] = {d: m / 60.0 for d, m in markers.items()}
 
-    control = peak_times[control_group]
+    # Shift each group onto its own origin. Both the day index and the peak time move,
+    # because the peak is measured from the recording start: leaving the hours on the
+    # old origin while moving the day would put a whole 24 h into every difference
+    # between two groups whose origins differ. With day_origin="recording_start" every
+    # origin is 0 and these are identities.
+    aligned = {
+        grp: {
+            d - origin_day[grp]: h - origin_day[grp] * 24.0
+            for d, h in times.items()
+        }
+        for grp, times in peak_times.items()
+    }
+
     rows = []
     for grp in groups:
+        ctrl_grp = control_map.get(grp)
+        control = aligned[ctrl_grp] if ctrl_grp is not None else {}
+        last_day = max(peak_times[grp]) if peak_times[grp] else None
         for day, hours in sorted(peak_times[grp].items()):
-            ctrl = control.get(day)
+            rel_day = day - origin_day[grp]
+            rel_hours = hours - origin_day[grp] * 24.0
+            ctrl = control.get(rel_day)
             rows.append(
                 {
                     "group": grp,
-                    "day_index": day,
-                    "peak_hours": hours,
+                    "control_group": ctrl_grp,
+                    "day_index": rel_day,
+                    "peak_hours": rel_hours,
                     "control_peak_hours": ctrl,
-                    "phase_difference_hours": (hours - ctrl if ctrl is not None else np.nan),
+                    "phase_difference_hours": (rel_hours - ctrl if ctrl is not None else np.nan),
                     "n_flies": int((labels == grp).sum()),
+                    # Kept alongside the aligned values so a row can always be traced
+                    # back to a wall-clock position in its own recording.
+                    "absolute_day_index": day,
+                    "peak_hours_from_start": hours,
                     # filtfilt pads the record ends, so the first/last day's peak
                     # sits partly on synthetic padding — flag, don't silently report.
-                    "filter_edge": day == 0 or day == max(peak_times[grp]),
+                    "filter_edge": day == 0 or day == last_day,
                 }
             )
 
+    per_day = pd.DataFrame(rows)
+
+    if difference_sign not in DIFFERENCE_SIGNS:
+        raise ValueError(
+            f"difference_sign must be one of {DIFFERENCE_SIGNS}, got {difference_sign!r}"
+        )
+    if difference_sign == "control_minus_group":
+        per_day["phase_difference_hours"] = -per_day["phase_difference_hours"]
+
+    # Rebasing is a per-group shift, so it must happen after the sign is settled.
+    per_day["phase_difference_from_baseline_hours"] = np.nan
+    if baseline_day is not None and not per_day.empty:
+        at_baseline = per_day[per_day["day_index"] == int(baseline_day)]
+        base = at_baseline.set_index("group")["phase_difference_hours"]
+        per_day["phase_difference_from_baseline_hours"] = per_day[
+            "phase_difference_hours"
+        ] - per_day["group"].map(base)
+
     return {
-        "per_day": pd.DataFrame(rows),
+        "per_day": per_day,
         "peak_times": peak_times,
         "control_group": control_group,
+        "control_map": control_map,
+        "origin_day": origin_day,
+        "group_values": _group_meta(ds, cols, labels),
+        "group_extras": group_extras(ds, labels, groups, describe_by),
         "params": {
             "group_by": list(cols),
+            "describe_by": [c for c in describe_by if c in ds.coords],
+            "day_origin": str(day_origin),
+            "baseline_day": (None if baseline_day is None else int(baseline_day)),
+            "difference_sign": str(difference_sign),
             "filter_hours": float(filter_hours),
             "peak_prominence_frac": float(peak_prominence_frac),
             "peak_distance_hours": float(peak_distance_hours),
             "search_half_width_hours": float(search_half_width_hours),
         },
     }
+
+
+def bootstrap_group_phase_difference(
+    ds,
+    control_group,
+    *,
+    n_boot=200,
+    seed=0,
+    ci=95.0,
+    progress_callback=None,
+    **kwargs,
+):
+    """Uncertainty for :func:`compute_group_phase_difference`, by resampling flies.
+
+    There is no per-fly spread to average here: following ``peakphaseplot.m``, the
+    plotted point is the peak of the group's MEAN trace, not the mean of per-fly
+    peaks. Those two are different estimators, so a SEM built from per-fly peaks
+    would not describe the line that is drawn.
+
+    What this does instead is resample the flies — with replacement, independently
+    within every group, so the pulsed arm and its control both vary — and re-run the
+    whole pipeline (average, smooth, find one peak per day, subtract the control,
+    rebase) on each resampled cohort. The spread of the resulting differences is the
+    sampling uncertainty of exactly the quantity plotted, and it correctly carries
+    the control's uncertainty as well as the pulsed group's.
+
+    Every keyword of :func:`compute_group_phase_difference` is accepted and passed
+    through unchanged, so the bootstrap describes the same analysis as the point
+    estimate.
+
+    Parameters
+    ----------
+    n_boot : int
+        Resampled cohorts to draw. 200 is enough for error bars; a percentile
+        interval steadies at a few hundred.
+    seed : int
+        Makes the interval reproducible — the same data and seed give the same bars.
+    ci : float
+        Central interval width in percent (95 gives the 2.5th-97.5th percentiles).
+
+    Returns
+    -------
+    DataFrame
+        One row per group and day: ``group``, ``day_index``, and for both the raw and
+        the rebased difference a ``_boot_sd`` (the bootstrap standard error), ``_lo``
+        and ``_hi`` (percentile interval bounds) column, plus ``n_boot_ok`` — how many
+        resamples yielded a usable peak for that group-day. A group-day whose peak
+        detection fails in most resamples shows a small ``n_boot_ok``, and its bar
+        should not be trusted.
+    """
+    if int(n_boot) < 2:
+        raise ValueError("n_boot must be at least 2")
+
+    labels, _cols = group_labels(ds, kwargs.get("group_by", ("genotype", "condition")))
+    groups = sorted(set(labels))
+    member_idx = {g: np.flatnonzero(labels == g) for g in groups}
+    if not any(len(v) for v in member_idx.values()):
+        raise ValueError("no flies to resample")
+
+    rng = np.random.default_rng(seed)
+    value_cols = ["phase_difference_hours", "phase_difference_from_baseline_hours"]
+    draws = {c: {} for c in value_cols}     # {col: {(group, day): [values]}}
+
+    for b in range(int(n_boot)):
+        # Resample within each group, so group sizes are preserved and no group can
+        # vanish from a resample.
+        picks = np.concatenate([
+            idx[rng.integers(0, len(idx), len(idx))] if len(idx) else idx
+            for idx in member_idx.values()
+        ])
+        try:
+            res = compute_group_phase_difference(
+                ds.isel(id=picks), control_group, **kwargs
+            )
+        except Exception:
+            # A degenerate resample (e.g. every fly identical) can fail peak finding;
+            # skip it rather than losing the whole run.
+            continue
+        pd_b = res["per_day"]
+        for col in value_cols:
+            if col not in pd_b.columns:
+                continue
+            for grp, day, val in zip(pd_b["group"], pd_b["day_index"], pd_b[col]):
+                if np.isfinite(val):
+                    draws[col].setdefault((grp, int(day)), []).append(float(val))
+        if progress_callback is not None:
+            progress_callback((b + 1) / float(n_boot))
+
+    lo_q = (100.0 - float(ci)) / 2.0
+    hi_q = 100.0 - lo_q
+    keys = sorted({k for col in value_cols for k in draws[col]})
+    rows = []
+    for grp, day in keys:
+        row = {"group": grp, "day_index": day}
+        for col in value_cols:
+            vals = np.asarray(draws[col].get((grp, day), ()), dtype=float)
+            stem = col.replace("_hours", "")
+            if vals.size >= 2:
+                row[f"{stem}_boot_sd"] = float(vals.std(ddof=1))
+                row[f"{stem}_lo"] = float(np.percentile(vals, lo_q))
+                row[f"{stem}_hi"] = float(np.percentile(vals, hi_q))
+            else:
+                row[f"{stem}_boot_sd"] = np.nan
+                row[f"{stem}_lo"] = np.nan
+                row[f"{stem}_hi"] = np.nan
+        row["n_boot_ok"] = int(len(draws[value_cols[0]].get((grp, day), ())))
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    out.attrs["n_boot"] = int(n_boot)
+    out.attrs["ci"] = float(ci)
+    out.attrs["seed"] = int(seed)
+    return out

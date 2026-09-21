@@ -41,13 +41,65 @@ from import_diagnostics import ImportIssue, MetadataError
 REQUIRED_METADATA_COLUMNS = ("Monitor", "start_datetime", "stop_datetime", "genotype")
 
 
+def _monitor_file_candidates(monitor_id):
+    """Filenames a monitor's raw file might carry, in order of preference.
+
+    Trikinetics writes ``Monitor1.txt``; FlyBox's video tracker writes the
+    zero-padded ``Monitor01.txt``. Both name the same monitor, so try the plain
+    form first and fall back to the padded ones rather than making the user
+    rename the export.
+    """
+    names = [f"Monitor{monitor_id}.txt"]
+    try:
+        num = int(monitor_id)
+    except (TypeError, ValueError):
+        return names
+    for width in (2, 3):
+        padded = f"Monitor{num:0{width}d}.txt"
+        if padded not in names:
+            names.append(padded)
+    return names
+
+
+def _find_monitor_file(data_folder, monitor_id):
+    """Path to the monitor's raw file, or ``None`` if no candidate name exists.
+
+    The exact spellings are tried first, then the folder is scanned and matched
+    case-insensitively. Windows and a default macOS volume already resolve
+    ``monitor01.txt`` against ``Monitor01.txt`` themselves, so a lowercase export
+    loads there and fails on Linux (or a case-sensitive macOS volume) with a
+    "file not found" that names a file the user can plainly see. Matching the case
+    here means the same folder loads on every platform.
+    """
+    candidates = _monitor_file_candidates(monitor_id)
+    for name in candidates:
+        path = os.path.join(data_folder, name)
+        if os.path.exists(path):
+            return path
+
+    try:
+        entries = os.listdir(data_folder)
+    except OSError:
+        return None
+    # First spelling wins, so a folder holding both Monitor1.txt and monitor1.txt
+    # resolves the same way twice rather than by directory order.
+    by_lower = {}
+    for entry in sorted(entries):
+        by_lower.setdefault(entry.lower(), entry)
+    for name in candidates:
+        match = by_lower.get(name.lower())
+        if match:
+            return os.path.join(data_folder, match)
+    return None
+
+
 def _parse_region_ids(cell, n_channels=32):
     """Expand one metadata ``region_id`` cell into the list of DAM tube/channel
     numbers it selects.
 
     * blank / NaN / empty  -> every tube ``1..n_channels`` (the whole monitor)
     * a single value ``5`` / ``"5"`` / ``5.0``  -> ``[5]``
-    * an inclusive hyphen range ``"1-16"``  -> ``[1, 2, ..., 16]``
+    * an inclusive range ``"1-16"`` or ``"1..16"``  -> ``[1, 2, ..., 16]``
     * a comma list ``"1,3,5"`` or mixed ``"1-4,17-20"``  -> the de-duplicated union
 
     Expansion is therefore PER ROW: a monitor split across genotypes can be
@@ -67,6 +119,9 @@ def _parse_region_ids(cell, n_channels=32):
             part = part.strip()
             if not part:
                 continue
+            # '1..16' is as common as '1-16' in hand-written sheets; treat them alike.
+            if ".." in part:
+                part = part.replace("..", "-")
             if "-" in part:
                 lo_s, hi_s = part.split("-", 1)
                 lo, hi = int(float(lo_s)), int(float(hi_s))
@@ -78,7 +133,7 @@ def _parse_region_ids(cell, n_channels=32):
     except ValueError as e:
         raise ValueError(
             f"Unparseable region_id cell {cell!r}: {e}. Use a single number "
-            f"('5'), an inclusive range ('1-16'), or a comma list ('1,3,5')."
+            f"('5'), an inclusive range ('1-16' or '1..16'), or a comma list ('1,3,5')."
         ) from e
     # de-duplicate, preserving first-seen order
     seen, out = set(), []
@@ -236,9 +291,14 @@ class MetadataProcessor:
         # metadata problem rather than a raw pandas traceback: from the user's side
         # "the metadata file is not readable" is the actionable fact, and the
         # underlying error is kept as the detail.
-        if self.metadata_path.endswith(".csv"):
+        # The extension is lower-cased before it is compared. The folder browser
+        # lists files by their lower-cased extension, so a METADATA.XLSX was offered
+        # in the picker and then refused here as "not a .csv or .xlsx/.xls file" —
+        # the picker handing over a file the loader would not take.
+        _ext = os.path.splitext(self.metadata_path)[1].lower()
+        if _ext == ".csv":
             reader, kind = pd.read_csv, "CSV"
-        elif self.metadata_path.endswith((".xlsx", ".xls")):
+        elif _ext in (".xlsx", ".xls"):
             reader, kind = pd.read_excel, "Excel"
         else:
             raise MetadataError(
@@ -422,29 +482,47 @@ class MetadataProcessor:
 
             # --- Load (or retrieve from cache) the raw monitor file ---
             if monitor_id not in monitor_file_cache:
-                monitor_filename = f"Monitor{monitor_id}.txt"
-                monitor_filepath = os.path.join(self.data_folder, monitor_filename)
+                # Not one hardcoded spelling: a monitor written as `1` in the
+                # metadata may be `Monitor1.txt` on disk or the zero-padded
+                # `Monitor01.txt`, in either case. See _find_monitor_file.
+                monitor_filepath = _find_monitor_file(self.data_folder, monitor_id)
+                # Names the file actually opened, so every message below reports the
+                # real filename rather than the one spelling we happened to guess.
+                # With no file found it names every spelling that was tried.
+                monitor_filename = (
+                    os.path.basename(monitor_filepath)
+                    if monitor_filepath
+                    else " or ".join(_monitor_file_candidates(monitor_id))
+                )
 
-                if not os.path.exists(monitor_filepath):
-                    print(f"\nWARNING: {combo_label}: File not found at '{monitor_filepath}'.")
+                if monitor_filepath is None:
+                    print(f"\nWARNING: {combo_label}: no file named {monitor_filename} in "
+                          f"'{self.data_folder}'.")
                     # List what IS in the folder: a Monitor number typo and a
                     # wrong data directory look identical until you see this.
-                    present = sorted(
-                        f
-                        for f in os.listdir(self.data_folder)
-                        if f.lower().startswith("monitor") and f.lower().endswith(".txt")
-                    )
+                    try:
+                        present = sorted(
+                            f
+                            for f in os.listdir(self.data_folder)
+                            if f.lower().startswith("monitor") and f.lower().endswith(".txt")
+                        )
+                    except OSError as e:
+                        # The folder itself cannot be read, which is the likeliest
+                        # reason the file was not found and the one thing the listing
+                        # below cannot report — it is what just failed.
+                        present = None
+                        found = f"That folder could not be read: {e}."
                     if present:
                         shown = ", ".join(present[:12]) + (" ..." if len(present) > 12 else "")
                         found = f"Files present in that folder: {shown}."
-                    else:
+                    elif present is not None:
                         found = "That folder contains no Monitor*.txt files at all."
                     _fail(
                         import_diagnostics.REASON_FILE_MISSING,
                         combo_meta,
                         monitor_id,
                         start_dt,
-                        f"expected '{monitor_filename}' in '{self.data_folder}'. {found}",
+                        f"expected {monitor_filename} in '{self.data_folder}'. {found}",
                     )
                     continue
 

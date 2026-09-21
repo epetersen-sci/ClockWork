@@ -34,16 +34,16 @@ The sidebar groups the modules into four sections.
 - **Phase shift** — how far each fly's rhythm shifted after a light pulse
   (needs a `pulse_time` ZT column in your metadata).
 
-**Sleep & activity** — sleep structure and state.
+**Activity & Sleep** — sleep structure and state.
 
-- **Sleep analysis** — the 5-minute immobility rule, with each bout classified short,
-  intermediate or long. Everything below depends on this.
-- **Sleep & activity** — daily activity and sleep profiles, bout-duration curves,
-  sleep-state totals and day/night summaries, with group comparisons and CSV export.
+- **Activity & Sleep** — the daily pattern and day/night totals for each measure, plus
+  bout-duration curves. Sleep detection — the 5-minute immobility rule — runs from the
+  top of its Sleep tab, and everything else in this section depends on it.
+- **Sleep states** — the short / intermediate / long bounds, and the Abhilash et al.
+  2026 figures drawn under them.
 - **Sleep deprivation** — baseline sleep against post-deprivation recovery (rebound).
-- **HMM model selection** — cross-validate the state count and emission model *before*
-  committing to a full run.
-- **HMM analysis** — Hidden Markov Model sleep/wake state classification.
+- **HMM analysis** — cross-validate the state count and emission model, then fit it:
+  Hidden Markov Model sleep/wake state classification, in two tabs.
 
 **Export** — save the dataset as NetCDF and write CSV summaries, or export into the
 SCAMP MATLAB toolbox format.

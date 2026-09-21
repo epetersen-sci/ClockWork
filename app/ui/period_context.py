@@ -37,9 +37,15 @@ def _remember(key, value):
     return value
 
 
-def render_phase_picker(ds):
+def render_phase_picker(ds, *, quiet=False):
     """Resolve which phase to analyse and return
     ``(phase_selection, period_ds, analysis_src, phase_arg)``.
+
+    ``quiet=True`` resolves without drawing anything — no radio, no status
+    message — for a page that CONSUMES the choice rather than making it. The phase
+    is picked on Period analysis; offering the same radio again downstream invites
+    the two to be set apart and the second page to analyse something else without
+    saying so. A quiet caller is expected to state which phase it used.
 
     - ``period_ds`` is for reading existing results and for display only.
     - ``analysis_src`` is the per-fly NaN-masked view of the *whole* dataset that
@@ -96,7 +102,7 @@ def render_phase_picker(ds):
                 "there first is recommended (for gap detection and consistency)."
             )
         _opts = ["DD (recommended)", "LD"]
-        phase_choice = st.radio(
+        phase_choice = _remembered("period_phase", _opts[0]) if quiet else st.radio(
             "Data phase for period analysis",
             _opts,
             index=_opts.index(_remembered("period_phase", _opts[0])),
@@ -109,7 +115,8 @@ def render_phase_picker(ds):
         phase_selection = "DD" if "DD" in phase_choice else "LD"
         period_ds = ds  # analyses split on-the-fly via select_phase
     else:
-        st.info("No LD/DD transition found — using full dataset for period analysis.")
+        if not quiet:
+            st.info("No LD/DD transition found — using full dataset for period analysis.")
         phase_selection = "full"
         period_ds = ds
 
@@ -129,14 +136,23 @@ def render_phase_picker(ds):
     return phase_selection, period_ds, analysis_src, phase_arg
 
 
-def render_period_range(*, show_caption=True):
+def render_period_range(*, show_caption=True, quiet=False):
     """Render the min/max period inputs and return ``(min_period, max_period)``.
+
+    ``quiet=True`` returns the remembered range without drawing the inputs, for a
+    page that consumes the classification window rather than setting it.
 
     Keyed so the value carries between Period analysis and Rhythmicity: the same
     range drives the search on one page and the classification window on the
     other, and they must not be allowed to disagree.
     """
     import periodograms
+
+    if quiet:
+        return (
+            float(_remembered("period_min_h", float(periodograms.DEFAULT_CWT_MIN_PERIOD))),
+            float(_remembered("period_max_h", float(periodograms.DEFAULT_CWT_MAX_PERIOD))),
+        )
 
     st.subheader("Period range")
     if show_caption:

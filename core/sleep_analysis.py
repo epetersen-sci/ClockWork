@@ -101,6 +101,103 @@ def classify_sleep_bouts(bouts_df, short_max_min=30, inter_max_min=60):
     return df
 
 
+#: Everything ``reclassify_sleep_states`` replaces. Listed once so re-running
+#: drops the previous answer before writing the new one rather than merging into
+#: it (ARCHITECTURE rule 7) — a state mask left over from a wider threshold is
+#: indistinguishable from a real one.
+SLEEP_STATE_OUTPUTS = ("sleep_short", "sleep_intermediate", "sleep_long", "sleep_state")
+
+
+def reclassify_sleep_states(ds, short_max_min=30, inter_max_min=60):
+    """Re-cut the existing sleep bouts into short / intermediate / long.
+
+    Sleep analysis is two steps, and only the second one is cheap. The first
+    finds the bouts — a per-fly pass over every minute, governed by the
+    immobility threshold — and the second sorts those bouts by duration. Changing
+    where "short" ends does not change a single bout boundary, so redoing the
+    first step to answer the second question costs minutes for nothing, on a few
+    hundred flies.
+
+    This does the second step alone, from the bout table already on the dataset.
+    It is exactly what :func:`sleep_analysis` does after detection, which is why
+    the classification itself is :func:`classify_sleep_bouts` in both places
+    rather than two implementations that agree today.
+
+    The per-minute masks are rebuilt from ``sleep``, so a minute is only ever
+    marked for a state if it is a confirmed sleeping minute — and the ``-1``
+    missing sentinel is carried across rather than turned into a 0 (§2a: missing
+    is never zero).
+
+    Raises
+    ------
+    ValueError
+        If the dataset carries no bouts to classify. That is a different problem
+        — sleep has not been detected — and saying so beats writing empty masks.
+    """
+    if "duration" not in ds.data_vars or "sleep" not in ds.data_vars:
+        raise ValueError(
+            "This dataset has no sleep bouts to classify. Run sleep detection first "
+            "— it is what finds the bouts these thresholds cut up."
+        )
+
+    bouts = (
+        ds[["start_time", "end_time", "duration"]]
+        .to_dataframe()
+        .reset_index()
+        .dropna(subset=["duration"])
+    )
+    if bouts.empty:
+        raise ValueError(
+            "Sleep detection ran but found no bouts, so there is nothing to "
+            "classify. Check the immobility threshold and the curation."
+        )
+    bouts = classify_sleep_bouts(
+        bouts, short_max_min=short_max_min, inter_max_min=inter_max_min
+    )
+
+    sleep = np.asarray(ds["sleep"].transpose("id", "time").values)
+    minutes = np.asarray(ds["time"].values)
+    fly_ids = [str(i) for i in ds["id"].values]
+    row_of = {fid: i for i, fid in enumerate(fly_ids)}
+
+    masks = {
+        state: np.where(sleep == -1, -1, 0).astype(np.int8)
+        for state in ("short", "intermediate", "long")
+    }
+    for fid, fly_bouts in bouts.groupby(bouts["id"].astype(str)):
+        row = row_of.get(fid)
+        if row is None:
+            continue
+        for _, bout in fly_bouts.iterrows():
+            lo = int(np.searchsorted(minutes, bout["start_time"], side="left"))
+            hi = int(np.searchsorted(minutes, bout["end_time"], side="right"))
+            span = slice(lo, hi)
+            target = masks[bout["sleep_state"]][row]
+            # Only confirmed sleeping minutes get a state. A bout's span can
+            # include a bridged gap, and a bridged gap is not sleep that was seen.
+            target[span] = np.where(sleep[row, span] == 1, 1, target[span])
+
+    out = ds.drop_vars([v for v in SLEEP_STATE_OUTPUTS if v in ds.data_vars])
+    for state, name in (
+        ("short", "sleep_short"),
+        ("intermediate", "sleep_intermediate"),
+        ("long", "sleep_long"),
+    ):
+        out[name] = xr.DataArray(
+            masks[state], dims=("id", "time"), coords={"id": ds["id"], "time": ds["time"]}
+        )
+
+    indexed = bouts.set_index(["id", "sleep_bout_number"])
+    out["sleep_state"] = xr.Dataset.from_dataframe(indexed[["sleep_state"]])["sleep_state"]
+    from dam_utilities import ensure_numpy_backed
+
+    out = ensure_numpy_backed(out)
+    out.attrs["sleep_short_max_min"] = float(short_max_min)
+    out.attrs["sleep_inter_max_min"] = float(inter_max_min)
+    return out
+
+
+
 def sleep_analysis(
     data,
     mov_column="moving",
@@ -109,6 +206,7 @@ def sleep_analysis(
     short_max_min=30,
     inter_max_min=60,
     phase="auto",
+    progress_callback=None,
 ):
     """
     Detect sleep bouts in DAM activity data and add results to the dataset.
@@ -149,6 +247,11 @@ def sleep_analysis(
         Upper bound (exclusive) for short sleep in minutes (default 30).
     inter_max_min : float
         Upper bound (exclusive) for intermediate sleep in minutes (default 60).
+    progress_callback : callable, optional
+        Called as ``callback(completed, total)`` after each fly. The per-fly loop is
+        the bulk of the runtime, and on a few hundred flies a bare spinner says
+        nothing about whether it is halfway or stuck. Same signature as
+        ``dam_utilities.curate_dead_animals``'s, so the pages drive both alike.
     phase : str
         ``"auto"`` (→ ``"LD"``), ``"LD"``, ``"DD"``, or ``"both"``. Selects the
         epoch sleep is computed on. The whole dataset must be passed; selection is
@@ -344,10 +447,17 @@ def sleep_analysis(
     all_inter_masks = []
     all_long_masks = []
 
-    for group_id, group_data in analysis_ds.groupby("id", squeeze=False):
+    # Counted up front so the callback can report a fraction. groupby is lazy, so
+    # this is a size lookup rather than a pass over the data.
+    _n_flies = int(analysis_ds.sizes.get("id", 0))
+    for _done, (group_id, group_data) in enumerate(
+        analysis_ds.groupby("id", squeeze=False), start=1
+    ):
         sleep_mask_da, sleep_bouts_df, short_da, inter_da, long_da = _wrapped_sleep_analysis(
             group_data, sleep_threshold_sec, group_id
         )
+        if progress_callback is not None and _n_flies:
+            progress_callback(_done, _n_flies)
         all_sleep_masks.append(sleep_mask_da.expand_dims({"id": [group_id]}))
         all_short_masks.append(short_da.expand_dims({"id": [group_id]}))
         all_inter_masks.append(inter_da.expand_dims({"id": [group_id]}))
