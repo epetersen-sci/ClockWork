@@ -334,6 +334,17 @@ def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
             "genotype": ["A", "B"],
             "condition": ["LP", "noLP"],
             "flybox": ["bun", "pie"],
+            # What create_xarray_dataset records so group_defining_coords can find
+            # the coords whose columns were renamed on the way in. Without it this
+            # fixture silently offers fewer grouping factors than a real import.
+            "metadata_coords": [
+                "condition",
+                "flybox",
+                "genotype",
+                "pulse_duration_minutes",
+                "pulse_zt_hour",
+            ],
+            "group_coord_names": ["genotype", "condition"],
         },
     )
 
