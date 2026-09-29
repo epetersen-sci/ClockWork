@@ -25,6 +25,20 @@ from conftest import _build_with_sleep_structure
 
 import sleep_analysis
 
+SLEEP_ACTIVITY_TAB = "sleep_activity_tab"
+
+
+def _on_sleep_tab(at):
+    """Open the Activity & Sleep page's Sleep tab, then rerun.
+
+    The tabs are lazy (on_change="rerun"), so the Sleep tab's controls are only
+    drawn while it is the open one. AppTest's Tab objects are read-only, so the
+    selection is made through the widget key — and it has to be re-asserted before
+    every run, because a rerun triggered by another widget does not carry it.
+    """
+    at.session_state[SLEEP_ACTIVITY_TAB] = "Sleep"
+    return at.run()
+
 
 @pytest.fixture(scope="module")
 def detected():
@@ -102,7 +116,7 @@ class TestDetectionRunsOnTheMaster:
         """Whether or not sleep is already there — folded into an expander when it
         is, offered outright when it is not, but present either way. It is the only
         place detection lives now."""
-        at = app(ds=master_ds, page="sleep_activity")
+        at = _on_sleep_tab(app(ds=master_ds, page="sleep_activity"))
         assert not at.exception, at.exception
         assert any(b.key == "sleep_activity_run" for b in at.button)
 
@@ -117,10 +131,12 @@ class TestDetectionRunsOnTheMaster:
         at = app(ds=master_ds, page="sleep_activity")
         groups = list(at.multiselect(key=DISPLAY_GROUPS_KEY).value)
         assert len(groups) > 1, "fixture needs more than one group to mean anything"
-        at = at.multiselect(key=DISPLAY_GROUPS_KEY).set_value(groups[:1]).run()
+        at.multiselect(key=DISPLAY_GROUPS_KEY).set_value(groups[:1])
+        at = _on_sleep_tab(at)
         assert not at.exception
 
-        at = at.button(key="sleep_activity_run").click().run()
+        at.button(key="sleep_activity_run").click()
+        at = _on_sleep_tab(at)
         assert not at.exception, at.exception
 
         master = at.session_state["dataset"]
@@ -130,8 +146,48 @@ class TestDetectionRunsOnTheMaster:
         )
 
     def test_the_threshold_defaults_to_the_standard_definition(self, app, master_ds):
-        at = app(ds=master_ds, page="sleep_activity")
+        at = _on_sleep_tab(app(ds=master_ds, page="sleep_activity"))
         assert at.number_input(key="sleep_activity_threshold").value == 300
+
+
+class TestOnlyTheOpenTabRenders:
+    """Activity & Sleep draws the open tab only (on_change="rerun").
+
+    Both tabs used to compute and draw on every rerun, which on a large dataset
+    was most of the page's time. The trade, chosen deliberately: the page's
+    "save figures" button now saves the open tab's figures — what is on screen.
+    """
+
+    def test_the_landing_tab_does_not_draw_the_sleep_tab(self, app, states_ds):
+        at = app(ds=states_ds, page="sleep_activity")
+        assert not at.exception, at.exception
+        assert not any(b.key == "sleep_activity_run" for b in at.button), (
+            "the Sleep tab's controls rendered while the Activity tab was open"
+        )
+        activity_figs = len(at.get("plotly_chart"))
+        assert activity_figs, "the Activity tab drew nothing"
+
+        at = _on_sleep_tab(at)
+        assert not at.exception, at.exception
+        assert any(b.key == "sleep_activity_run" for b in at.button)
+        # The page-level export offers exactly what this run drew.
+        drawn = len(at.session_state["_figures_drawn_this_run"])
+        assert drawn == len(at.get("plotly_chart"))
+
+    def test_bout_display_settings_survive_switching_tabs(self, app, states_ds):
+        """A closed tab's widgets are not drawn, and an undrawn widget's value is
+        dropped — unless it persists. These are display choices someone makes once."""
+        at = _on_sleep_tab(app(ds=states_ds, page="sleep_activity"))
+        at.checkbox(key="bout_show_individual").check()
+        at = _on_sleep_tab(at)
+        assert at.checkbox(key="bout_show_individual").value is True
+
+        at.session_state[SLEEP_ACTIVITY_TAB] = "Activity"
+        at = at.run()
+        at = _on_sleep_tab(at)
+        assert at.checkbox(key="bout_show_individual").value is True, (
+            "the setting was lost by visiting the Activity tab"
+        )
 
 
 class TestTheDefinitionIsPrinted:
@@ -148,7 +204,7 @@ class TestTheDefinitionIsPrinted:
         assert sleep_run.sleep_definition(_build_with_sleep_structure()) is None
 
     def test_the_page_prints_it_once_sleep_exists(self, app, states_ds):
-        at = app(ds=states_ds, page="sleep_activity")
+        at = _on_sleep_tab(app(ds=states_ds, page="sleep_activity"))
         assert not at.exception
         assert any("or more of continuous immobility" in c.value for c in at.caption), (
             "every figure on the page is 'sleep by this rule'; the rule has to be on it"
