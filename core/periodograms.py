@@ -30,6 +30,7 @@ Time representation:
 import multiprocessing as mp
 import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pywt
@@ -3242,7 +3243,9 @@ def sleep_cwt_analysis(
         If provided, restrict analysis to these fly IDs (e.g. for per-group
         analysis). If None, all flies are used.
     n_processes : int, optional
-        Number of parallel workers. None = auto.
+        How many flies are transformed at once (threads). None = auto, from
+        :func:`get_optimal_workers` — every core but one on the CPU path, fewer
+        on the GPU path where wide period ranges crowd its memory.
     progress_callback : callable, optional
         Called with (completed, total) as each fly finishes.
 
@@ -3279,9 +3282,6 @@ def sleep_cwt_analysis(
 
     all_fly_ids = analysis_ds["id"].values
     n_flies = len(all_fly_ids)
-
-    if n_processes is None:
-        n_processes = min(4, max(1, mp.cpu_count() // 2))
 
     result_vars = {}
     completed = 0
@@ -3344,9 +3344,17 @@ def sleep_cwt_analysis(
             fly_spectra = []  # per-fly time-averaged spectrum, or None
             fly_ultradian_amps = []  # list of (offset, values) or None
 
-            for fly_id in all_fly_ids:
-                fly_da = analysis_ds[var].sel(id=fly_id)
-                fly_arr = fly_da.values.astype(np.float32)
+            # Each fly's transform is independent, so they run on a thread pool
+            # (the transform itself is numpy/pywt or GPU work that releases the
+            # GIL). Results come back IN FLY ORDER and are accumulated below on
+            # this thread in that order, so the sums, and therefore the output,
+            # are exactly what a one-fly-at-a-time loop produces.
+            state_values = analysis_ds[var].transpose("time", "id").values
+
+            def _fly_power(fly_idx, state_values=state_values, min_p=min_p, max_p=max_p):
+                """One fly's normalised power surface and where it sits on the
+                shared grid, or None when the fly has too little clean data."""
+                fly_arr = state_values[:, fly_idx].astype(np.float32)
 
                 # Missing minutes reach this function in TWO representations and
                 # both have to become NaN before the extractor sees them: the
@@ -3364,17 +3372,13 @@ def sleep_cwt_analysis(
                 # boundary would put broadband power across every period.
                 clean, clean_time, _ = _extract_longest_continuous_block(fly_arr, time_vals)
                 if clean is None or len(clean) < 2:
-                    fly_spectra.append(None)
-                    fly_ultradian_amps.append(None)
-                    continue
+                    return None
 
                 # Bin to 5-minute intervals by summing
                 if time_is_int:
                     n_bins = len(clean) // bin_size
                     if n_bins == 0:
-                        fly_spectra.append(None)
-                        fly_ultradian_amps.append(None)
-                        continue
+                        return None
                     binned = clean[: n_bins * bin_size].reshape(n_bins, bin_size).sum(axis=1)
                     t_binned = np.arange(n_bins, dtype=np.int64) * bin_size
                 else:
@@ -3387,9 +3391,7 @@ def sleep_cwt_analysis(
                     n_bins = len(binned)
 
                 if n_bins < 10:
-                    fly_spectra.append(None)
-                    fly_ultradian_amps.append(None)
-                    continue
+                    return None
 
                 # CWT — only the raw power matrix is consumed below, so use
                 # the lightweight ridge mode.
@@ -3409,12 +3411,10 @@ def sleep_cwt_analysis(
                 )
 
                 if cwt_result is None:
-                    fly_spectra.append(None)
-                    fly_ultradian_amps.append(None)
-                    continue
+                    return None
 
                 power = cwt_result["power"].astype(np.float64)  # (n_scales, n_time)
-                fly_period_axes = cwt_result["periods_hours"]
+                period_axis = cwt_result["periods_hours"]
 
                 if rectify_scale_bias:
                     # WaveletComp: Power = Mod(Wave)^2 / scale (Liu et al. 2007).
@@ -3422,7 +3422,7 @@ def sleep_cwt_analysis(
                     # samples every `bin_size` minutes — so convert the period
                     # axis to samples rather than reusing hours, which would
                     # rectify by a constant factor off the correct one.
-                    scales_samples = fly_period_axes * 60.0 / bin_size
+                    scales_samples = period_axis * 60.0 / bin_size
                     power = power / scales_samples[:, None]
 
                 # Normalise to the mean of this fly's own surface, THEN average
@@ -3436,41 +3436,53 @@ def sleep_cwt_analysis(
 
                 # Where this fly's clean run starts on the shared grid.
                 offset = _bin_offset(time_vals, clean_time, bin_size)
-                take = min(power.shape[1], n_bins_total - offset)
-                if take <= 0:
-                    fly_spectra.append(None)
-                    fly_ultradian_amps.append(None)
-                    continue
+                return power, period_axis, offset
 
-                if surface_sum is None:
-                    surface_sum = np.zeros((power.shape[0], n_bins_total))
-                    surface_count = np.zeros(n_bins_total, dtype=np.int32)
-                surface_sum[:, offset : offset + take] += power[:, :take]
-                surface_count[offset : offset + take] += 1
-
-                fly_spectra.append(np.mean(power[:, :take], axis=1))
-
-                # Extract ultradian amplitude from ultradian sub-range
-                if range_name == "ultradian" or (
-                    range_name == "full" and ultradian_range is not None
-                ):
-                    u_min, u_max = ultradian_range
-                    u_mask = (fly_period_axes >= u_min) & (fly_period_axes <= u_max)
-                    if np.any(u_mask):
-                        # Carry the offset so the per-fly traces line up on the
-                        # shared grid too, not just the averaged surface.
-                        fly_ultradian_amps.append(
-                            (offset, np.mean(power[u_mask, :take], axis=0))
-                        )
-                    else:
+            n_workers = n_processes or get_optimal_workers(
+                n_flies, use_gpu=PTWT_AVAILABLE, period_range=(min_p, max_p)
+            )
+            with ThreadPoolExecutor(max_workers=max(1, n_workers)) as pool:
+                for fly_result in pool.map(_fly_power, range(n_flies)):
+                    usable = fly_result is not None
+                    if usable:
+                        power, fly_period_axes, offset = fly_result
+                        take = min(power.shape[1], n_bins_total - offset)
+                        usable = take > 0
+                    if not usable:
+                        fly_spectra.append(None)
                         fly_ultradian_amps.append(None)
-                else:
-                    fly_ultradian_amps.append(None)
+                    else:
+                        if surface_sum is None:
+                            surface_sum = np.zeros((power.shape[0], n_bins_total))
+                            surface_count = np.zeros(n_bins_total, dtype=np.int32)
+                        surface_sum[:, offset : offset + take] += power[:, :take]
+                        surface_count[offset : offset + take] += 1
 
-                completed += 1
-                if progress_callback:
-                    total_ops = n_flies * len(states) * len(ranges_to_run)
-                    progress_callback(completed, total_ops)
+                        fly_spectra.append(np.mean(power[:, :take], axis=1))
+
+                        # Extract ultradian amplitude from ultradian sub-range
+                        if range_name == "ultradian" or (
+                            range_name == "full" and ultradian_range is not None
+                        ):
+                            u_min, u_max = ultradian_range
+                            u_mask = (fly_period_axes >= u_min) & (fly_period_axes <= u_max)
+                            if np.any(u_mask):
+                                # Carry the offset so the per-fly traces line up on the
+                                # shared grid too, not just the averaged surface.
+                                fly_ultradian_amps.append(
+                                    (offset, np.mean(power[u_mask, :take], axis=0))
+                                )
+                            else:
+                                fly_ultradian_amps.append(None)
+                        else:
+                            fly_ultradian_amps.append(None)
+
+                    # Every fly counts toward progress, usable or not, so the bar
+                    # reaches the end (skipped flies used to leave it short).
+                    completed += 1
+                    if progress_callback:
+                        total_ops = n_flies * len(states) * len(ranges_to_run)
+                        progress_callback(completed, total_ops)
 
             # Group-average normalised surfaces: per-cell mean over the flies
             # that actually cover each time bin.
