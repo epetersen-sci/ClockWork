@@ -1,0 +1,262 @@
+{
+ "_summary": {
+  "lines": [
+   "kept 61/64, removed 3"
+  ]
+ },
+ "records": {
+  "20250115_17_1": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_10": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_11": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_12": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_13": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_14": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_15": {
+   "alive_minutes": 4236,
+   "kept": true
+  },
+  "20250115_17_16": {
+   "alive_minutes": 7599,
+   "kept": true
+  },
+  "20250115_17_17": {
+   "alive_minutes": 9268,
+   "kept": true
+  },
+  "20250115_17_18": {
+   "kept": false
+  },
+  "20250115_17_19": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_2": {
+   "alive_minutes": 5908,
+   "kept": true
+  },
+  "20250115_17_20": {
+   "alive_minutes": 3644,
+   "kept": true
+  },
+  "20250115_17_21": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_22": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_23": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_24": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_25": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_26": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_27": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_28": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_29": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_3": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_30": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_31": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_32": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_4": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_5": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_6": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_7": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_8": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_17_9": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_1": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_10": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_11": {
+   "kept": false
+  },
+  "20250115_18_12": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_13": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_14": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_15": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_16": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_17": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_18": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_19": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_2": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_20": {
+   "alive_minutes": 7593,
+   "kept": true
+  },
+  "20250115_18_21": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_22": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_23": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_24": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_25": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_26": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_27": {
+   "kept": false
+  },
+  "20250115_18_28": {
+   "alive_minutes": 2981,
+   "kept": true
+  },
+  "20250115_18_29": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_3": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_30": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_31": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_32": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_4": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_5": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_6": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_7": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_8": {
+   "alive_minutes": 17281,
+   "kept": true
+  },
+  "20250115_18_9": {
+   "alive_minutes": 17281,
+   "kept": true
+  }
+ }
+}

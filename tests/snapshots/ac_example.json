@@ -1,0 +1,394 @@
+{
+ "_summary": {
+  "lines": [
+   "dsmcherry: 29/32 flies with a period, median 24.04 h, 26/32 rhythmic",
+   "dsmcherry+Ldhmut: 29/32 flies with a period, median 23.52 h, 28/32 rhythmic"
+  ]
+ },
+ "records": {
+  "20250115_17_1": {
+   "ac_period": 23.674999237060547,
+   "ac_power": 0.5985998511314392,
+   "ac_rhythm_strength": 34.68113708496094,
+   "ac_rhythmic": true
+  },
+  "20250115_17_10": {
+   "ac_period": 24.04166603088379,
+   "ac_power": 0.5540686249732971,
+   "ac_rhythm_strength": 32.10112380981445,
+   "ac_rhythmic": true
+  },
+  "20250115_17_11": {
+   "ac_period": 23.941667556762695,
+   "ac_power": 0.6886745691299438,
+   "ac_rhythm_strength": 39.899803161621094,
+   "ac_rhythmic": true
+  },
+  "20250115_17_12": {
+   "ac_period": 24.233333587646484,
+   "ac_power": 0.5727127194404602,
+   "ac_rhythm_strength": 33.18130874633789,
+   "ac_rhythmic": true
+  },
+  "20250115_17_13": {
+   "ac_period": 23.96666717529297,
+   "ac_power": 0.5350829362869263,
+   "ac_rhythm_strength": 31.001150131225586,
+   "ac_rhythmic": true
+  },
+  "20250115_17_14": {
+   "ac_period": 24.625,
+   "ac_power": 0.710974931716919,
+   "ac_rhythm_strength": 41.19182205200195,
+   "ac_rhythmic": true
+  },
+  "20250115_17_15": {
+   "ac_period": null,
+   "ac_power": null,
+   "ac_rhythm_strength": null,
+   "ac_rhythmic": false
+  },
+  "20250115_17_16": {
+   "ac_period": 40.0,
+   "ac_power": 0.02660549245774746,
+   "ac_rhythm_strength": 1.5414448976516724,
+   "ac_rhythmic": false
+  },
+  "20250115_17_17": {
+   "ac_period": 57.53333282470703,
+   "ac_power": 0.11414357274770737,
+   "ac_rhythm_strength": 6.613146781921387,
+   "ac_rhythmic": false
+  },
+  "20250115_17_18": {
+   "ac_period": null,
+   "ac_power": null,
+   "ac_rhythm_strength": null,
+   "ac_rhythmic": false
+  },
+  "20250115_17_19": {
+   "ac_period": 23.28333282470703,
+   "ac_power": 0.5025960206985474,
+   "ac_rhythm_strength": 29.11895179748535,
+   "ac_rhythmic": true
+  },
+  "20250115_17_2": {
+   "ac_period": 20.0,
+   "ac_power": -0.02351505681872368,
+   "ac_rhythm_strength": -1.3623939752578735,
+   "ac_rhythmic": false
+  },
+  "20250115_17_20": {
+   "ac_period": null,
+   "ac_power": null,
+   "ac_rhythm_strength": null,
+   "ac_rhythmic": false
+  },
+  "20250115_17_21": {
+   "ac_period": 24.700000762939453,
+   "ac_power": 0.6253559589385986,
+   "ac_rhythm_strength": 36.23130798339844,
+   "ac_rhythmic": true
+  },
+  "20250115_17_22": {
+   "ac_period": 24.358333587646484,
+   "ac_power": 0.7358896136283875,
+   "ac_rhythm_strength": 42.63530349731445,
+   "ac_rhythmic": true
+  },
+  "20250115_17_23": {
+   "ac_period": 24.25,
+   "ac_power": 0.6383518576622009,
+   "ac_rhythm_strength": 36.984249114990234,
+   "ac_rhythmic": true
+  },
+  "20250115_17_24": {
+   "ac_period": 23.625,
+   "ac_power": 0.5363161563873291,
+   "ac_rhythm_strength": 31.072599411010742,
+   "ac_rhythmic": true
+  },
+  "20250115_17_25": {
+   "ac_period": 23.799999237060547,
+   "ac_power": 0.7519379258155823,
+   "ac_rhythm_strength": 43.56509780883789,
+   "ac_rhythmic": true
+  },
+  "20250115_17_26": {
+   "ac_period": 23.700000762939453,
+   "ac_power": 0.57742840051651,
+   "ac_rhythm_strength": 33.45452117919922,
+   "ac_rhythmic": true
+  },
+  "20250115_17_27": {
+   "ac_period": 24.325000762939453,
+   "ac_power": 0.5934269428253174,
+   "ac_rhythm_strength": 34.381431579589844,
+   "ac_rhythmic": true
+  },
+  "20250115_17_28": {
+   "ac_period": 24.558332443237305,
+   "ac_power": 0.6607512831687927,
+   "ac_rhythm_strength": 38.28200912475586,
+   "ac_rhythmic": true
+  },
+  "20250115_17_29": {
+   "ac_period": 24.649999618530273,
+   "ac_power": 0.5913172364234924,
+   "ac_rhythm_strength": 34.25920104980469,
+   "ac_rhythmic": true
+  },
+  "20250115_17_3": {
+   "ac_period": 24.33333396911621,
+   "ac_power": 0.6658276915550232,
+   "ac_rhythm_strength": 38.57612228393555,
+   "ac_rhythmic": true
+  },
+  "20250115_17_30": {
+   "ac_period": 24.108333587646484,
+   "ac_power": 0.6448714733123779,
+   "ac_rhythm_strength": 37.361976623535156,
+   "ac_rhythmic": true
+  },
+  "20250115_17_31": {
+   "ac_period": 24.100000381469727,
+   "ac_power": 0.7083986401557922,
+   "ac_rhythm_strength": 41.04255676269531,
+   "ac_rhythmic": true
+  },
+  "20250115_17_32": {
+   "ac_period": 23.700000762939453,
+   "ac_power": 0.5651134848594666,
+   "ac_rhythm_strength": 32.741031646728516,
+   "ac_rhythmic": true
+  },
+  "20250115_17_4": {
+   "ac_period": 23.924999237060547,
+   "ac_power": 0.42436736822128296,
+   "ac_rhythm_strength": 24.586610794067383,
+   "ac_rhythmic": true
+  },
+  "20250115_17_5": {
+   "ac_period": 23.850000381469727,
+   "ac_power": 0.6451241970062256,
+   "ac_rhythm_strength": 37.37662124633789,
+   "ac_rhythmic": true
+  },
+  "20250115_17_6": {
+   "ac_period": 23.899999618530273,
+   "ac_power": 0.6329898834228516,
+   "ac_rhythm_strength": 36.6735954284668,
+   "ac_rhythmic": true
+  },
+  "20250115_17_7": {
+   "ac_period": 23.95833396911621,
+   "ac_power": 0.697890043258667,
+   "ac_rhythm_strength": 40.433719635009766,
+   "ac_rhythmic": true
+  },
+  "20250115_17_8": {
+   "ac_period": 24.40833282470703,
+   "ac_power": 0.6518675684928894,
+   "ac_rhythm_strength": 37.767311096191406,
+   "ac_rhythmic": true
+  },
+  "20250115_17_9": {
+   "ac_period": 24.03333282470703,
+   "ac_power": 0.5021288990974426,
+   "ac_rhythm_strength": 29.091888427734375,
+   "ac_rhythmic": true
+  },
+  "20250115_18_1": {
+   "ac_period": 23.450000762939453,
+   "ac_power": 0.46514004468917847,
+   "ac_rhythm_strength": 26.948862075805664,
+   "ac_rhythmic": true
+  },
+  "20250115_18_10": {
+   "ac_period": 23.433332443237305,
+   "ac_power": 0.5202987194061279,
+   "ac_rhythm_strength": 30.144596099853516,
+   "ac_rhythmic": true
+  },
+  "20250115_18_11": {
+   "ac_period": null,
+   "ac_power": null,
+   "ac_rhythm_strength": null,
+   "ac_rhythmic": false
+  },
+  "20250115_18_12": {
+   "ac_period": 23.508333206176758,
+   "ac_power": 0.6713830828666687,
+   "ac_rhythm_strength": 38.89798355102539,
+   "ac_rhythmic": true
+  },
+  "20250115_18_13": {
+   "ac_period": 23.483333587646484,
+   "ac_power": 0.562678873538971,
+   "ac_rhythm_strength": 32.599979400634766,
+   "ac_rhythmic": true
+  },
+  "20250115_18_14": {
+   "ac_period": 23.383333206176758,
+   "ac_power": 0.569901168346405,
+   "ac_rhythm_strength": 33.01841735839844,
+   "ac_rhythmic": true
+  },
+  "20250115_18_15": {
+   "ac_period": 23.524999618530273,
+   "ac_power": 0.5785932540893555,
+   "ac_rhythm_strength": 33.522010803222656,
+   "ac_rhythmic": true
+  },
+  "20250115_18_16": {
+   "ac_period": 23.741666793823242,
+   "ac_power": 0.6611459255218506,
+   "ac_rhythm_strength": 38.304874420166016,
+   "ac_rhythmic": true
+  },
+  "20250115_18_17": {
+   "ac_period": 23.58333396911621,
+   "ac_power": 0.5846050977706909,
+   "ac_rhythm_strength": 33.87031936645508,
+   "ac_rhythmic": true
+  },
+  "20250115_18_18": {
+   "ac_period": 23.799999237060547,
+   "ac_power": 0.4863907992839813,
+   "ac_rhythm_strength": 28.180068969726562,
+   "ac_rhythmic": true
+  },
+  "20250115_18_19": {
+   "ac_period": 23.575000762939453,
+   "ac_power": 0.5309150815010071,
+   "ac_rhythm_strength": 30.759675979614258,
+   "ac_rhythmic": true
+  },
+  "20250115_18_2": {
+   "ac_period": 23.674999237060547,
+   "ac_power": 0.46705329418182373,
+   "ac_rhythm_strength": 27.059709548950195,
+   "ac_rhythmic": true
+  },
+  "20250115_18_20": {
+   "ac_period": 21.950000762939453,
+   "ac_power": -0.02556934580206871,
+   "ac_rhythm_strength": -1.4814136028289795,
+   "ac_rhythmic": false
+  },
+  "20250115_18_21": {
+   "ac_period": 23.391666412353516,
+   "ac_power": 0.4896300733089447,
+   "ac_rhythm_strength": 28.36774253845215,
+   "ac_rhythmic": true
+  },
+  "20250115_18_22": {
+   "ac_period": 23.491666793823242,
+   "ac_power": 0.5082549452781677,
+   "ac_rhythm_strength": 29.446813583374023,
+   "ac_rhythmic": true
+  },
+  "20250115_18_23": {
+   "ac_period": 23.383333206176758,
+   "ac_power": 0.4893062710762024,
+   "ac_rhythm_strength": 28.348983764648438,
+   "ac_rhythmic": true
+  },
+  "20250115_18_24": {
+   "ac_period": 23.549999237060547,
+   "ac_power": 0.5464761257171631,
+   "ac_rhythm_strength": 31.661237716674805,
+   "ac_rhythmic": true
+  },
+  "20250115_18_25": {
+   "ac_period": 23.975000381469727,
+   "ac_power": 0.5969478487968445,
+   "ac_rhythm_strength": 34.58542251586914,
+   "ac_rhythmic": true
+  },
+  "20250115_18_26": {
+   "ac_period": 23.41666603088379,
+   "ac_power": 0.6189569234848022,
+   "ac_rhythm_strength": 35.860565185546875,
+   "ac_rhythmic": true
+  },
+  "20250115_18_27": {
+   "ac_period": null,
+   "ac_power": null,
+   "ac_rhythm_strength": null,
+   "ac_rhythmic": false
+  },
+  "20250115_18_28": {
+   "ac_period": null,
+   "ac_power": null,
+   "ac_rhythm_strength": null,
+   "ac_rhythmic": false
+  },
+  "20250115_18_29": {
+   "ac_period": 23.433332443237305,
+   "ac_power": 0.568099319934845,
+   "ac_rhythm_strength": 32.914024353027344,
+   "ac_rhythmic": true
+  },
+  "20250115_18_3": {
+   "ac_period": 23.674999237060547,
+   "ac_power": 0.6267591118812561,
+   "ac_rhythm_strength": 36.312599182128906,
+   "ac_rhythmic": true
+  },
+  "20250115_18_30": {
+   "ac_period": 23.725000381469727,
+   "ac_power": 0.6664456725120544,
+   "ac_rhythm_strength": 38.61192321777344,
+   "ac_rhythmic": true
+  },
+  "20250115_18_31": {
+   "ac_period": 23.79166603088379,
+   "ac_power": 0.6316865682601929,
+   "ac_rhythm_strength": 36.59808349609375,
+   "ac_rhythmic": true
+  },
+  "20250115_18_32": {
+   "ac_period": 23.524999618530273,
+   "ac_power": 0.6791070103645325,
+   "ac_rhythm_strength": 39.34548568725586,
+   "ac_rhythmic": true
+  },
+  "20250115_18_4": {
+   "ac_period": 23.508333206176758,
+   "ac_power": 0.5837732553482056,
+   "ac_rhythm_strength": 33.82212448120117,
+   "ac_rhythmic": true
+  },
+  "20250115_18_5": {
+   "ac_period": 23.625,
+   "ac_power": 0.5340636968612671,
+   "ac_rhythm_strength": 30.94209861755371,
+   "ac_rhythmic": true
+  },
+  "20250115_18_6": {
+   "ac_period": 23.375,
+   "ac_power": 0.5536075234413147,
+   "ac_rhythm_strength": 32.07440948486328,
+   "ac_rhythmic": true
+  },
+  "20250115_18_7": {
+   "ac_period": 23.450000762939453,
+   "ac_power": 0.5114337205886841,
+   "ac_rhythm_strength": 29.630983352661133,
+   "ac_rhythmic": true
+  },
+  "20250115_18_8": {
+   "ac_period": 23.875,
+   "ac_power": 0.3593481183052063,
+   "ac_rhythm_strength": 20.8195858001709,
+   "ac_rhythmic": true
+  },
+  "20250115_18_9": {
+   "ac_period": 23.758333206176758,
+   "ac_power": 0.31863921880722046,
+   "ac_rhythm_strength": 18.461030960083008,
+   "ac_rhythmic": true
+  }
+ }
+}

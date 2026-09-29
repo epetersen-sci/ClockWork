@@ -36,5 +36,10 @@ jobs:
 
       - name: Test
         # No browser and no server: the suite runs Streamlit in-process via
-        # st.testing.v1.AppTest, so a plain runner is enough.
-        run: python -m pytest -q
+        # st.testing.v1.AppTest, so a plain runner is enough. Coverage is
+        # REPORTED, not gated: the listing of untested lines is the point.
+        # GPU-marked tests skip themselves on this runner (no CUDA).
+        run: >-
+          python -m pytest -q
+          --cov=core --cov=app --cov=scamp_export
+          --cov-report=term-missing:skip-covered

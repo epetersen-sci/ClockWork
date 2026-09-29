@@ -14,6 +14,10 @@ pages read:
 If a test needs something a real import produces that is missing here, add it to
 the fixture rather than loading a ``.nc`` — a committed fixture file would be tens
 of megabytes and would rot against the loader.
+
+The exception is ``example_ds`` (bottom of this file): real monitors from the
+committed ``example_data``, imported through the real loader rather than stored as
+a ``.nc``, for the tests that ask what an estimator says about real flies.
 """
 
 import sys
@@ -353,3 +357,72 @@ def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
 def pulse_ds():
     """The known-design phase-shift cohort (see :func:`_build_pulse_cohort`)."""
     return _build_pulse_cohort()
+
+
+# ---------------------------------------------------------------------------
+# Real data: the committed example_data
+# ---------------------------------------------------------------------------
+#
+# The synthetic fixtures above answer "is the contract kept". They cannot answer
+# "does the estimator still say what it said about a real fly": a sine plus
+# Poisson noise is far easier than a real record, with its dead channels, drifting
+# phase and weak rhythms. For that the suite reads the committed example_data —
+# Monitors 17 (dsmcherry) and 18 (dsmcherry+Ldhmut), 64 flies, LD Jan 15-18 then
+# DD to Jan 27 — through the real import path, and pins what comes out
+# (tests/snapshot_util.py).
+
+EXAMPLE_DIR = REPO_ROOT / "example_data"
+EXAMPLE_MONITORS = (17, 18)
+
+requires_example_data = pytest.mark.skipif(
+    not all((EXAMPLE_DIR / f"Monitor{m}.txt").is_file() for m in EXAMPLE_MONITORS),
+    reason="example_data monitor files not present",
+)
+
+
+def load_example_monitors(out_dir, monitors=EXAMPLE_MONITORS):
+    """Import ``monitors`` from example_data exactly as the Import page does.
+
+    The files are copied into ``out_dir`` with a metadata CSV limited to those
+    monitors, so the loader sees a folder holding only what the test asked for.
+    """
+    import shutil
+
+    import dam_processor
+    import dam_utilities
+
+    out_dir = Path(out_dir)
+    for m in monitors:
+        shutil.copy(EXAMPLE_DIR / f"Monitor{m}.txt", out_dir / f"Monitor{m}.txt")
+    meta = pd.read_excel(EXAMPLE_DIR / "metadata.xlsx")
+    meta[meta["Monitor"].isin(monitors)].to_csv(out_dir / "metadata.csv", index=False)
+    processor = dam_processor.MetadataProcessor(
+        str(out_dir / "metadata.csv"), str(out_dir), gap_threshold_hours=1.0
+    )
+    metadata, data = processor.run()
+    return dam_utilities.create_xarray_dataset(
+        dam_utilities.convert_to_relative_time(data, metadata), metadata
+    )
+
+
+@pytest.fixture(scope="session")
+def example_ds(tmp_path_factory):
+    """Monitors 17 + 18 of example_data, imported through the real loader."""
+    if not all((EXAMPLE_DIR / f"Monitor{m}.txt").is_file() for m in EXAMPLE_MONITORS):
+        pytest.skip("example_data monitor files not present")
+    return load_example_monitors(tmp_path_factory.mktemp("example_data"))
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-snapshots",
+        action="store_true",
+        default=False,
+        help="Rewrite tests/snapshots/*.json from the current code instead of "
+        "comparing against them. Review the diff before committing it.",
+    )
+
+
+@pytest.fixture
+def update_snapshots(request):
+    return bool(request.config.getoption("--update-snapshots"))
