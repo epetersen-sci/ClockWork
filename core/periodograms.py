@@ -381,6 +381,12 @@ def cwt_powers(signals, scales, wavelet="cmor1.5-1.0", n_workers=1):
         i += len(block)
 
 
+#: Below this much GPU memory, CWT runs two worker processes instead of four.
+#: Observed on a 4 GiB card: two workers used ~10% of it (~200 MB each), so four
+#: need under 1 GiB; 3 GiB keeps better than double that in hand.
+GPU_MEMORY_FOR_FOUR_WORKERS = 3 * 2**30
+
+
 def get_optimal_workers(n_tasks, use_gpu=False, period_range=None):
     """
     Determine the optimal number of worker processes based on available resources.
@@ -392,7 +398,8 @@ def get_optimal_workers(n_tasks, use_gpu=False, period_range=None):
     use_gpu : bool
         Whether GPU acceleration is being used (for CWT via ptwt)
     period_range : tuple (min_period, max_period) or None
-        Period range in hours for CWT - larger ranges need fewer workers to avoid GPU memory pressure
+        Accepted for compatibility; the GPU worker count no longer depends on it
+        (it depends on the card's memory, see GPU_MEMORY_FOR_FOUR_WORKERS).
 
     Returns:
     --------
@@ -402,28 +409,23 @@ def get_optimal_workers(n_tasks, use_gpu=False, period_range=None):
     cpu_count = mp.cpu_count()
 
     if use_gpu and PTWT_AVAILABLE:
-        # When using GPU for CWT, reduce CPU workers to avoid memory contention
-        # Larger period ranges create larger CWT outputs, requiring more GPU memory per fly
-
-        if period_range is not None:
-            min_p, max_p = period_range
-            range_size = max_p - min_p
-
-            if range_size > 20:
-                # Large period range (e.g., 18-50 = 32 hours)
-                # Each fly uses ~100+ MB GPU memory
-                # Use only 2 workers to avoid GPU memory thrashing
-                n_workers = 2
-                if _is_main_process:
-                    print(
-                        f"  Large period range ({min_p}-{max_p}h) detected - using 2 workers to avoid GPU memory pressure"
-                    )
-            else:
-                # Normal period range (e.g., 18-30 = 12 hours)
-                n_workers = min(4, max(2, cpu_count // 2))
-        else:
-            # No period info, use default
-            n_workers = min(4, max(2, cpu_count // 2))
+        # Worker processes share one GPU, each with its own CUDA context and a
+        # fly's CWT in flight (~100+ MB for a wide period range). Four is the
+        # default: two, which wide ranges used to get, left ~90% of a
+        # workstation card idle. Only a card too small to hold four of them
+        # comfortably drops back to two; ``period_range`` no longer changes it.
+        n_workers = min(4, max(1, cpu_count - 1))
+        try:
+            gpu_bytes = torch.cuda.get_device_properties(0).total_memory
+        except Exception:
+            gpu_bytes = None
+        if gpu_bytes is not None and gpu_bytes < GPU_MEMORY_FOR_FOUR_WORKERS:
+            n_workers = min(n_workers, 2)
+            if _is_main_process:
+                print(
+                    f"  GPU has {gpu_bytes / 2**30:.1f} GiB - using {n_workers} workers "
+                    "to avoid GPU memory pressure"
+                )
     else:
         # For CPU-only, use more workers but leave some headroom
         n_workers = max(1, cpu_count - 1)

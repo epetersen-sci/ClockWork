@@ -120,6 +120,40 @@ def _binned_heatmap_matrix(da, ids_ord, bin_minutes, missing_sentinel):
     return z.astype(np.float32), x
 
 
+def _align_to_dd_start(da, ds):
+    """Shift each fly's row of a DD view so minute 0 is that fly's own DD start.
+
+    A ``select_phase`` DD view keeps every fly's WHOLE time axis (t = minutes
+    since its ZT0) with the LD minutes masked out, so flies that entered DD on
+    different days start their DD data at different places — in a heatmap the
+    groups' DD blocks are staggered and no x value means the same thing for all
+    of them. Here each row starts at its own DD start: ``split_minute`` (CT0 of
+    the first DD day, from ``first_DD_day``), plus one day when the view
+    discarded the first DD day. Returns None when ``ds`` is not such a view, so
+    a physically sliced, already re-zeroed DD dataset is never shifted twice.
+    """
+    if (
+        ds.attrs.get("phase_used") != "DD"
+        or "phase_discard_first_dd_day" not in ds.attrs
+        or "split_minute" not in ds.coords
+        or not np.issubdtype(da["time"].values.dtype, np.integer)
+    ):
+        return None
+    t = da["time"].values
+    start = ds["split_minute"].values.astype(np.int64) + (
+        1440 if int(ds.attrs.get("phase_discard_first_dd_day", 0)) else 0
+    )
+    values = da.transpose("time", "id").values
+    first = np.searchsorted(t, start)  # row where each fly's DD begins
+    length = int(max(1, (len(t) - first).max()))
+    out = np.full((length, values.shape[1]), np.nan, dtype=np.float32)
+    for j, f in enumerate(first):
+        out[: len(t) - f, j] = values[f:, j]
+    return xr.DataArray(
+        out, dims=("time", "id"), coords={"time": np.arange(length), "id": da["id"].values}
+    )
+
+
 def dataset_to_heatmap(
     ds: xr.Dataset, var: str, title: str, bin_minutes: int = HEATMAP_BIN_MINUTES
 ) -> go.Figure:
@@ -181,6 +215,12 @@ def dataset_to_heatmap(
     if da.sizes["time"] == 0 or not ids_ord:
         return go.Figure()
     bin_minutes = max(1, int(bin_minutes))
+    # A DD view is drawn from each fly's own DD start, so its x axis is days in
+    # DD for every fly and the bins line up with CT0.
+    dd_aligned = _align_to_dd_start(da, ds)
+    x_label = "Days in DD" if dd_aligned is not None else "Days elapsed"
+    if dd_aligned is not None:
+        da = dd_aligned
     z, x = _binned_heatmap_matrix(
         da,
         ids_ord,
@@ -227,7 +267,7 @@ def dataset_to_heatmap(
     fig = go.Figure(data=heat)
     fig.update_layout(
         title=title,
-        xaxis_title=f"Days elapsed ({bin_minutes}-min bins)" if bin_minutes > 1 else "Days elapsed",
+        xaxis_title=f"{x_label} ({bin_minutes}-min bins)" if bin_minutes > 1 else x_label,
         yaxis_title="Fly ID",
     )
 
