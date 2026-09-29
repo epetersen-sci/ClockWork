@@ -23,7 +23,7 @@ from dataset_meta import dataset_fingerprint
 from hmm_models import HMMConfig, compare_n_states
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _usable_fly_count(fp, _ds):
     """Flies with at least one finite observation minute, and the mean number of
     them per fly.
@@ -77,6 +77,7 @@ def render():
             index=0,
             horizontal=True,
             key="cv_phase_choice",
+            persist_state="session",
             help="LD (entrained; the standard sleep reference) or DD (constant "
             "darkness). Pick the same phase you intend to fit on the Analysis "
             "page — see the note below.",
@@ -142,10 +143,10 @@ def render():
         )
 
         states_min = st.number_input(
-            "Min states", min_value=2, max_value=8, value=2, key="cv_states_min"
+            "Min states", min_value=2, max_value=8, value=2, key="cv_states_min", persist_state="session"
         )
         states_max = st.number_input(
-            "Max states", min_value=2, max_value=10, value=5, key="cv_states_max"
+            "Max states", min_value=2, max_value=10, value=5, key="cv_states_max", persist_state="session"
         )
 
     with col2:
@@ -153,6 +154,8 @@ def render():
             "Emission models to test",
             options=["zip", "gaussian", "binary"],
             default=["zip"],
+            key="cv_emissions",
+            persist_state="session",
             help=(
                 "**zip**: Zero-Inflated Poisson — recommended for raw DAM count data.\n\n"
                 "**gaussian**: Normalized activity (Harbison style).\n\n"
@@ -160,7 +163,6 @@ def render():
                 "Log-likelihoods across emission models are NOT directly comparable "
                 "(different observation spaces). Use **Agreement %** for cross-model comparison."
             ),
-            key="cv_emissions",
         )
 
         cv_restarts = st.slider(
@@ -171,14 +173,16 @@ def render():
             step=5,
             help="Fewer restarts than production is fine for model selection.",
             key="cv_restarts",
+            persist_state="session",
         )
 
     with st.expander("Advanced options"):
-        cv_n_iter = st.slider("Max EM iterations per fold", 50, 200, 100, step=25, key="cv_n_iter")
+        cv_n_iter = st.slider("Max EM iterations per fold", 50, 200, 100, step=25, key="cv_n_iter", persist_state="session")
         transition_constraints = st.selectbox(
             "Transition constraints",
             ["soft", "hard", "none"],
             key="cv_trans",
+            persist_state="session",
             help="Applied to all models tested.",
         )
 

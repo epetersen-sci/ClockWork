@@ -166,6 +166,18 @@ def resolve_status_and_duplicates(
     return df, info
 
 
+def _sorted_times(values):
+    """Return ``values`` as a sorted DatetimeIndex.
+
+    Converted as one array, never element by element: the per-element route
+    (``pd.Series(list(values))``) built a Python object per reading, which on a
+    multi-week recording was most of the loader's time. ``cache=False`` for the
+    same reason: deciding whether to cache walks the values one at a time, and
+    timestamps that are already datetimes gain nothing from the cache.
+    """
+    return pd.DatetimeIndex(pd.to_datetime(pd.Index(values), cache=False)).sort_values()
+
+
 def _expected_interval_minutes(times):
     """Estimate the reading interval (minutes) as the modal positive diff."""
     if len(times) < 2:
@@ -211,7 +223,7 @@ def scan_time_integrity(times, status1_times=None, gap_threshold=None, interval_
         n_present_slots (status1 if provided else all), n_missing_slots,
         gaps (list of {start, end, minutes}), coverage_fraction.
     """
-    times = pd.DatetimeIndex(pd.to_datetime(pd.Series(list(times)))).sort_values()
+    times = _sorted_times(times)
     monotonic = bool(pd.Series(times).is_monotonic_increasing)
     n_duplicates = int(pd.Series(times).duplicated().sum())
 
@@ -222,11 +234,7 @@ def scan_time_integrity(times, status1_times=None, gap_threshold=None, interval_
         gap_threshold = max(interval * 2, pd.Timedelta(hours=1))
 
     # Real-data timestamps for coverage/gaps (fall back to all if not given).
-    real = (
-        pd.DatetimeIndex(pd.to_datetime(pd.Series(list(status1_times)))).sort_values()
-        if status1_times is not None
-        else times
-    )
+    real = _sorted_times(status1_times) if status1_times is not None else times
 
     # Expected grid spans the in-window extent at the reading interval.
     if len(times):
@@ -324,13 +332,9 @@ def classify_irregularities(
         dataloss_absent (slot had no row at all),
         dataloss_spans (list of {start, end, n_slots}) — contiguous data-loss runs.
     """
-    all_idx = pd.DatetimeIndex(pd.to_datetime(pd.Series(list(all_times)))).sort_values()
-    s1_idx = pd.DatetimeIndex(pd.to_datetime(pd.Series(list(status1_times)))).sort_values()
-    err_idx = (
-        pd.DatetimeIndex(pd.to_datetime(pd.Series(list(error_times)))).sort_values()
-        if error_times is not None
-        else pd.DatetimeIndex([])
-    )
+    all_idx = _sorted_times(all_times)
+    s1_idx = _sorted_times(status1_times)
+    err_idx = _sorted_times(error_times) if error_times is not None else pd.DatetimeIndex([])
 
     if interval_minutes is None:
         interval_minutes = _expected_interval_minutes(all_idx)
@@ -352,51 +356,35 @@ def classify_irregularities(
     g0 = pd.Timestamp(grid_start).ceil("min") if grid_start is not None else all_idx[0]
     g1 = pd.Timestamp(grid_end).floor("min") if grid_end is not None else all_idx[-1]
     grid = pd.date_range(g0, g1, freq=interval)
-    s1_set = set(s1_idx)
-    present_set = set(all_idx)  # any de-dup'd row (status1 or error)
-    err_set = set(err_idx)  # slots that had an error row (pre-dedup)
+    # Every grid slot is classified at once from three membership masks. (A
+    # per-slot loop over Python sets did the same thing one Timestamp at a
+    # time, which dominated the import on long recordings.)
+    has_s1 = grid.isin(s1_idx)
+    has_any = grid.isin(all_idx)  # any de-dup'd row (status1 or error)
+    has_err = grid.isin(err_idx)  # slots that had an error row (pre-dedup)
 
-    n_status1 = 0
-    n_cosmetic = 0  # status1 slot that ALSO had an error row (redundant)
-    dataloss_error_only = 0  # slot had an error row but no status1
-    dataloss_absent = 0  # slot had no row at all
-    dataloss_flags = np.zeros(len(grid), dtype=bool)
-
-    for k, t in enumerate(grid):
-        has_s1 = t in s1_set
-        has_any = t in present_set
-        if has_s1:
-            n_status1 += 1
-            # cosmetic iff a redundant error row coexisted at this real slot
-            if t in err_set:
-                n_cosmetic += 1
-        else:
-            dataloss_flags[k] = True
-            if has_any or (t in err_set):
-                dataloss_error_only += 1
-            else:
-                dataloss_absent += 1
-
+    n_status1 = int(has_s1.sum())
+    # cosmetic iff a redundant error row coexisted at a real slot
+    n_cosmetic = int((has_s1 & has_err).sum())
+    dataloss_flags = ~has_s1
+    # slot had an error row but no status1, vs no row at all
+    dataloss_error_only = int((dataloss_flags & (has_any | has_err)).sum())
+    dataloss_absent = int((dataloss_flags & ~has_any & ~has_err).sum())
     n_dataloss = int(dataloss_flags.sum())
 
-    # Contiguous data-loss spans for reporting.
-    spans = []
-    k = 0
-    while k < len(grid):
-        if dataloss_flags[k]:
-            j = k
-            while j < len(grid) and dataloss_flags[j]:
-                j += 1
-            spans.append(
-                {
-                    "start": pd.Timestamp(grid[k]),
-                    "end": pd.Timestamp(grid[j - 1]),
-                    "n_slots": int(j - k),
-                }
-            )
-            k = j
-        else:
-            k += 1
+    # Contiguous data-loss spans for reporting: a run starts where the flag
+    # turns on and ends where it turns off.
+    edges = np.diff(np.concatenate(([0], dataloss_flags.astype(np.int8), [0])))
+    run_starts = np.flatnonzero(edges == 1)
+    run_ends = np.flatnonzero(edges == -1)  # exclusive
+    spans = [
+        {
+            "start": pd.Timestamp(grid[k]),
+            "end": pd.Timestamp(grid[j - 1]),
+            "n_slots": int(j - k),
+        }
+        for k, j in zip(run_starts, run_ends)
+    ]
 
     return {
         "n_expected_slots": int(len(grid)),

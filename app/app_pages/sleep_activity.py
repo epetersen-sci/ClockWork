@@ -72,12 +72,12 @@ ds = require_dataset()
 # input (e.g. bin size) happened to change.
 # ----------------------------------------------------------------
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_zt_binned(fp, _ds, value_col, bin_size_minutes):
     """Wrap dam_utilities.get_zt_binned_dataframe with a fingerprint key."""
     return dam_utilities.get_zt_binned_dataframe(_ds, value_col, bin_size_minutes)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_per_fly_summary(
     fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes
 ):
@@ -96,7 +96,7 @@ def _cached_per_fly_summary(
         bin_size_minutes=bin_size_minutes,
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_daily_pattern(
     fp,
     _ds,
@@ -120,7 +120,7 @@ def _cached_daily_pattern(
         bin_size_minutes=bin_size_minutes,
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_summary_table(
     fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
 ):
@@ -135,7 +135,7 @@ def _cached_summary_table(
         phase_label=phase_label,
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_bout_duration_lines(
     fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
 ):
@@ -288,10 +288,18 @@ bin_size = bin_size_sidebar(key="viz_bin_size")
 # Keyed so the selection lives in session state and SURVIVES A RERUN. Detecting
 # sleep ends in one, and without the key that rerun dropped you back on the
 # Activity tab — away from the button you had just pressed and from the figures
-# it had just produced. (No on_change="rerun" with it: that makes the tabs lazy,
-# so only the open tab is drawn, and the page's PNG export would then silently
-# cover half of what you thought was on screen.)
-tab_activity, tab_sleep = st.tabs(["Activity", "Sleep"], key="sleep_activity_tab")
+# it had just produced.
+#
+# on_change="rerun" makes the tabs lazy: `.open` is True only for the selected
+# tab, and only that tab's body runs. Without it both tabs computed and drew on
+# every rerun, which on a large dataset was most of this page's time. The cost is
+# that the page's "save figures" button saves the OPEN tab's figures only — a
+# deliberate choice: it saves what is on screen. Widgets inside a tab stop being
+# drawn while it is closed, so display settings that should survive switching
+# tabs carry persist_state="session".
+tab_activity, tab_sleep = st.tabs(
+    ["Activity", "Sleep"], key="sleep_activity_tab", on_change="rerun"
+)
 
 # Which half of the cycle the totals are named after. Hoisted above both tabs
 # because both use it, and because it depends on the epoch chosen in the sidebar
@@ -383,253 +391,235 @@ def _totals_violins(variable, y_label, key):
     )
 
 
-with tab_activity:
-    # ============================================================
-    # Daily Activity Pattern
-    # ============================================================
-    st.subheader("Daily Activity Pattern")
-    if "activity" in ds.data_vars:
-        _ds_fp = dataset_fingerprint(ds)
-        fig = _cached_daily_pattern(
-            _ds_fp,
-            ds,
-            "activity",
-            "Daily Activity Pattern",
-            tuple(selected_genotypes) if selected_genotypes else None,
-            tuple(selected_temperatures) if selected_temperatures else None,
-            phase_used or dataset_phase(ds),
-            bin_size,
-        )
-        # theme=None: let the figure's own styling (black text, transparent bg) drive both
-        # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
-        charts.plotly_chart(fig, width="stretch", theme=None)
-
-        # CSV download of binned data (grouped: mean, SD, n per condition)
-        try:
-            binned_df = _cached_zt_binned(_ds_fp, ds, "activity", bin_size)
-            _id_to_group = {}
-            for _fid in binned_df["id"].unique():
-                try:
-                    _fly = ds.sel(id=_fid)
-                    if "group" in ds.coords:
-                        _id_to_group[_fid] = str(_fly["group"].item())
-                    elif "genotype" in ds.coords and "temperature" in ds.coords:
-                        _id_to_group[_fid] = f"{_fly['genotype'].item()}-{_fly['temperature'].item()}"
-                    else:
-                        _id_to_group[_fid] = "All"
-                except Exception:
-                    _id_to_group[_fid] = "All"
-            binned_df["group"] = binned_df["id"].map(_id_to_group)
-            # Same builder as the Export page's ZT table: Mean/SD/N per group, in
-            # GraphPad's grouped-table order. This used to sort_index the columns
-            # instead, which gave the alphabetical Mean/N/SD — a different header
-            # row for the same quantity.
-            _pivot = ex.zt_group_summary_table(binned_df, "activity", bin_size)
-            # Per-fly binned time course (long) so other stats can be computed:
-            # one row per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, activity).
-            _act_pf = binned_df.rename(columns={"id": "ID", "group": "Group"}).copy()
-            _act_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(
-                _act_pf["zt_bin_minute"], bin_size
-            )
-            _act_pf = (
-                _act_pf[["ID", "Group", "zt_bin_minute", "zt_hours", "activity"]]
-                .sort_values(["Group", "ID", "zt_bin_minute"])
-                .reset_index(drop=True)
-            )
-            ex.save_excel_button(
-                "Save binned activity (.xlsx)",
-                [
-                    ("group_summary", _pivot),
-                    (
-                        "per_fly",
-                        ex.per_fly_wide(_act_pf, value_col="activity"),
-                    ),
-                ],
+if tab_activity.open:
+    with tab_activity:
+        # ============================================================
+        # Daily Activity Pattern
+        # ============================================================
+        st.subheader("Daily Activity Pattern")
+        if "activity" in ds.data_vars:
+            _ds_fp = dataset_fingerprint(ds)
+            fig = _cached_daily_pattern(
+                _ds_fp,
                 ds,
-                "activity_binned",
-                key="dl_act",
-                help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
-                "grouped-table order, and the per-fly time course behind it — one "
-                "row per fly, one column per ZT bin, with a mean row closing each "
-                "group.",
-            )
-        except Exception:
-            pass
-
-    st.divider()
-
-    st.subheader(f"Activity Summary{_summary_subhead_suffix}")
-    if _ds_phase_label == PHASE_DD:
-        st.caption(
-            "**DD note:** the bin labels are subjective time relative to the "
-            "last lights-on transition (CT). Anchoring is reliable when the "
-            "DD split was applied with a clean discard-first-DD-day boundary. "
-            "If your recording had large data gaps at the DD start, the CT "
-            "alignment may drift — verify the actogram before publishing."
-        )
-    if "activity" in ds.data_vars:
-        _totals_violins("activity", "activity (counts)", "act")
-
-
-with tab_sleep:
-    # The analysis that produces everything below it, offered where the answer is
-    # wanted rather than on a page of its own. ui.sleep_run computes on the MASTER,
-    # never on this page's group-filtered view — see that module's docstring for
-    # why that distinction is load-bearing here of all places.
-    sleep_run.show_last_message("sleep_activity")
-    sleep_run.ensure_sleep(key_prefix="sleep_activity")
-    st.divider()
-
-    if analyses["sleep"]:
-        st.subheader("Daily Sleep Pattern")
-        _ds_fp_sl = dataset_fingerprint(ds)
-        fig = _cached_daily_pattern(
-            _ds_fp_sl,
-            ds,
-            "sleep",
-            "Daily Sleep Pattern",
-            tuple(selected_genotypes) if selected_genotypes else None,
-            tuple(selected_temperatures) if selected_temperatures else None,
-            phase_used or dataset_phase(ds),
-            bin_size,
-        )
-        # theme=None: the figure's black-text / transparent-bg styling drives screen + PNG.
-        charts.plotly_chart(fig, width="stretch", theme=None)
-
-        try:
-            binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)
-            _id_to_group_sl = {}
-            for _fid in binned_sleep["id"].unique():
-                try:
-                    _fly = ds.sel(id=_fid)
-                    if "group" in ds.coords:
-                        _id_to_group_sl[_fid] = str(_fly["group"].item())
-                    elif "genotype" in ds.coords and "temperature" in ds.coords:
-                        _id_to_group_sl[_fid] = (
-                            f"{_fly['genotype'].item()}-{_fly['temperature'].item()}"
-                        )
-                    else:
-                        _id_to_group_sl[_fid] = "All"
-                except Exception:
-                    _id_to_group_sl[_fid] = "All"
-            binned_sleep["group"] = binned_sleep["id"].map(_id_to_group_sl)
-            # Shared builder — see the activity block above.
-            _pivot_sl = ex.zt_group_summary_table(binned_sleep, "sleep", bin_size)
-            # Per-fly binned time course (long) so other stats can be computed:
-            # one row per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, sleep).
-            _sl_pf = binned_sleep.rename(columns={"id": "ID", "group": "Group"}).copy()
-            _sl_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(
-                _sl_pf["zt_bin_minute"], bin_size
-            )
-            _sl_pf = (
-                _sl_pf[["ID", "Group", "zt_bin_minute", "zt_hours", "sleep"]]
-                .sort_values(["Group", "ID", "zt_bin_minute"])
-                .reset_index(drop=True)
-            )
-            ex.save_excel_button(
-                "Save binned sleep (.xlsx)",
-                [
-                    ("group_summary", _pivot_sl),
-                    (
-                        "per_fly",
-                        ex.per_fly_wide(_sl_pf, value_col="sleep"),
-                    ),
-                ],
-                ds,
-                "sleep_binned",
-                key="dl_sleep",
-                help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
-                "grouped-table order, and the per-fly time course behind it — one "
-                "row per fly, one column per ZT bin, with a mean row closing each "
-                "group.",
-            )
-        except Exception:
-            pass
-
-        st.divider()
-
-        st.subheader(f"Sleep Summary{_summary_subhead_suffix}")
-        _totals_violins("sleep", "sleep (minutes)", "sleep")
-
-        st.divider()
-
-        # Sleep Bout Duration
-        st.subheader("Sleep Bout Duration")
-        if "duration" in ds.data_vars:
-            st.caption(
-                "One curve per fly (not one pooled histogram) — a fly with many bouts no "
-                "longer outweighs a fly with few, so genotypes overlay cleanly as lines."
-            )
-            _bd_col1, _bd_col2 = st.columns([2, 1])
-            with _bd_col1:
-                _bd_method_label = st.radio(
-                    "Curve type",
-                    ["KDE (log-duration)", "Survival curve (CCDF)"],
-                    index=0,
-                    horizontal=True,
-                    key="bout_curve_method",
-                )
-            with _bd_col2:
-                bout_show_individual = st.checkbox(
-                    "Show individual flies",
-                    value=False,
-                    key="bout_show_individual",
-                    help="One faint line per fly behind the group curves. Useful for "
-                    "spotting a single fly driving a group; off by default because on "
-                    "a few hundred flies it is a texture rather than a reading.",
-                )
-            bout_method = "kde" if _bd_method_label.startswith("KDE") else "survival"
-
-            _ds_fp_bout = dataset_fingerprint(ds)
-            bout_fig, bout_curves_df, bout_summary_df, bout_stats = _cached_bout_duration_lines(
-                _ds_fp_bout,
-                ds,
-                bout_method,
+                "activity",
+                "Daily Activity Pattern",
                 tuple(selected_genotypes) if selected_genotypes else None,
                 tuple(selected_temperatures) if selected_temperatures else None,
-                bout_show_individual,
+                phase_used or dataset_phase(ds),
+                bin_size,
             )
-            charts.plotly_chart(bout_fig, width="stretch", theme=None)
+            # theme=None: let the figure's own styling (black text, transparent bg) drive both
+            # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
+            charts.plotly_chart(fig, width="stretch", theme=None)
 
-            if bout_stats and np.isfinite(bout_stats.get("pvalue", float("nan"))):
-                st.caption(
-                    f"{bout_stats['test'].upper()} across groups on per-fly "
-                    f"log-mean bout duration: p={bout_stats['pvalue']:.4f} "
-                    f"(normality {'passed' if bout_stats['normality_passed'] else 'failed'}, "
-                    f"equal variance {'passed' if bout_stats['equal_variance_passed'] else 'failed'})."
+            # CSV download of binned data (grouped: mean, SD, n per condition)
+            try:
+                binned_df = _cached_zt_binned(_ds_fp, ds, "activity", bin_size)
+                _id_to_group = dam_utilities.fly_group_map(ds, default="All")
+                binned_df["group"] = binned_df["id"].map(lambda f: _id_to_group.get(f, "All"))
+                # Same builder as the Export page's ZT table: Mean/SD/N per group, in
+                # GraphPad's grouped-table order. This used to sort_index the columns
+                # instead, which gave the alphabetical Mean/N/SD — a different header
+                # row for the same quantity.
+                _pivot = ex.zt_group_summary_table(binned_df, "activity", bin_size)
+                # Per-fly binned time course (long) so other stats can be computed:
+                # one row per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, activity).
+                _act_pf = binned_df.rename(columns={"id": "ID", "group": "Group"}).copy()
+                _act_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(
+                    _act_pf["zt_bin_minute"], bin_size
                 )
-                if bout_stats["pairwise"]:
-                    # Folded: the p-value above is the answer most people came for,
-                    # and the pairwise grid is what you open when it is interesting.
-                    with st.expander("Pairwise comparisons"):
-                        st.dataframe(
-                            pd.DataFrame(bout_stats["pairwise"]), width="stretch"
-                        )
+                _act_pf = (
+                    _act_pf[["ID", "Group", "zt_bin_minute", "zt_hours", "activity"]]
+                    .sort_values(["Group", "ID", "zt_bin_minute"])
+                    .reset_index(drop=True)
+                )
+                ex.save_excel_button(
+                    "Save binned activity (.xlsx)",
+                    [
+                        ("group_summary", _pivot),
+                        (
+                            "per_fly",
+                            ex.per_fly_wide(_act_pf, value_col="activity"),
+                        ),
+                    ],
+                    ds,
+                    "activity_binned",
+                    key="dl_act",
+                    help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
+                    "grouped-table order, and the per-fly time course behind it — one "
+                    "row per fly, one column per ZT bin, with a mean row closing each "
+                    "group.",
+                )
+            except Exception:
+                pass
 
-            raw_bout_df = sleep_analysis.raw_bout_dataframe(
-                ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
+        st.divider()
+
+        st.subheader(f"Activity Summary{_summary_subhead_suffix}")
+        if _ds_phase_label == PHASE_DD:
+            st.caption(
+                "**DD note:** the bin labels are subjective time relative to the "
+                "last lights-on transition (CT). Anchoring is reliable when the "
+                "DD split was applied with a clean discard-first-DD-day boundary. "
+                "If your recording had large data gaps at the DD start, the CT "
+                "alignment may drift — verify the actogram before publishing."
             )
-            # Named apart from the Export page's sleep_bouts.csv on purpose. Both
-            # come from raw_bout_dataframe, but this one is filtered to the group
-            # selection in the sidebar while that one is every fly — under one
-            # filename, whichever the user opened last silently won.
-            ex.save_excel_button(
-                "Save sleep bout data (.xlsx)",
-                [
-                    ("per_fly_summary", bout_summary_df),
-                    ("bouts", raw_bout_df),
-                ],
+        if "activity" in ds.data_vars:
+            _totals_violins("activity", "activity (counts)", "act")
+
+
+if tab_sleep.open:
+    with tab_sleep:
+        # The analysis that produces everything below it, offered where the answer is
+        # wanted rather than on a page of its own. ui.sleep_run computes on the MASTER,
+        # never on this page's group-filtered view — see that module's docstring for
+        # why that distinction is load-bearing here of all places.
+        sleep_run.show_last_message("sleep_activity")
+        sleep_run.ensure_sleep(key_prefix="sleep_activity")
+        st.divider()
+
+        if analyses["sleep"]:
+            st.subheader("Daily Sleep Pattern")
+            _ds_fp_sl = dataset_fingerprint(ds)
+            fig = _cached_daily_pattern(
+                _ds_fp_sl,
                 ds,
-                "sleep_bouts_filtered",
-                key="dl_bouts",
-                help="Two sheets: one row per fly with its bout-duration summary, and "
-                "every individual bout behind it. Named apart from the Export page's "
-                "sleep_bouts on purpose — this one is filtered to the sidebar group "
-                "selection and that one is every fly.",
+                "sleep",
+                "Daily Sleep Pattern",
+                tuple(selected_genotypes) if selected_genotypes else None,
+                tuple(selected_temperatures) if selected_temperatures else None,
+                phase_used or dataset_phase(ds),
+                bin_size,
             )
+            # theme=None: the figure's black-text / transparent-bg styling drives screen + PNG.
+            charts.plotly_chart(fig, width="stretch", theme=None)
 
-    else:
-        st.info(
-            "Nothing to show until sleep has been detected — every figure in this "
-            "tab reads the bouts it produces. The control is at the top."
-        )
+            try:
+                binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)
+                _id_to_group_sl = dam_utilities.fly_group_map(ds, default="All")
+                binned_sleep["group"] = binned_sleep["id"].map(
+                    lambda f: _id_to_group_sl.get(f, "All")
+                )
+                # Shared builder — see the activity block above.
+                _pivot_sl = ex.zt_group_summary_table(binned_sleep, "sleep", bin_size)
+                # Per-fly binned time course (long) so other stats can be computed:
+                # one row per fly per ZT bin (ID, Group, zt_bin_minute, zt_hours, sleep).
+                _sl_pf = binned_sleep.rename(columns={"id": "ID", "group": "Group"}).copy()
+                _sl_pf["zt_hours"] = dam_utilities.zt_bin_to_hours(
+                    _sl_pf["zt_bin_minute"], bin_size
+                )
+                _sl_pf = (
+                    _sl_pf[["ID", "Group", "zt_bin_minute", "zt_hours", "sleep"]]
+                    .sort_values(["Group", "ID", "zt_bin_minute"])
+                    .reset_index(drop=True)
+                )
+                ex.save_excel_button(
+                    "Save binned sleep (.xlsx)",
+                    [
+                        ("group_summary", _pivot_sl),
+                        (
+                            "per_fly",
+                            ex.per_fly_wide(_sl_pf, value_col="sleep"),
+                        ),
+                    ],
+                    ds,
+                    "sleep_binned",
+                    key="dl_sleep",
+                    help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
+                    "grouped-table order, and the per-fly time course behind it — one "
+                    "row per fly, one column per ZT bin, with a mean row closing each "
+                    "group.",
+                )
+            except Exception:
+                pass
+
+            st.divider()
+
+            st.subheader(f"Sleep Summary{_summary_subhead_suffix}")
+            _totals_violins("sleep", "sleep (minutes)", "sleep")
+
+            st.divider()
+
+            # Sleep Bout Duration
+            st.subheader("Sleep Bout Duration")
+            if "duration" in ds.data_vars:
+                st.caption(
+                    "One curve per fly (not one pooled histogram) — a fly with many bouts no "
+                    "longer outweighs a fly with few, so genotypes overlay cleanly as lines."
+                )
+                _bd_col1, _bd_col2 = st.columns([2, 1])
+                with _bd_col1:
+                    _bd_method_label = st.radio(
+                        "Curve type",
+                        ["KDE (log-duration)", "Survival curve (CCDF)"],
+                        index=0,
+                        horizontal=True,
+                        key="bout_curve_method",
+                        persist_state="session",
+                    )
+                with _bd_col2:
+                    bout_show_individual = st.checkbox(
+                        "Show individual flies",
+                        value=False,
+                        key="bout_show_individual",
+                        persist_state="session",
+                        help="One faint line per fly behind the group curves. Useful for "
+                        "spotting a single fly driving a group; off by default because on "
+                        "a few hundred flies it is a texture rather than a reading.",
+                    )
+                bout_method = "kde" if _bd_method_label.startswith("KDE") else "survival"
+
+                _ds_fp_bout = dataset_fingerprint(ds)
+                bout_fig, bout_curves_df, bout_summary_df, bout_stats = _cached_bout_duration_lines(
+                    _ds_fp_bout,
+                    ds,
+                    bout_method,
+                    tuple(selected_genotypes) if selected_genotypes else None,
+                    tuple(selected_temperatures) if selected_temperatures else None,
+                    bout_show_individual,
+                )
+                charts.plotly_chart(bout_fig, width="stretch", theme=None)
+
+                if bout_stats and np.isfinite(bout_stats.get("pvalue", float("nan"))):
+                    st.caption(
+                        f"{bout_stats['test'].upper()} across groups on per-fly "
+                        f"log-mean bout duration: p={bout_stats['pvalue']:.4f} "
+                        f"(normality {'passed' if bout_stats['normality_passed'] else 'failed'}, "
+                        f"equal variance {'passed' if bout_stats['equal_variance_passed'] else 'failed'})."
+                    )
+                    if bout_stats["pairwise"]:
+                        # Folded: the p-value above is the answer most people came for,
+                        # and the pairwise grid is what you open when it is interesting.
+                        with st.expander("Pairwise comparisons"):
+                            st.dataframe(
+                                pd.DataFrame(bout_stats["pairwise"]), width="stretch"
+                            )
+
+                raw_bout_df = sleep_analysis.raw_bout_dataframe(
+                    ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
+                )
+                # Named apart from the Export page's sleep_bouts.csv on purpose. Both
+                # come from raw_bout_dataframe, but this one is filtered to the group
+                # selection in the sidebar while that one is every fly — under one
+                # filename, whichever the user opened last silently won.
+                ex.save_excel_button(
+                    "Save sleep bout data (.xlsx)",
+                    [
+                        ("per_fly_summary", bout_summary_df),
+                        ("bouts", raw_bout_df),
+                    ],
+                    ds,
+                    "sleep_bouts_filtered",
+                    key="dl_bouts",
+                    help="Two sheets: one row per fly with its bout-duration summary, and "
+                    "every individual bout behind it. Named apart from the Export page's "
+                    "sleep_bouts on purpose — this one is filtered to the sidebar group "
+                    "selection and that one is every fly.",
+                )
+
+        else:
+            st.info(
+                "Nothing to show until sleep has been detected — every figure in this "
+                "tab reads the bouts it produces. The control is at the top."
+            )

@@ -107,20 +107,67 @@ if _has_ls or _has_ac or _has_cwt or _has_mesa:
             "classification controls below and re-run."
         )
         _expl_thresholds = {}  # {algo: live slider value}, collected for the export
-        for _tab, (_algo, _lbl) in zip(st.tabs([l for _, l in _expl]), _expl):
+        # Lazy tabs: only the open analysis draws its slider and figure. The slider's
+        # range and default are still worked out for EVERY tab (no drawing, cheap),
+        # because the export below writes every analysis at its current cutoff — a
+        # closed tab contributes its persisted slider value, or the default if it
+        # was never opened, which is exactly what its undrawn slider held before.
+        _expl_tabs = st.tabs(
+            [l for _, l in _expl], key="rhythm_explorer_tab", on_change="rerun"
+        )
+        for _tab, (_algo, _lbl) in zip(_expl_tabs, _expl):
+            _ref = None
+            _min = 0.0
+            if _algo in ("ac", "mesa"):
+                # AC RI slider — MESA borrows the SAME metric/threshold (it has
+                # no significance test of its own), so both share this config.
+                _default, _max, _step, _fmt = float(DEFAULT_AC_RI_THRESHOLD), 1.0, 0.01, "%.3f"
+                _ref = float(AC_RI_SCAMP_REFERENCE)
+                # The AC RI sliding scale is floored at the SCAMP historical
+                # reference (0.195) — the established convention is the lowest
+                # cutoff the tool will offer; period-shift groups are separated
+                # by sliding UP from here, never below it.
+                _min = _ref
+            elif _algo == "ls":
+                _smax = (
+                    float(np.nanmax(period_ds["ls_power"].values))
+                    if "ls_power" in period_ds
+                    else 0.05
+                )
+                _default, _max, _step, _fmt = (
+                    float(DEFAULT_LS_POWER_THRESHOLD),
+                    max(0.05, round(_smax, 3)),
+                    0.001,
+                    "%.4f",
+                )
+            elif _algo == "cwt":
+                _smax = (
+                    float(np.nanmax(period_ds["cwt_rhythmicity"].values))
+                    if "cwt_rhythmicity" in period_ds
+                    else 2.0
+                )
+                _default = float(
+                    cwt_threshold_for(period_ds.attrs.get("cwt_method", DEFAULT_CWT_METHOD))
+                )
+                _max = max(2.0, round(_smax, 1))
+                # Step scales with range so the slider stays usable across
+                # ar1/global (~1-4) and global_rednoise (~3-70+ strength).
+                _step = 0.05 if _max <= 5.0 else (0.1 if _max <= 20.0 else 0.5)
+                _fmt = "%.2f"
+            _default = min(max(_default, _min), float(_max))
+            _thr_key = f"expl_thr_{_algo}"
+            # A persisted cutoff from another dataset can fall outside this one's
+            # range; bring it back inside before the slider is built, or Streamlit
+            # rejects the value.
+            if _thr_key in st.session_state:
+                st.session_state[_thr_key] = min(
+                    max(float(st.session_state[_thr_key]), float(_min)), float(_max)
+                )
+            _expl_thresholds[_algo] = st.session_state.get(_thr_key, _default)
+            if not _tab.open:
+                continue
             with _tab:
-                _ref = None
-                _min = 0.0
                 if _algo in ("ac", "mesa"):
-                    # AC RI slider — MESA borrows the SAME metric/threshold (it has
-                    # no significance test of its own), so both share this config.
-                    _default, _max, _step, _fmt = float(DEFAULT_AC_RI_THRESHOLD), 1.0, 0.01, "%.3f"
-                    _ref = float(AC_RI_SCAMP_REFERENCE)
-                    # The AC RI sliding scale is floored at the SCAMP historical
-                    # reference (0.195) — the established convention is the lowest
-                    # cutoff the tool will offer; period-shift groups are separated
-                    # by sliding UP from here, never below it.
-                    _min = _ref
                     if _algo == "ac":
                         st.caption(
                             "AC has two distinct numbers: the live per-fly "
@@ -136,41 +183,17 @@ if _has_ls or _has_ac or _has_cwt or _has_mesa:
                             "AC-rhythmic flies. Floored at the SCAMP 0.195 reference. (MESA's "
                             "own peak/median SNR is still in the summary table above.)"
                         )
-                elif _algo == "ls":
-                    _smax = (
-                        float(np.nanmax(period_ds["ls_power"].values))
-                        if "ls_power" in period_ds
-                        else 0.05
-                    )
-                    _default, _max, _step, _fmt = (
-                        float(DEFAULT_LS_POWER_THRESHOLD),
-                        max(0.05, round(_smax, 3)),
-                        0.001,
-                        "%.4f",
-                    )
-                elif _algo == "cwt":
-                    _smax = (
-                        float(np.nanmax(period_ds["cwt_rhythmicity"].values))
-                        if "cwt_rhythmicity" in period_ds
-                        else 2.0
-                    )
-                    _default = float(
-                        cwt_threshold_for(period_ds.attrs.get("cwt_method", DEFAULT_CWT_METHOD))
-                    )
-                    _max = max(2.0, round(_smax, 1))
-                    # Step scales with range so the slider stays usable across
-                    # ar1/global (~1-4) and global_rednoise (~3-70+ strength).
-                    _step = 0.05 if _max <= 5.0 else (0.1 if _max <= 20.0 else 0.5)
-                    _fmt = "%.2f"
-                _default = min(max(_default, _min), float(_max))
+                # Seeded through the key, not value=: the clamp above may already
+                # have written this key, and a widget given both logs a warning.
+                st.session_state.setdefault(_thr_key, _default)
                 _thr = st.slider(
                     f"{_lbl} threshold",
                     min_value=float(_min),
                     max_value=float(_max),
-                    value=_default,
                     step=_step,
                     format=_fmt,
-                    key=f"expl_thr_{_algo}",
+                    key=_thr_key,
+                    persist_state="session",
                 )
                 _expl_thresholds[_algo] = _thr
                 try:
@@ -229,7 +252,7 @@ st.subheader("Per-fly period summary")
 # merged onto the master anyway, so the slice never added anything here.
 period_ds = st.session_state.dataset
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8)
 def _build_period_summary_df(fp, _ds):
     """Build the per-fly Period Analysis summary table. Cached so a page
     rerun (no analysis-state change) doesn't redo the per-fly `.sel()`
@@ -244,42 +267,38 @@ def _build_period_summary_df(fp, _ds):
     docstring promises. ``_ds`` keeps its underscore because a Dataset is what
     the fingerprint exists to stand in for.
     """
-    rows = []
-    for fly_id in _ds["id"].values:
-        row = {"ID": fly_id}
-        if "group" in _ds.coords:
-            row["Group"] = str(_ds["group"].sel(id=fly_id).values)
-        if "cwt_period" in _ds.data_vars:
-            row["CWT Period (h)"] = float(_ds["cwt_period"].sel(id=fly_id).values)
-        if "ls_period" in _ds.data_vars:
-            row["LS Period (h)"] = float(_ds["ls_period"].sel(id=fly_id).values)
-        if "ac_period" in _ds.data_vars:
-            row["AC Period (h)"] = float(_ds["ac_period"].sel(id=fly_id).values)
-        if "mesa_period" in _ds.data_vars:
-            row["MESA Period (h)"] = float(_ds["mesa_period"].sel(id=fly_id).values)
+    # Each column read off its (id,) array in one go rather than a .sel per fly
+    # per quantity, which made the first render of this table slow on large
+    # datasets.
+    cols = {"ID": list(_ds["id"].values)}
+    if "group" in _ds.coords:
+        cols["Group"] = [str(g) for g in _ds["group"].values]
+    for col, var in (
+        ("CWT Period (h)", "cwt_period"),
+        ("LS Period (h)", "ls_period"),
+        ("AC Period (h)", "ac_period"),
+        ("MESA Period (h)", "mesa_period"),
         # Per-algorithm STRENGTH metrics — the values the Interactive threshold
         # explorer plots (so this table is a superset of the explorer: no separate
         # export needed). AC RI = ac_power; LS power/FAP; CWT rhythmicity; MESA SNR.
-        if "ac_power" in _ds.data_vars:
-            row["AC RI (strength)"] = float(_ds["ac_power"].sel(id=fly_id).values)
-        if "ls_power" in _ds.data_vars:
-            row["LS Power (strength)"] = float(_ds["ls_power"].sel(id=fly_id).values)
-        if "ls_fap" in _ds.data_vars:
-            row["LS FAP"] = float(_ds["ls_fap"].sel(id=fly_id).values)
-        if "cwt_rhythmicity" in _ds.data_vars:
-            row["CWT Rhythmicity (strength)"] = float(_ds["cwt_rhythmicity"].sel(id=fly_id).values)
-        if "mesa_power" in _ds.data_vars:
-            row["MESA SNR (peak/median)"] = float(_ds["mesa_power"].sel(id=fly_id).values)
-        # Per-algorithm rhythmic flags. AC is the canonical filter; LS/CWT
-        # appear here for diagnostic comparison only and never gate downstream.
-        if "ac_rhythmic" in _ds.coords:
-            row["AC Rhythmic"] = bool(_ds["ac_rhythmic"].sel(id=fly_id).values)
-        if "ls_rhythmic" in _ds.coords:
-            row["LS Rhythmic (diagnostic)"] = bool(_ds["ls_rhythmic"].sel(id=fly_id).values)
-        if "cwt_rhythmic" in _ds.coords:
-            row["CWT Rhythmic (diagnostic)"] = bool(_ds["cwt_rhythmic"].sel(id=fly_id).values)
-        rows.append(row)
-    _df = pd.DataFrame(rows)
+        ("AC RI (strength)", "ac_power"),
+        ("LS Power (strength)", "ls_power"),
+        ("LS FAP", "ls_fap"),
+        ("CWT Rhythmicity (strength)", "cwt_rhythmicity"),
+        ("MESA SNR (peak/median)", "mesa_power"),
+    ):
+        if var in _ds.data_vars:
+            cols[col] = [float(v) for v in _ds[var].values]
+    # Per-algorithm rhythmic flags. AC is the canonical filter; LS/CWT
+    # appear here for diagnostic comparison only and never gate downstream.
+    for col, coord in (
+        ("AC Rhythmic", "ac_rhythmic"),
+        ("LS Rhythmic (diagnostic)", "ls_rhythmic"),
+        ("CWT Rhythmic (diagnostic)", "cwt_rhythmic"),
+    ):
+        if coord in _ds.coords:
+            cols[col] = [bool(v) for v in _ds[coord].values]
+    _df = pd.DataFrame(cols)
     # Alphabetical (Group then ID) for a predictable, GraphPad-friendly export.
     _sort_keys = [c for c in ("Group", "ID") if c in _df.columns]
     return _df.sort_values(_sort_keys).reset_index(drop=True) if _sort_keys else _df

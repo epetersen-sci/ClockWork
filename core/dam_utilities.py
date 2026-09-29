@@ -27,6 +27,7 @@ Time representation note:
   both cases.
 """
 
+import datetime
 from collections import Counter
 
 import numpy as np
@@ -536,6 +537,33 @@ def derive_group_labels(metadata: pd.DataFrame, group_columns):
     return label
 
 
+def fly_group_map(ds, default="All Flies"):
+    """``{fly id: group label}`` for every fly, read off the coords in one pass.
+
+    The label is ``group`` when present, else ``genotype-temperature``, else
+    ``default``. Both ids and labels go through ``.item()`` first, so they are the
+    same Python values a per-fly ``ds.sel(id=f)[coord].item()`` returned. That is
+    what callers used to do, one ``.sel`` per fly, which on thousands of flies
+    was most of a page's rerun. (Formatting the numpy scalar instead is NOT the
+    same: a float32 coord prints as ``0.1`` rather than ``0.10000000149011612``.)
+    """
+
+    def _item(v):
+        return v.item() if hasattr(v, "item") else v
+
+    ids = [_item(v) for v in ds["id"].values]
+    if "group" in ds.coords:
+        labels = [str(_item(g)) for g in ds["group"].values]
+    elif "genotype" in ds.coords and "temperature" in ds.coords:
+        labels = [
+            f"{_item(g)}-{_item(t)}"
+            for g, t in zip(ds["genotype"].values, ds["temperature"].values)
+        ]
+    else:
+        labels = [default] * len(ids)
+    return dict(zip(ids, labels))
+
+
 def get_group_columns(ds):
     """Return the list of metadata columns currently defining ``ds['group']`` (read
     from ``ds.attrs['group_columns']``), robust to netCDF's single-element-list →
@@ -906,6 +934,36 @@ def _compute_moving(ds, force=False):
     return ds
 
 
+def _centered_rolling_mean(values, window, block=256):
+    """``rolling(time=window, center=True, min_periods=1).mean()`` along axis 0.
+
+    ``values`` is (time, fly) with NaN for missing. Computed from running sums —
+    one pass, whatever the window — where xarray without bottleneck sums every
+    window afresh: for a 24 h window on a large experiment that was ~70 billion
+    additions and nearly all of curation's time. Same window placement as
+    xarray's centring (for even windows too); on 0/1 movement data the sums are
+    exact integers, so the result equals xarray's bit for bit. Worked a block of
+    flies at a time so the running-sum arrays stay small.
+    """
+    n_time, n_flies = values.shape
+    out = np.empty((n_time, n_flies), dtype=np.float64)
+    idx = np.arange(n_time)
+    lo = np.clip(idx - window // 2, 0, n_time)
+    hi = np.clip(idx - window // 2 + window, 0, n_time)
+    for b in range(0, n_flies, block):
+        x = values[:, b : b + block].astype(np.float64)
+        valid = ~np.isnan(x)
+        csum = np.zeros((n_time + 1, x.shape[1]))
+        np.cumsum(np.where(valid, x, 0.0), axis=0, out=csum[1:])
+        ccount = np.zeros((n_time + 1, x.shape[1]))
+        np.cumsum(valid, axis=0, out=ccount[1:])
+        total = csum[hi] - csum[lo]
+        count = ccount[hi] - ccount[lo]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[:, b : b + block] = np.where(count >= 1, total / count, np.nan)
+    return out
+
+
 def curate_dead_animals(
     data,
     mov_column="moving",
@@ -960,81 +1018,70 @@ def curate_dead_animals(
     if t_column not in data.coords:
         raise KeyError(f"The time column {t_column} is not in the dataset")
 
-    def _wrapped_curate_dead_animals(
-        group_data, time_window, prop_immobile, resolution, min_alive_days
-    ):
-        window_size = int(time_window * 60 / resolution)
-        mov_data = group_data[mov_column].astype(float)
-        mov_data = mov_data.where(mov_data != -1)  # -1 = missing, exclude from mean
-        rolling_activity = mov_data.rolling(time=window_size, center=True, min_periods=1).mean()
+    # Every fly at once. The rule is the same as ever, per fly: a rolling mean of
+    # movement (missing minutes excluded) over ``time_window`` hours; the fly's
+    # last active time is the last minute that mean exceeds ``prop_immobile``; it
+    # is alive up to then. It used to run one fly at a time — a .sel, a rolling
+    # mean and a lookup per fly, then a concat of them all — which on thousands
+    # of flies was minutes of work for what is one rolling mean and one
+    # reduction over the whole array.
+    window_size = int(time_window * 60 / resolution)
+    mov_values = data[mov_column].transpose(t_column, "id").values
+    is_missing = mov_values == -1
+    # -1 = missing, excluded from the mean
+    mov_float = np.where(is_missing, np.nan, mov_values.astype(float))
+    rolling = _centered_rolling_mean(mov_float, window_size)
+    t = data[t_column].values
+    n_time, n_flies = rolling.shape
 
-        valid_activity = rolling_activity.where(rolling_activity > prop_immobile, drop=True)
-        mov_values = group_data[mov_column].values.flatten()
-        is_missing = mov_values == -1
+    valid = rolling > prop_immobile  # NaN compares False, as the where() did
+    has_valid = valid.any(axis=0)
+    # Index of each fly's last valid minute (time is ascending).
+    last_valid_idx = n_time - 1 - valid[::-1].argmax(axis=0)
+    last_active = t[last_valid_idx]
+    # The last minute that is not missing, or the end of the axis if all are.
+    has_data = (~is_missing).any(axis=0)
+    last_data_idx = np.where(has_data, n_time - 1 - (~is_missing)[::-1].argmax(axis=0), n_time - 1)
+    last_data_time = t[last_data_idx]
 
-        if valid_activity.size == 0:
-            is_alive = np.zeros(len(group_data[t_column]), dtype=np.int8)
-            is_alive[is_missing] = -1
+    is_alive = np.zeros((n_time, n_flies), dtype=np.int8)
+    for j in range(n_flies):
+        miss = is_missing[:, j]
+        if not has_valid[j]:
+            # Never active: dead throughout, missing minutes marked -1.
+            is_alive[miss, j] = -1
+            continue
+        la = last_active[j]
+        # Compare against the last non-missing time point, not the absolute end
+        # of the time axis. Trailing NaN (monitor stopped, incomplete bins)
+        # should not cause a fly to be marked dead.
+        if la >= last_data_time[j]:
+            is_alive[:, j] = 1
         else:
-            last_active = valid_activity[t_column].max().values
+            is_alive[:, j] = t <= la
+        # Exclude flies alive for fewer than min_alive_days
+        time_diff = la - t.min()
+        # Timedelta checked FIRST: numpy's timedelta64 subclasses its integer
+        # types, so the minutes branch would take it and divide nanoseconds by
+        # 1440. (The per-fly version crashed on a datetime axis instead.)
+        if isinstance(time_diff, (np.timedelta64, pd.Timedelta, datetime.timedelta)):
+            alive_duration = pd.Timedelta(time_diff) / pd.Timedelta(days=1)
+        else:
+            alive_duration = float(time_diff) / (60 * 24)  # minutes → days
+        if alive_duration < min_alive_days:
+            is_alive[:, j] = 0
+            is_alive[miss, j] = -1
+        else:
+            # Only flag missing samples AFTER last_active as -1, so missing
+            # samples within the live window [0, last_active] stay is_alive=1
+            # and the front of a living fly's recording isn't dropped by
+            # `results.where(is_alive == 1, drop=True)`.
+            is_alive[miss & (t > la), j] = -1
 
-            if pd.isnull(last_active):
-                is_alive = np.zeros(len(group_data[t_column]), dtype=np.int8)
-                is_alive[is_missing] = -1
-            else:
-                # Compare against the last non-missing time point, not the
-                # absolute end of the time axis. Trailing NaN (monitor stopped,
-                # incomplete bins) should not cause a fly to be marked dead.
-                non_missing_times = group_data[t_column].values.flatten()[~is_missing]
-                last_data_time = (
-                    non_missing_times[-1]
-                    if len(non_missing_times) > 0
-                    else group_data[t_column].max().values
-                )
-                if last_active >= last_data_time:
-                    is_alive = np.ones(len(group_data[t_column]), dtype=np.int8)
-                else:
-                    is_alive = (group_data[t_column] <= last_active).values.astype(np.int8)
+    if progress_callback:
+        progress_callback(n_flies, n_flies)
 
-                # Exclude flies alive for fewer than min_alive_days
-                time_diff = last_active - group_data[t_column].min().values
-                if np.issubdtype(type(time_diff), np.integer) or isinstance(
-                    time_diff, (int, float)
-                ):
-                    alive_duration = float(time_diff) / (60 * 24)  # minutes → days
-                else:
-                    alive_duration = time_diff / np.timedelta64(1, "D")
-                if alive_duration < min_alive_days:
-                    is_alive[:] = 0
-                    is_alive[is_missing] = -1
-                else:
-                    # Only flag missing samples AFTER last_active as -1, so
-                    # missing samples within the live window [0, last_active]
-                    # stay is_alive=1 and the front of a living fly's recording
-                    # isn't dropped by `results.where(is_alive == 1, drop=True)`.
-                    after_last_active = group_data[t_column].values > last_active
-                    is_alive[is_missing & after_last_active] = -1
-        is_alive_da = xr.DataArray(
-            is_alive.astype(np.int8), coords=group_data[t_column].coords, dims=t_column
-        )
-        return group_data.assign(is_alive=is_alive_da)
-
-    fly_ids = data["id"].values
-    _cur_total = len(fly_ids)
-    results_list = []
-    for _cur_idx, fly_id in enumerate(fly_ids):
-        group_data = data.sel(id=[fly_id])
-        results_list.append(
-            _wrapped_curate_dead_animals(
-                group_data, time_window, prop_immobile, resolution, min_alive_days
-            )
-        )
-        if progress_callback:
-            progress_callback(_cur_idx + 1, _cur_total)
-
-    results = xr.concat(results_list, dim="id")
-    # Guarantee fly order matches input (defensive — concat should preserve it)
-    results = results.sel(id=data["id"].values)
+    results = data.assign(is_alive=(("id", t_column), is_alive.T))
 
     live_data = results.where(results.is_alive == 1, drop=True)
     dead_data = results.where(results.is_alive == 0, drop=True)
@@ -1571,18 +1618,47 @@ def select_phase(ds, phase="auto", discard_first_dd_day=False):
     else:  # "LD"
         keep = time < split_minute
 
-    # Mask each (id, time) data_var to NaN where out of phase. xr.where preserves
-    # the in-phase values verbatim (real 0s stay 0; existing NaN gaps stay NaN).
+    # Mask each (id, time) data_var to NaN where out of phase. In-phase values are
+    # kept verbatim (real 0s stay 0; existing NaN gaps stay NaN). Done on one copy
+    # of each array that keeps the array's memory layout (order="K"): the loader
+    # builds these column-major, and both xr.where and a default copy rewrote the
+    # whole grid into row-major order, ten times slower than a straight copy, on
+    # every rerun of every phase-aware page.
     masked = ds.copy()
+    out_of_phase = {}  # per (dim order, layout), so each mask is built once
     for var in ds.data_vars:
         da = ds[var]
-        if "id" in da.dims and "time" in da.dims:
+        if "id" in da.dims and "time" in da.dims and da.ndim == 2:
             if np.issubdtype(da.dtype, np.floating):
                 # float32 stays float32; float64 stays float64 (NaN fill is dtype-safe).
-                m = xr.where(keep, da, np.nan).astype(da.dtype)
+                values = da.values.copy(order="K")
             else:
                 # Integer/bool vars can't hold NaN → upcast to float for the masked
                 # VIEW only (transient; never written back to the master).
+                values = da.values.astype(np.float64, order="K")
+            # The mask in the same memory layout as the values, or writing
+            # through it strides across the whole array. It is built directly in
+            # that layout: row-major in the orientation the values are stored in,
+            # transposed back to the variable's dim order if that is the reverse.
+            layout = "F" if values.flags.f_contiguous and not values.flags.c_contiguous else "C"
+            key = (da.dims, layout)
+            if key not in out_of_phase:
+                stored = da.dims if layout == "C" else da.dims[::-1]
+                t_vals = time.values
+                b_vals = boundary.values if phase_used == "DD" else split_minute.values
+                if stored[0] == "time":
+                    t_vals, b_vals = t_vals[:, None], b_vals[None, :]
+                else:
+                    t_vals, b_vals = t_vals[None, :], b_vals[:, None]
+                oop = (t_vals < b_vals) if phase_used == "DD" else (t_vals >= b_vals)
+                out_of_phase[key] = oop if layout == "C" else oop.T
+            np.copyto(values, np.nan, where=out_of_phase[key])
+            masked[var] = da.copy(data=values)
+        elif "id" in da.dims and "time" in da.dims:
+            # Anything with more than the two dims keeps the general path.
+            if np.issubdtype(da.dtype, np.floating):
+                m = xr.where(keep, da, np.nan).astype(da.dtype)
+            else:
                 m = xr.where(keep, da, np.nan)
             # xr.where may reorder dims when broadcasting; restore the original
             # dim order so downstream `.transpose('time','id')` callers are unaffected.
@@ -1918,51 +1994,51 @@ def get_zt_binned_dataframe(
 
     bin_idx = np.clip(np.digitize(zt_minutes, zt_minute_bins) - 1, 0, n_bins - 1)
 
-    # Extract full data array: (time, n_flies)
-    data_2d = ds[value_col].transpose("time", "id").values.astype(float)
+    # Full data array: (time, n_flies). Left in its stored dtype; each bin's rows
+    # are converted to float as they are taken below.
+    data_2d = ds[value_col].transpose("time", "id").values
 
     # For the int8 state masks, -1 is the missing sentinel (§2a) — exclude it from
     # the per-bin aggregate exactly as NaN is excluded, so a bin overlapping a gap
     # reports the fraction over MEASURED minutes (never a negative fabricated value).
     drop_sentinel = value_col in MASK_VARS_WITH_MISSING_SENTINEL
 
-    # Bin across all flies at once
-    binned_data_list = []
-    for i, fly_id in enumerate(fly_ids):
-        # Normalize fly_id to scalar
+    def _scalar_id(fly_id):
+        """Normalize a fly id to a plain scalar."""
         if isinstance(fly_id, np.ndarray):
-            fly_id = fly_id.item() if fly_id.ndim == 0 else fly_id[0]
-        elif hasattr(fly_id, "item"):
-            fly_id = fly_id.item()
+            return fly_id.item() if fly_id.ndim == 0 else fly_id[0]
+        if hasattr(fly_id, "item"):
+            return fly_id.item()
+        return fly_id
 
-        fly_vals = data_2d[:, i]
-
-        binned_vals = np.full(n_bins, np.nan)
-        for b in range(n_bins):
-            b_mask = bin_idx == b
-            valid = fly_vals[b_mask]
-            valid = valid[~np.isnan(valid)]
-            if drop_sentinel:
-                valid = valid[valid != MASK_MISSING_SENTINEL]  # -1 = missing (§2a)
-            if len(valid) > 0:
-                binned_vals[b] = np.mean(valid) if bin_function == "mean" else np.sum(valid)
-
-        binned_fly = pd.DataFrame(
-            {
-                "id": fly_id,
-                "zt_bin_minute": zt_bin_labels,
-                value_col: binned_vals,
-            }
-        )
-        binned_data_list.append(binned_fly)
-
-    if not binned_data_list:
+    ids = [_scalar_id(f) for f in fly_ids]
+    if not ids:
         print("Warning: No data was binned for any fly within their specified active periods.")
         return pd.DataFrame(columns=["id", "zt_bin_minute", value_col])
 
-    result_df = pd.concat(binned_data_list, ignore_index=True)
-    result_df["zt_bin_minute"] = pd.to_numeric(result_df["zt_bin_minute"], errors="coerce")
-    return result_df
+    # Bin across all flies at once: one pass per ZT bin over every fly's column,
+    # rather than one pass per bin PER FLY. The bin assignment is shared by all
+    # flies, so each bin is a block of rows. A bin with no valid minute stays NaN.
+    binned = np.full((n_bins, len(ids)), np.nan)
+    for b in range(n_bins):
+        vals = data_2d[bin_idx == b].astype(float)
+        valid = ~np.isnan(vals)
+        if drop_sentinel:
+            valid &= vals != MASK_MISSING_SENTINEL  # -1 = missing (§2a)
+        count = valid.sum(axis=0)
+        total = np.where(valid, vals, 0.0).sum(axis=0)
+        has_data = count > 0
+        agg = total / np.where(has_data, count, 1) if bin_function == "mean" else total
+        binned[b, has_data] = agg[has_data]
+
+    # Rows are fly-major (every bin of the first fly, then the next), as before.
+    return pd.DataFrame(
+        {
+            "id": np.repeat(np.array(ids, dtype=object), n_bins),
+            "zt_bin_minute": np.tile(zt_bin_labels, len(ids)),
+            value_col: binned.T.ravel(),
+        }
+    )
 
 
 # --- ZT bin -> plotted x-coordinate convention (single source of truth) ---------

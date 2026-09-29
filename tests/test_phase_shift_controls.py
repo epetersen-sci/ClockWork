@@ -412,6 +412,11 @@ def test_too_few_pulse_times_says_so_instead_of_drawing_a_curve(app, pulse_ds):
     run = [b for b in at.button if "Run Group Phase Comparison" in b.label]
     at = run[0].click().run()
     assert not at.exception
+    # The run is started from Setup; its results are read on the Results tab, and
+    # the page's tabs are lazy, so open it as a user would.
+    at.session_state["phase_shift_tab"] = "Results"
+    at = at.run()
+    assert not at.exception
     assert any(
         "only contains 1 timepoint" in i.value and "At least 3 timepoints" in i.value
         for i in at.info

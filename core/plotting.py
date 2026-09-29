@@ -65,9 +65,100 @@ def _circadian_period_ticks(min_period: float, max_period: float) -> list:
     return list(range(start, end + 1, step))
 
 
-def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
+#: Width of the heatmap's time bins. A per-minute heatmap of a large experiment
+#: (thousands of flies x weeks of minutes) is tens of millions of cells, which
+#: the browser cannot draw; the heatmap is for inspecting a curation or split at
+#: a glance, and half-hour bins show that while cutting the cells ~30-fold.
+HEATMAP_BIN_MINUTES = 30
+
+
+def _binned_heatmap_matrix(da, ids_ord, bin_minutes, missing_sentinel):
+    """Bin a (time, id) variable into ``bin_minutes`` columns, rows in ``ids_ord``.
+
+    Returns ``(z, x)``: ``z`` is (fly, bin), the mean over each bin's MEASURED
+    minutes; ``x`` is each bin's start in days since the first time point. NaN
+    minutes (out of phase, or no reading) are left out of the mean, so a bin with
+    none measured stays NaN and draws blank. When ``missing_sentinel`` is set, -1
+    minutes are "no measurement" too (§2a): left out of the mean, and a bin whose
+    only readings are -1 comes out as -1, so it still draws as missing rather than
+    as blank or as "still".
     """
-    Create a Plotly heatmap of a dataset variable (flies × time).
+    t = da["time"].values
+    if np.issubdtype(t.dtype, np.integer):
+        minutes = (t - t.min()).astype(np.int64)
+    else:
+        minutes = ((t - t.min()) // np.timedelta64(1, "m")).astype(np.int64)
+    order_t = np.argsort(minutes, kind="stable")
+    bin_idx = minutes[order_t] // bin_minutes
+    starts = np.flatnonzero(np.diff(bin_idx, prepend=bin_idx[0] - 1))
+    x = bin_idx[starts] * bin_minutes / 1440.0
+
+    col_of = {str(i): k for k, i in enumerate(da["id"].values)}
+    cols = np.array([col_of[f] for f in ids_ord], dtype=np.intp)
+    values = da.transpose("time", "id").values
+
+    z = np.full((len(cols), len(starts)), np.nan)
+    # A block of flies at a time, so the float working copy stays small however
+    # large the experiment is.
+    for lo in range(0, len(cols), 256):
+        block = values[:, cols[lo : lo + 256]][order_t].astype(float)
+        valid = ~np.isnan(block)
+        missing = None
+        if missing_sentinel:
+            missing = block == -1
+            valid &= ~missing
+        count = np.add.reduceat(valid, starts, axis=0)
+        total = np.add.reduceat(np.where(valid, block, 0.0), starts, axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean = np.where(count > 0, total / count, np.nan)
+        if missing is not None:
+            only_missing = (count == 0) & (np.add.reduceat(missing, starts, axis=0) > 0)
+            mean = np.where(only_missing, -1.0, mean)
+        z[lo : lo + 256] = mean.T
+    # Plotly ships the array to the browser as packed binary, so its width is the
+    # figure's size; single precision is far finer than any colour step and halves it.
+    return z.astype(np.float32), x
+
+
+def _align_to_dd_start(da, ds):
+    """Shift each fly's row of a DD view so minute 0 is that fly's own DD start.
+
+    A ``select_phase`` DD view keeps every fly's WHOLE time axis (t = minutes
+    since its ZT0) with the LD minutes masked out, so flies that entered DD on
+    different days start their DD data at different places — in a heatmap the
+    groups' DD blocks are staggered and no x value means the same thing for all
+    of them. Here each row starts at its own DD start: ``split_minute`` (CT0 of
+    the first DD day, from ``first_DD_day``), plus one day when the view
+    discarded the first DD day. Returns None when ``ds`` is not such a view, so
+    a physically sliced, already re-zeroed DD dataset is never shifted twice.
+    """
+    if (
+        ds.attrs.get("phase_used") != "DD"
+        or "phase_discard_first_dd_day" not in ds.attrs
+        or "split_minute" not in ds.coords
+        or not np.issubdtype(da["time"].values.dtype, np.integer)
+    ):
+        return None
+    t = da["time"].values
+    start = ds["split_minute"].values.astype(np.int64) + (
+        1440 if int(ds.attrs.get("phase_discard_first_dd_day", 0)) else 0
+    )
+    values = da.transpose("time", "id").values
+    first = np.searchsorted(t, start)  # row where each fly's DD begins
+    length = int(max(1, (len(t) - first).max()))
+    out = np.full((length, values.shape[1]), np.nan, dtype=np.float32)
+    for j, f in enumerate(first):
+        out[: len(t) - f, j] = values[f:, j]
+    return xr.DataArray(
+        out, dims=("time", "id"), coords={"time": np.arange(length), "id": da["id"].values}
+    )
+
+
+def dataset_to_heatmap(
+    ds: xr.Dataset, var: str, title: str, bin_minutes: int = HEATMAP_BIN_MINUTES
+) -> go.Figure:
+    """
+    Create a Plotly heatmap of a dataset variable (flies × time bins).
 
     Parameters
     ----------
@@ -76,6 +167,9 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
         Variable to plot (e.g., ``'moving'``, ``'activity'``, ``'sleep'``).
     title : str
         Plot title.
+    bin_minutes : int
+        Width of each time column (default :data:`HEATMAP_BIN_MINUTES`). Each cell
+        is the mean over that bin's measured minutes; 1 draws every minute.
 
     Returns
     -------
@@ -83,11 +177,12 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
 
     Notes (C1, 2026-07-01)
     ----------------------
-    * ``moving`` is rendered with a **discrete 3-band legend** (−1 missing /
-      0 still / 1 moving), NOT a continuous scale. A continuous scale makes the
-      −1 "missing" cells read as "low movement", burying the §2a distinction
-      between *no measurement* (−1) and *measured-but-still* (0). ``activity``
-      (and any other var) keeps the continuous Viridis scale.
+    * ``moving`` is rendered with **missing (−1) in its own gray band** and the
+      fraction of measured minutes spent moving (0 still → 1 moving) as a blue
+      scale above it. Were missing on the same continuous scale, −1 "missing"
+      cells would read as "low movement", burying the §2a distinction between
+      *no measurement* (−1) and *measured-but-still* (0). ``activity`` (and any
+      other var) keeps the continuous Viridis scale.
     * The **x-axis is truncated to the finite-data extent** (first→last day that
       any fly has in-phase data), not the full time span. On an LD view this
       shows only the LD window; on a DD view it starts at the earliest DD run
@@ -117,31 +212,33 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
     else:
         ids_ord = ids
 
-    df = da.to_dataframe().reset_index()
-    df["id"] = df["id"].astype(str)
-
-    # Convert time to days elapsed from the first time point
-    start_time = df["time"].min()
-    if np.issubdtype(df["time"].dtype, np.integer):
-        df["days_elapsed"] = (df["time"] - start_time) / 1440.0
-    else:
-        df["days_elapsed"] = (df["time"] - start_time).dt.total_seconds() / 86400.0
-
-    pivot_df = df.pivot(index="id", columns="days_elapsed", values=var).reindex(ids_ord)
-    z = pivot_df.values
-    x = pivot_df.columns.values.astype(float)
+    if da.sizes["time"] == 0 or not ids_ord:
+        return go.Figure()
+    bin_minutes = max(1, int(bin_minutes))
+    # A DD view is drawn from each fly's own DD start, so its x axis is days in
+    # DD for every fly and the bins line up with CT0.
+    dd_aligned = _align_to_dd_start(da, ds)
+    x_label = "Days in DD" if dd_aligned is not None else "Days elapsed"
+    if dd_aligned is not None:
+        da = dd_aligned
+    z, x = _binned_heatmap_matrix(
+        da,
+        ids_ord,
+        bin_minutes,
+        missing_sentinel=var in dam_utilities.MASK_VARS_WITH_MISSING_SENTINEL,
+    )
     y = np.array(ids_ord, dtype=object)
 
     if var == "moving":
-        # Discrete 3-band scale on [-1, 1]: -1 missing, 0 still, 1 moving.
-        # Missing (gray) is visually distinct from still (light) so it never
-        # reads as "low movement" (§2a). Out-of-phase cells are NaN -> blank.
+        # Scale on [-1, 1]: -1 missing in gray, then 0 (still) -> 1 (moving the
+        # whole bin) in blue. Nothing falls strictly between -1 and 0, so the
+        # gray band is exactly the missing bins, visually distinct from still
+        # so it never reads as "low movement" (§2a). Out-of-phase bins are NaN
+        # -> blank.
         colorscale = [
             [0.0, "#cccccc"],
-            [1 / 3, "#cccccc"],
-            [1 / 3, "#9ecae1"],
-            [2 / 3, "#9ecae1"],
-            [2 / 3, "#08519c"],
+            [0.5, "#cccccc"],
+            [0.5, "#deebf7"],
             [1.0, "#08519c"],
         ]
         heat = go.Heatmap(
@@ -152,9 +249,11 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
             zmin=-1,
             zmax=1,
             colorbar=dict(
-                title="state", tickvals=[-1, 0, 1], ticktext=["missing", "still", "moving"]
+                title="moving",
+                tickvals=[-1, 0, 1],
+                ticktext=["missing", "still", "moving<br>whole bin"],
             ),
-            hovertemplate="Fly: %{y}<br>Day: %{x:.2f}<br>state: %{z}<extra></extra>",
+            hovertemplate="Fly: %{y}<br>Day: %{x:.2f}<br>fraction moving: %{z:.2f}<extra></extra>",
         )
     else:
         heat = go.Heatmap(
@@ -166,7 +265,11 @@ def dataset_to_heatmap(ds: xr.Dataset, var: str, title: str) -> go.Figure:
             hovertemplate="Fly: %{y}<br>Day: %{x:.2f}<br>" + var + ": %{z}<extra></extra>",
         )
     fig = go.Figure(data=heat)
-    fig.update_layout(title=title, xaxis_title="Days elapsed", yaxis_title="Fly ID")
+    fig.update_layout(
+        title=title,
+        xaxis_title=f"{x_label} ({bin_minutes}-min bins)" if bin_minutes > 1 else x_label,
+        yaxis_title="Fly ID",
+    )
 
     # --- x-axis: truncate to the finite-data extent (not the full span) ---- #
     if z.size and np.isfinite(z).any():
@@ -419,22 +522,22 @@ def per_fly_sleep_state_totals(
                 return pd.DataFrame(columns=cols)
             ds = ds.sel(id=fids)
 
-    def _grp(fid):
-        try:
-            f = ds.sel(id=fid)
-            if "group" in ds.coords:
-                return str(f["group"].item())
-            if "genotype" in ds.coords and "temperature" in ds.coords:
-                return f"{f['genotype'].item()}-{f['temperature'].item()}"
-        except Exception:
-            pass
-        return "All"
+    # Minutes in each state for every fly at once: count the 1s along every dim
+    # but id, instead of a .sel per fly per state.
+    counts = {}
+    for v, lbl in present:
+        da = ds[v]
+        other_axes = tuple(i for i, d in enumerate(da.dims) if d != "id")
+        counts[lbl] = (np.asarray(da.values) == 1).sum(axis=other_axes)
+    id_axis_ids = ds["id"].values
+    group_of = dam_utilities.fly_group_map(ds, default="All")
 
     rows = []
-    for fid in ds["id"].values:
-        mins = {lbl: int(np.sum(np.asarray(ds[v].sel(id=fid).values) == 1)) for v, lbl in present}
+    for k, fid in enumerate(id_axis_ids):
+        mins = {lbl: int(c[k]) for lbl, c in counts.items()}
         total = sum(mins.values())
-        row = {"ID": str(fid), "Group": _grp(fid)}
+        key = fid.item() if hasattr(fid, "item") else fid
+        row = {"ID": str(fid), "Group": group_of.get(key, "All")}
         for lbl, m in mins.items():
             row[lbl] = (m / total * 100.0) if (as_percent and total > 0) else float(m)
         rows.append(row)
@@ -668,47 +771,41 @@ def per_fly_summary_table(
     if df.empty:
         return pd.DataFrame(columns=cols)
 
-    # Build group labels
-    id_to_group = {}
-    for fly_id in df["id"].unique():
-        try:
-            fly_ds = ds.sel(id=fly_id)
-            if "group" in ds.coords:
-                id_to_group[fly_id] = str(fly_ds["group"].item())
-            elif "genotype" in ds.coords and "temperature" in ds.coords:
-                id_to_group[fly_id] = f"{fly_ds['genotype'].item()}-{fly_ds['temperature'].item()}"
-            else:
-                id_to_group[fly_id] = "All Flies"
-        except (KeyError, IndexError):
-            id_to_group[fly_id] = "All Flies"
+    # Group labels for every fly at once (a ds.sel per fly was most of this
+    # function's time on a large dataset).
+    id_to_group = dam_utilities.fly_group_map(ds, default="All Flies")
 
-    df["group"] = df["id"].map(id_to_group)
+    # get_zt_binned_dataframe returns every fly's full set of bins, fly-major, so
+    # the values reshape to one row per fly and one column per bin.
+    fly_ids = df["id"].unique()
+    zt = df["zt_bin_minute"].to_numpy()[: len(df) // len(fly_ids)]
+    values = df[variable].to_numpy(dtype=float).reshape(len(fly_ids), len(zt))
 
-    rows = []
-    for fly_id in df["id"].unique():
-        fly_df = df[df["id"] == fly_id]
-        # Sum within each period and multiply by bin width to get total minutes.
-        # Day/Night is partitioned by the bin's CONTENT — which side of ZT12 (720 min)
-        # the bin's data lies — NOT by the profile plot's display label. Bins are
-        # [start, start+bin), so a bin is Day iff start < 720. This is independent of
-        # the closing-edge label convention (dam_utilities.zt_bin_to_hours), so the
-        # export totals never move when that display convention changes.
-        all_day_sum = fly_df[variable].sum() * bin_size_minutes
-        day_df = fly_df[fly_df["zt_bin_minute"] < 720]
-        night_df = fly_df[(fly_df["zt_bin_minute"] >= 720) & (fly_df["zt_bin_minute"] < 1440)]
-        day_sum = day_df[variable].sum() * bin_size_minutes if len(day_df) > 0 else np.nan
-        night_sum = night_df[variable].sum() * bin_size_minutes if len(night_df) > 0 else np.nan
-        rows.append(
-            {
-                "ID": fly_id,
-                "Group": fly_df["group"].iloc[0],
-                "All Day": all_day_sum,
-                "Day Only": day_sum,
-                "Night Only": night_sum,
-            }
-        )
+    # Sum within each period and multiply by bin width to get total minutes.
+    # Day/Night is partitioned by the bin's CONTENT — which side of ZT12 (720 min)
+    # the bin's data lies — NOT by the profile plot's display label. Bins are
+    # [start, start+bin), so a bin is Day iff start < 720. This is independent of
+    # the closing-edge label convention (dam_utilities.zt_bin_to_hours), so the
+    # export totals never move when that display convention changes. NaN bins are
+    # skipped, and a period whose bins are all NaN totals 0, as a pandas sum did.
+    day = zt < 720
+    night = (zt >= 720) & (zt < 1440)
 
-    out = pd.DataFrame(rows, columns=cols)
+    def _period_total(mask):
+        if not mask.any():
+            return np.full(len(fly_ids), np.nan)
+        return np.nansum(values[:, mask], axis=1) * bin_size_minutes
+
+    out = pd.DataFrame(
+        {
+            "ID": fly_ids,
+            "Group": [id_to_group.get(f, "All Flies") for f in fly_ids],
+            "All Day": np.nansum(values, axis=1) * bin_size_minutes,
+            "Day Only": _period_total(day),
+            "Night Only": _period_total(night),
+        },
+        columns=cols,
+    )
     return out.sort_values(["Group", "ID"]).reset_index(drop=True)
 
 

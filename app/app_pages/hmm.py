@@ -15,10 +15,16 @@ import streamlit as st
 from hmm_analysis_view import render as render_analysis
 from hmm_selection_view import render as render_selection
 
-_tab_select, _tab_fit = st.tabs(["Model selection", "Analysis"])
+# Lazy tabs: only the open one renders (each is a large view). Keyed so a Run
+# button's rerun keeps you on the tab you clicked it in.
+_tab_select, _tab_fit = st.tabs(
+    ["Model selection", "Analysis"], key="hmm_tab", on_change="rerun"
+)
 
-with _tab_select:
-    render_selection()
+if _tab_select.open:
+    with _tab_select:
+        render_selection()
 
-with _tab_fit:
-    render_analysis()
+if _tab_fit.open:
+    with _tab_fit:
+        render_analysis()
