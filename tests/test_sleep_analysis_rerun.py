@@ -15,7 +15,6 @@ then died on the duplicated time index.
 
 import numpy as np
 import pytest
-import xarray as xr
 
 import sleep_analysis as sa
 
@@ -51,29 +50,41 @@ def test_rerun_is_idempotent(analysed_ds):
             )
 
 
+def _per_fly_series_lengths(monkeypatch, ds):
+    """Run sleep analysis and return the length of every per-fly series the bout
+    detector received.
+
+    Each fly's movement series goes through ``_fill_short_gaps_array`` exactly
+    once, right before bout detection, so spying there sees the detector's real
+    input whatever builds it. (This used to spy on ``Dataset.to_dataframe``; the
+    detector no longer builds a DataFrame, but the hazard — a per-fly input
+    broadcast against some other dimension — is the same, so is the check.)
+    """
+    seen = []
+    real = sa._fill_short_gaps_array
+
+    def spy(values, *args, **kwargs):
+        seen.append(len(values))
+        return real(values, *args, **kwargs)
+
+    monkeypatch.setattr(sa, "_fill_short_gaps_array", spy)
+    sa.sleep_analysis(ds, phase="both")
+    return seen
+
+
 def test_rerun_does_not_explode_the_row_count(analysed_ds, monkeypatch):
     """Guard the mechanism, not just the symptom.
 
     The crash was a consequence of the cartesian product; a future change could
     reintroduce the blow-up while dodging the duplicate-index error. Assert that
-    no per-fly frame is ever wider than the time axis.
+    every fly's detector input is exactly the time axis long.
     """
-    seen = []
-    real_to_dataframe = xr.Dataset.to_dataframe
-
-    def spy(self, *args, **kwargs):
-        df = real_to_dataframe(self, *args, **kwargs)
-        if "time" in self.dims:
-            seen.append((len(df), self.sizes["time"]))
-        return df
-
-    monkeypatch.setattr(xr.Dataset, "to_dataframe", spy)
-    sa.sleep_analysis(analysed_ds, phase="both")
-
-    assert seen, "expected the per-fly loop to build dataframes"
-    for n_rows, n_time in seen:
-        assert n_rows <= n_time, (
-            f"a per-fly frame had {n_rows} rows for {n_time} timepoints — the bout "
+    seen = _per_fly_series_lengths(monkeypatch, analysed_ds)
+    n_time = analysed_ds.sizes["time"]
+    assert len(seen) == analysed_ds.sizes["id"], "expected one series per fly"
+    for n_rows in seen:
+        assert n_rows == n_time, (
+            f"a per-fly series had {n_rows} values for {n_time} timepoints — the bout "
             "dimension is being broadcast against time again"
         )
 
@@ -158,24 +169,14 @@ class TestOtherAnalysesDimensions:
             assert dim in out.dims, f"{dim} was dropped from the dataset"
 
     def test_no_per_fly_frame_is_broadcast(self, with_other_analyses, monkeypatch):
-        """Guard the mechanism, as the bout-dimension test does: no per-fly
-        frame may be longer than the time axis, whatever else is in scope."""
-        seen = []
-        real_to_dataframe = xr.Dataset.to_dataframe
-
-        def spy(self, *args, **kwargs):
-            df = real_to_dataframe(self, *args, **kwargs)
-            if "time" in self.dims:
-                seen.append((len(df), self.sizes["time"]))
-            return df
-
-        monkeypatch.setattr(xr.Dataset, "to_dataframe", spy)
-        sa.sleep_analysis(with_other_analyses, phase="both")
-
-        assert seen, "expected the per-fly loop to build dataframes"
-        for n_rows, n_time in seen:
-            assert n_rows <= n_time, (
-                f"a per-fly frame had {n_rows} rows for {n_time} timepoints — "
+        """Guard the mechanism, as the bout-dimension test does: every fly's
+        detector input is exactly the time axis long, whatever else is in scope."""
+        seen = _per_fly_series_lengths(monkeypatch, with_other_analyses)
+        n_time = with_other_analyses.sizes["time"]
+        assert len(seen) == with_other_analyses.sizes["id"], "expected one series per fly"
+        for n_rows in seen:
+            assert n_rows == n_time, (
+                f"a per-fly series had {n_rows} values for {n_time} timepoints — "
                 "another analysis's dimensions are being broadcast against time"
             )
 

@@ -22,6 +22,33 @@ import pandas as pd
 import xarray as xr
 
 
+def _fill_short_gaps_array(values, max_gap=4):
+    """:func:`_fill_short_gaps` on a numpy array, every gap at once.
+
+    A run of -1 no longer than ``max_gap`` with the same valid value (0 or 1) on
+    both sides takes that value; runs touching either end are left alone. Runs
+    are separated by valid values, so filling one never changes another's
+    neighbours, and doing them all at once gives the same result as the loop.
+    """
+    values = np.asarray(values, dtype=float)
+    is_gap = values == -1
+    if not is_gap.any():
+        return values.copy()
+    edges = np.diff(np.concatenate(([0], is_gap.astype(np.int8), [0])))
+    starts = np.flatnonzero(edges == 1)
+    ends = np.flatnonzero(edges == -1)  # exclusive
+    n = len(values)
+    ok = (ends - starts <= max_gap) & (starts > 0) & (ends < n)
+    starts, ends = starts[ok], ends[ok]
+    before = values[starts - 1]
+    after = values[ends]
+    ok = (before == after) & (before != -1)
+    filled = values.copy()
+    for a, b, v in zip(starts[ok], ends[ok], before[ok]):
+        filled[a:b] = v
+    return filled
+
+
 def _fill_short_gaps(series, max_gap=4):
     """
     Fill short runs of missing data (-1) before bout detection.
@@ -327,42 +354,40 @@ def sleep_analysis(
     )
 
     def _wrapped_sleep_analysis(group_data, sleep_threshold, group_id):
-        """Process a single fly and return its sleep mask, bout DataFrame, and state masks."""
-        df = group_data.to_dataframe().reset_index()
+        """Process a single fly and return its sleep mask, bout DataFrame, and state masks.
+
+        Array operations on the fly's movement series. It used to build a
+        per-fly DataFrame and then, for every bout, filter that whole frame for
+        the bout's minutes (``iterrows``), which on a large experiment was nearly
+        all of sleep analysis's time. The rules are unchanged; see the comments.
+        """
+        mov = np.asarray(group_data[mov_column].values, dtype=float).ravel()
+        times = np.asarray(group_data[t_column].values).ravel()
+        n = len(mov)
         # select_phase() masks out-of-phase cells to NaN (when phase != 'both').
         # For sleep, out-of-phase = "not part of this epoch" → treat as missing
         # (-1), the int8 sentinel the detector already understands. In-phase real
         # 0s and true -1 gaps are untouched (§2a: out-of-phase NaN is never an
         # in-phase value, so this never fabricates or erases real behaviour).
-        if df[mov_column].isna().any():
-            df[mov_column] = df[mov_column].fillna(-1)
-        is_missing = df[mov_column] == -1
+        mov = np.where(np.isnan(mov), -1.0, mov)
+        is_missing = mov == -1
 
         # Bridge short gaps for cleaner bout boundaries
-        mov_for_bouts = _fill_short_gaps(df[mov_column], max_gap=4)
-        df["potential_sleep"] = (mov_for_bouts == 0) & (~is_missing | (mov_for_bouts != -1))
+        mov_for_bouts = _fill_short_gaps_array(mov, max_gap=4)
+        potential_sleep = (mov_for_bouts == 0) & (~is_missing | (mov_for_bouts != -1))
 
-        # Identify bout start and end time points
-        df["bout_start"] = (~df["potential_sleep"].shift(1, fill_value=True)) & df[
-            "potential_sleep"
-        ]
-        df["bout_end"] = df["potential_sleep"] & (~df["potential_sleep"].shift(-1, fill_value=True))
-
-        if df["potential_sleep"].iloc[0]:
-            df.loc[0, "bout_start"] = True
-        if df["potential_sleep"].iloc[-1]:
-            df.loc[df.index[-1], "bout_end"] = True
-
-        bout_starts = df[df["bout_start"]][t_column]
-        bout_ends = df[df["bout_end"]][t_column]
-
-        # Ensure equal number of starts and ends
-        min_length = min(len(bout_starts), len(bout_ends))
-        bout_starts = bout_starts.iloc[:min_length]
-        bout_ends = bout_ends.iloc[:min_length]
+        # Bout start and end points: the edges of each run of potential sleep
+        # (a run touching either end of the record starts or ends there).
+        prev = np.concatenate(([False], potential_sleep[:-1]))
+        nxt = np.concatenate((potential_sleep[1:], [False]))
+        start_idx = np.flatnonzero(potential_sleep & ~prev)
+        end_idx = np.flatnonzero(potential_sleep & ~nxt)
+        min_length = min(len(start_idx), len(end_idx))
+        start_idx, end_idx = start_idx[:min_length], end_idx[:min_length]
+        bout_start_t, bout_end_t = times[start_idx], times[end_idx]
 
         # Calculate durations — handle both time representations
-        raw_diffs = bout_ends.values - bout_starts.values
+        raw_diffs = bout_end_t - bout_start_t
         if np.issubdtype(raw_diffs.dtype, np.integer):
             # Relative integer minutes: convert to seconds for threshold comparison
             bout_durations = raw_diffs * 60
@@ -372,24 +397,23 @@ def sleep_analysis(
         # Mark valid bouts (>= threshold)
         valid_bouts = bout_durations >= sleep_threshold
 
-        # Build the per-sample sleep mask
-        sleep_mask = np.zeros(len(df), dtype=np.int8)
-        sleep_mask[is_missing.values] = -1
-        for start, end, is_valid in zip(bout_starts.index, bout_ends.index, valid_bouts):
-            if is_valid:
-                for i in range(start, end + 1):
-                    if sleep_mask[i] != -1:
-                        sleep_mask[i] = 1
+        # Per-sample sleep mask: 1 inside a valid bout, -1 where missing (a
+        # bridged gap is inside the bout but stays missing), else 0.
+        def _covered(starts, ends):
+            marks = np.zeros(n + 1, dtype=np.int64)
+            np.add.at(marks, starts, 1)
+            np.add.at(marks, ends + 1, -1)
+            return np.cumsum(marks[:-1]) > 0
+
+        in_sleep = _covered(start_idx[valid_bouts], end_idx[valid_bouts])
+        sleep_mask = np.where(is_missing, -1, np.where(in_sleep, 1, 0)).astype(np.int8)
 
         # Build bout-level DataFrame
-        valid_starts = bout_starts[valid_bouts]
-        valid_ends = bout_ends[valid_bouts]
         valid_durations = bout_durations[valid_bouts]
-
         sleep_bouts_df = pd.DataFrame(
             {
-                "start_time": valid_starts.values,
-                "end_time": valid_ends.values,
+                "start_time": bout_start_t[valid_bouts],
+                "end_time": bout_end_t[valid_bouts],
                 "duration": valid_durations.astype(float) / 60,  # seconds → minutes
             }
         )
@@ -404,42 +428,27 @@ def sleep_analysis(
         else:
             sleep_bouts_df["sleep_state"] = pd.Series(dtype=str)
 
-        # Build per-minute binary masks for each sleep state
-        # Use xr.where-style logic on numpy arrays (inside per-fly worker, numpy is appropriate)
-        sleep_short_mask = np.zeros(len(df), dtype=np.int8)
-        sleep_inter_mask = np.zeros(len(df), dtype=np.int8)
-        sleep_long_mask = np.zeros(len(df), dtype=np.int8)
-        sleep_short_mask[is_missing.values] = -1
-        sleep_inter_mask[is_missing.values] = -1
-        sleep_long_mask[is_missing.values] = -1
+        # Per-minute binary masks for each sleep state: a bout's minutes are the
+        # positions from its start to its end (the time axis is strictly
+        # increasing, so that is exactly the minutes between its start and end
+        # times), and only confirmed sleep minutes are marked.
+        states = sleep_bouts_df["sleep_state"].to_numpy() if len(sleep_bouts_df) else np.array([])
+        v_start, v_end = start_idx[valid_bouts], end_idx[valid_bouts]
+        state_masks = {}
+        for state in ("short", "intermediate", "long"):
+            sel = states == state
+            mask = np.where(is_missing, -1, 0).astype(np.int8)
+            mask[_covered(v_start[sel], v_end[sel]) & (sleep_mask == 1)] = 1
+            state_masks[state] = xr.DataArray(mask, coords={t_column: times}, dims=[t_column])
 
-        for _, bout_row in sleep_bouts_df.iterrows():
-            start_t = bout_row["start_time"]
-            end_t = bout_row["end_time"]
-            state = bout_row["sleep_state"]
-            # Find time indices for this bout
-            bout_idx = df.index[(df[t_column] >= start_t) & (df[t_column] <= end_t)]
-            for i in bout_idx:
-                if sleep_mask[i] == 1:  # only mark confirmed sleep minutes
-                    if state == "short":
-                        sleep_short_mask[i] = 1
-                    elif state == "intermediate":
-                        sleep_inter_mask[i] = 1
-                    elif state == "long":
-                        sleep_long_mask[i] = 1
-
-        sleep_short_da = xr.DataArray(
-            sleep_short_mask, coords={t_column: df[t_column]}, dims=[t_column]
+        sleep_mask_da = xr.DataArray(sleep_mask, coords={t_column: times}, dims=[t_column])
+        return (
+            sleep_mask_da,
+            sleep_bouts_df,
+            state_masks["short"],
+            state_masks["intermediate"],
+            state_masks["long"],
         )
-        sleep_inter_da = xr.DataArray(
-            sleep_inter_mask, coords={t_column: df[t_column]}, dims=[t_column]
-        )
-        sleep_long_da = xr.DataArray(
-            sleep_long_mask, coords={t_column: df[t_column]}, dims=[t_column]
-        )
-
-        sleep_mask_da = xr.DataArray(sleep_mask, coords={t_column: df[t_column]}, dims=[t_column])
-        return sleep_mask_da, sleep_bouts_df, sleep_short_da, sleep_inter_da, sleep_long_da
 
     all_sleep_bouts_dfs = []
     all_sleep_masks = []

@@ -27,6 +27,7 @@ Time representation note:
   both cases.
 """
 
+import datetime
 from collections import Counter
 
 import numpy as np
@@ -933,6 +934,36 @@ def _compute_moving(ds, force=False):
     return ds
 
 
+def _centered_rolling_mean(values, window, block=256):
+    """``rolling(time=window, center=True, min_periods=1).mean()`` along axis 0.
+
+    ``values`` is (time, fly) with NaN for missing. Computed from running sums —
+    one pass, whatever the window — where xarray without bottleneck sums every
+    window afresh: for a 24 h window on a large experiment that was ~70 billion
+    additions and nearly all of curation's time. Same window placement as
+    xarray's centring (for even windows too); on 0/1 movement data the sums are
+    exact integers, so the result equals xarray's bit for bit. Worked a block of
+    flies at a time so the running-sum arrays stay small.
+    """
+    n_time, n_flies = values.shape
+    out = np.empty((n_time, n_flies), dtype=np.float64)
+    idx = np.arange(n_time)
+    lo = np.clip(idx - window // 2, 0, n_time)
+    hi = np.clip(idx - window // 2 + window, 0, n_time)
+    for b in range(0, n_flies, block):
+        x = values[:, b : b + block].astype(np.float64)
+        valid = ~np.isnan(x)
+        csum = np.zeros((n_time + 1, x.shape[1]))
+        np.cumsum(np.where(valid, x, 0.0), axis=0, out=csum[1:])
+        ccount = np.zeros((n_time + 1, x.shape[1]))
+        np.cumsum(valid, axis=0, out=ccount[1:])
+        total = csum[hi] - csum[lo]
+        count = ccount[hi] - ccount[lo]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[:, b : b + block] = np.where(count >= 1, total / count, np.nan)
+    return out
+
+
 def curate_dead_animals(
     data,
     mov_column="moving",
@@ -987,81 +1018,70 @@ def curate_dead_animals(
     if t_column not in data.coords:
         raise KeyError(f"The time column {t_column} is not in the dataset")
 
-    def _wrapped_curate_dead_animals(
-        group_data, time_window, prop_immobile, resolution, min_alive_days
-    ):
-        window_size = int(time_window * 60 / resolution)
-        mov_data = group_data[mov_column].astype(float)
-        mov_data = mov_data.where(mov_data != -1)  # -1 = missing, exclude from mean
-        rolling_activity = mov_data.rolling(time=window_size, center=True, min_periods=1).mean()
+    # Every fly at once. The rule is the same as ever, per fly: a rolling mean of
+    # movement (missing minutes excluded) over ``time_window`` hours; the fly's
+    # last active time is the last minute that mean exceeds ``prop_immobile``; it
+    # is alive up to then. It used to run one fly at a time — a .sel, a rolling
+    # mean and a lookup per fly, then a concat of them all — which on thousands
+    # of flies was minutes of work for what is one rolling mean and one
+    # reduction over the whole array.
+    window_size = int(time_window * 60 / resolution)
+    mov_values = data[mov_column].transpose(t_column, "id").values
+    is_missing = mov_values == -1
+    # -1 = missing, excluded from the mean
+    mov_float = np.where(is_missing, np.nan, mov_values.astype(float))
+    rolling = _centered_rolling_mean(mov_float, window_size)
+    t = data[t_column].values
+    n_time, n_flies = rolling.shape
 
-        valid_activity = rolling_activity.where(rolling_activity > prop_immobile, drop=True)
-        mov_values = group_data[mov_column].values.flatten()
-        is_missing = mov_values == -1
+    valid = rolling > prop_immobile  # NaN compares False, as the where() did
+    has_valid = valid.any(axis=0)
+    # Index of each fly's last valid minute (time is ascending).
+    last_valid_idx = n_time - 1 - valid[::-1].argmax(axis=0)
+    last_active = t[last_valid_idx]
+    # The last minute that is not missing, or the end of the axis if all are.
+    has_data = (~is_missing).any(axis=0)
+    last_data_idx = np.where(has_data, n_time - 1 - (~is_missing)[::-1].argmax(axis=0), n_time - 1)
+    last_data_time = t[last_data_idx]
 
-        if valid_activity.size == 0:
-            is_alive = np.zeros(len(group_data[t_column]), dtype=np.int8)
-            is_alive[is_missing] = -1
+    is_alive = np.zeros((n_time, n_flies), dtype=np.int8)
+    for j in range(n_flies):
+        miss = is_missing[:, j]
+        if not has_valid[j]:
+            # Never active: dead throughout, missing minutes marked -1.
+            is_alive[miss, j] = -1
+            continue
+        la = last_active[j]
+        # Compare against the last non-missing time point, not the absolute end
+        # of the time axis. Trailing NaN (monitor stopped, incomplete bins)
+        # should not cause a fly to be marked dead.
+        if la >= last_data_time[j]:
+            is_alive[:, j] = 1
         else:
-            last_active = valid_activity[t_column].max().values
+            is_alive[:, j] = t <= la
+        # Exclude flies alive for fewer than min_alive_days
+        time_diff = la - t.min()
+        # Timedelta checked FIRST: numpy's timedelta64 subclasses its integer
+        # types, so the minutes branch would take it and divide nanoseconds by
+        # 1440. (The per-fly version crashed on a datetime axis instead.)
+        if isinstance(time_diff, (np.timedelta64, pd.Timedelta, datetime.timedelta)):
+            alive_duration = pd.Timedelta(time_diff) / pd.Timedelta(days=1)
+        else:
+            alive_duration = float(time_diff) / (60 * 24)  # minutes → days
+        if alive_duration < min_alive_days:
+            is_alive[:, j] = 0
+            is_alive[miss, j] = -1
+        else:
+            # Only flag missing samples AFTER last_active as -1, so missing
+            # samples within the live window [0, last_active] stay is_alive=1
+            # and the front of a living fly's recording isn't dropped by
+            # `results.where(is_alive == 1, drop=True)`.
+            is_alive[miss & (t > la), j] = -1
 
-            if pd.isnull(last_active):
-                is_alive = np.zeros(len(group_data[t_column]), dtype=np.int8)
-                is_alive[is_missing] = -1
-            else:
-                # Compare against the last non-missing time point, not the
-                # absolute end of the time axis. Trailing NaN (monitor stopped,
-                # incomplete bins) should not cause a fly to be marked dead.
-                non_missing_times = group_data[t_column].values.flatten()[~is_missing]
-                last_data_time = (
-                    non_missing_times[-1]
-                    if len(non_missing_times) > 0
-                    else group_data[t_column].max().values
-                )
-                if last_active >= last_data_time:
-                    is_alive = np.ones(len(group_data[t_column]), dtype=np.int8)
-                else:
-                    is_alive = (group_data[t_column] <= last_active).values.astype(np.int8)
+    if progress_callback:
+        progress_callback(n_flies, n_flies)
 
-                # Exclude flies alive for fewer than min_alive_days
-                time_diff = last_active - group_data[t_column].min().values
-                if np.issubdtype(type(time_diff), np.integer) or isinstance(
-                    time_diff, (int, float)
-                ):
-                    alive_duration = float(time_diff) / (60 * 24)  # minutes → days
-                else:
-                    alive_duration = time_diff / np.timedelta64(1, "D")
-                if alive_duration < min_alive_days:
-                    is_alive[:] = 0
-                    is_alive[is_missing] = -1
-                else:
-                    # Only flag missing samples AFTER last_active as -1, so
-                    # missing samples within the live window [0, last_active]
-                    # stay is_alive=1 and the front of a living fly's recording
-                    # isn't dropped by `results.where(is_alive == 1, drop=True)`.
-                    after_last_active = group_data[t_column].values > last_active
-                    is_alive[is_missing & after_last_active] = -1
-        is_alive_da = xr.DataArray(
-            is_alive.astype(np.int8), coords=group_data[t_column].coords, dims=t_column
-        )
-        return group_data.assign(is_alive=is_alive_da)
-
-    fly_ids = data["id"].values
-    _cur_total = len(fly_ids)
-    results_list = []
-    for _cur_idx, fly_id in enumerate(fly_ids):
-        group_data = data.sel(id=[fly_id])
-        results_list.append(
-            _wrapped_curate_dead_animals(
-                group_data, time_window, prop_immobile, resolution, min_alive_days
-            )
-        )
-        if progress_callback:
-            progress_callback(_cur_idx + 1, _cur_total)
-
-    results = xr.concat(results_list, dim="id")
-    # Guarantee fly order matches input (defensive — concat should preserve it)
-    results = results.sel(id=data["id"].values)
+    results = data.assign(is_alive=(("id", t_column), is_alive.T))
 
     live_data = results.where(results.is_alive == 1, drop=True)
     dead_data = results.where(results.is_alive == 0, drop=True)
