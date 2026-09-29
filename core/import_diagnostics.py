@@ -38,6 +38,7 @@ REASON_WINDOW_OUTSIDE = "window_outside_data"
 REASON_NO_ROWS_IN_WINDOW = "no_rows_in_window"
 REASON_REGION_NOT_IN_FILE = "region_not_in_file"
 REASON_NO_USABLE_DATA = "no_usable_data"
+REASON_DD_CLOCK_MISMATCH = "dd_start_clock_mismatch"
 
 # Raised (not collected) — these abort the load before any combo is reached.
 REASON_METADATA_UNREADABLE = "metadata_unreadable"
@@ -55,6 +56,7 @@ TITLES = {
     REASON_NO_ROWS_IN_WINDOW: "no readings inside the requested window",
     REASON_REGION_NOT_IN_FILE: "requested tubes are not in the file",
     REASON_NO_USABLE_DATA: "tubes with no usable data",
+    REASON_DD_CLOCK_MISMATCH: "first_DD_day is not at the start_datetime clock time",
     REASON_METADATA_UNREADABLE: "metadata file could not be read",
     REASON_METADATA_MISSING_COLUMNS: "metadata is missing required columns",
     REASON_METADATA_BAD_DATETIME: "metadata has unparseable date/time values",
@@ -105,6 +107,13 @@ HINTS = {
         "its connection for the period; a few scattered tubes usually means "
         "those positions were empty or the channel is faulty. The flies are "
         "still imported — curation will drop them."
+    ),
+    REASON_DD_CLOCK_MISMATCH: (
+        "first_DD_day should be CT0 — the clock time lights would have come on, "
+        "the same clock time as start_datetime (ZT0). Time-of-day profiles bin DD "
+        "on the same 24 h grid as LD, so a different clock time here shifts every "
+        "DD profile by the difference. Set first_DD_day to that day's lights-on "
+        "time. The flies are still imported."
     ),
     REASON_METADATA_UNREADABLE: "Save the metadata as .csv or .xlsx and try again.",
     REASON_METADATA_MISSING_COLUMNS: (

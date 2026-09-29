@@ -37,6 +37,61 @@ def _render(severity, text):
     {"error": st.error, "warning": st.warning}.get(severity, st.caption)(_md_lines(text))
 
 
+#: The last raw import's report, kept so it survives the reruns that follow it.
+IMPORT_REPORT_KEY = "_import_report"
+#: The Create Dataset confirmation, kept for the same reason: it is shown just
+#: before an st.rerun(), which would otherwise wipe it at once.
+CREATE_NOTE_KEY = "_create_dataset_note"
+
+
+def _show_import_report():
+    """One visible line for the last raw import, and every note behind one expander.
+
+    The line says what came in. Everything else — why flies were dropped, the
+    data-integrity totals, and each monitor's gaps and failed reads — is inside
+    one collapsed "Import notes" expander, each item once. They used to be spread
+    over the page, most of them open, with every problem monitor listed twice.
+    """
+    report = st.session_state.get(IMPORT_REPORT_KEY)
+    if not report:
+        return
+    import_lines = report["import"]
+    n_imported = report["n_imported"]
+    if n_imported:
+        st.success(
+            f"Loaded {n_imported} channels, {report['n_timepoints']} timepoints"
+            + (f" — {import_lines[0][1]}" if len(import_lines) > 1 else "")
+        )
+    elif import_lines:
+        _render("error", import_lines[0][1])
+
+    reasons = import_lines[1:]
+    integrity = [line for line in report["integrity"] if line[1].strip()]
+    monitors = report["monitors"]
+    n_notes = len(reasons) + len(monitors)
+    has_loss = any(sev == "warning" for sev, _ in integrity)
+    label = (
+        f"Import notes — {len(reasons)} reason(s) flies were dropped, "
+        f"{len(monitors)} monitor(s) with data-integrity notes"
+        if n_notes
+        else "Import notes — data integrity"
+    )
+    if reasons or has_loss:
+        label += " (worth a look)"
+    with st.expander(label, expanded=False):
+        if reasons:
+            st.markdown("**Flies dropped or unusable**")
+            for sev, text in reasons:
+                _render(sev, text)
+        st.markdown("**Data integrity**")
+        for sev, text in integrity:
+            _render(sev, text)
+        if monitors:
+            st.markdown("**By monitor**")
+            for _mon, sev, text in monitors:
+                _render(sev, text)
+
+
 def _stash_full(ds):
     """Store the unfiltered dataset alongside the working ``dataset`` so the
     Groups & subsets page can restore the full set without re-reading disk."""
@@ -153,6 +208,9 @@ with tab_fresh:
             _meta_dir = os.path.abspath(os.path.dirname(metadata_path))
             st.session_state.working_dir = _meta_dir
             st.session_state["_metadata_dir"] = _meta_dir
+            # A new load replaces the last one's report and confirmation.
+            st.session_state.pop(IMPORT_REPORT_KEY, None)
+            st.session_state.pop(CREATE_NOTE_KEY, None)
             load_progress = st.progress(0, text="Loading monitor files...")
             with st.spinner("Loading and validating data..."):
                 try:
@@ -171,7 +229,6 @@ with tab_fresh:
                     if n_imported:
                         st.session_state._raw_metadata = metadata
                         st.session_state._raw_data = all_data
-                        st.success(f"Loaded {n_imported} channels, {len(all_data)} timepoints")
                     else:
                         # Nothing loaded. Do NOT stash the empty frames: with no
                         # columns the Create Dataset step fails on an index error
@@ -180,50 +237,21 @@ with tab_fresh:
                         st.session_state.pop("_raw_metadata", None)
                         st.session_state.pop("_raw_data", None)
 
-                    # Why flies did not make it in — missing monitor file, a window
-                    # the file does not cover, tubes that are not there. Shown
-                    # first, and always, because a partial import is just as
-                    # silent as an empty one.
-                    _import_lines = processor.import_report_lines(n_imported=n_imported)
-                    if _import_lines:
+                    # Kept in session state and drawn by _show_import_report on
+                    # every rerun, below this block. Drawn only here, it vanished
+                    # on the next click — choosing group columns, say — long before
+                    # anyone had read it.
+                    st.session_state[IMPORT_REPORT_KEY] = {
+                        "n_imported": n_imported,
+                        "n_timepoints": len(all_data),
                         # Line 0 is the headline ("imported N of M"); the rest is
-                        # one entry per reason. The headline always shows; the
-                        # reasons open automatically when nothing came in.
-                        _head_sev, _head_text = _import_lines[0]
-                        _render(_head_sev, _head_text)
-                        _reasons = _import_lines[1:]
-                        if _reasons:
-                            with st.expander(
-                                f"Why — {len(_reasons)} reason(s) flies were dropped "
-                                f"or are unusable",
-                                expanded=(n_imported == 0),
-                            ):
-                                for _sev, _text in _reasons:
-                                    _render(_sev, _text)
-
-                    # Surface the data-integrity report (status rule + gaps). A
-                    # status!=1 row is no-data -> NaN, never zero (§2a). Cosmetic
-                    # rows (a real reading survived) are quiet info; DATA-LOSS
-                    # holes (NaN, no valid reading) are shown prominently.
-                    for _sev, _text in processor.integrity_summary_lines():
-                        _render(_sev, _text)
-
-                    # Per-monitor detail. The aggregate above says how much was
-                    # lost; this says WHERE, which is the actionable half and
-                    # until now went only to the console — invisible to anyone
-                    # not running the app from a terminal. Opened by default when
-                    # a monitor actually lost data, collapsed when everything is
-                    # merely cosmetic.
-                    _mon_reports = processor.integrity_monitor_reports()
-                    if _mon_reports:
-                        _any_loss = any(sev == "warning" for _, sev, _ in _mon_reports)
-                        with st.expander(
-                            f"Per-monitor data integrity — {len(_mon_reports)} monitor(s) "
-                            "with something to report",
-                            expanded=_any_loss,
-                        ):
-                            for _mon, _sev, _text in _mon_reports:
-                                _render(_sev, _text)
+                        # one entry per reason flies did not make it in.
+                        "import": processor.import_report_lines(n_imported=n_imported),
+                        # Totals only: the per-monitor list below carries each
+                        # monitor's detail, and the two used to repeat it.
+                        "integrity": processor.integrity_summary_lines(per_monitor=False),
+                        "monitors": processor.integrity_monitor_reports(),
+                    }
 
                     # Stash the aggregate counters for the Create Dataset step to
                     # stamp onto attrs. The processor itself is not kept — it
@@ -238,6 +266,8 @@ with tab_fresh:
                     st.error(f"Error loading data: {type(e).__name__}: {e}")
                 finally:
                     load_progress.empty()
+
+    _show_import_report()
 
     # Create Dataset
     if "_raw_metadata" in st.session_state and "_raw_data" in st.session_state:
@@ -292,6 +322,7 @@ with tab_fresh:
                 )
 
         if st.button("Create Dataset", key="create_dataset"):
+            st.session_state.pop(CREATE_NOTE_KEY, None)  # replaced by this run's
             # If a dataset already exists, ask for confirmation first
             if st.session_state.get("dataset") is not None:
                 st.session_state["_pending_create_dataset"] = True
@@ -300,6 +331,23 @@ with tab_fresh:
                 # No existing dataset — proceed directly
                 st.session_state["_pending_create_dataset"] = "confirmed"
                 st.rerun()
+
+        # The confirmation from the last Create Dataset, kept until the next one
+        # or the next load.
+        _note = st.session_state.get(CREATE_NOTE_KEY)
+        if _note:
+            st.success(_note["text"])
+            if _note["groups"]:
+                st.caption(
+                    "Groups: "
+                    + ", ".join(_note["groups"][:12])
+                    + (f" … and {len(_note['groups']) - 12} more" if len(_note["groups"]) > 12 else "")
+                )
+            st.caption(
+                f"Working folder (where saved files & exports go): "
+                f"`{_note['working_dir']}` — the metadata file's "
+                f"directory. Each save also lets you edit the destination."
+            )
 
         # Confirmation step (shows after the button click triggered a rerun)
         if st.session_state.get("_pending_create_dataset") is True:
@@ -374,14 +422,23 @@ with tab_fresh:
                         st.session_state.dataset = ds
                         st.session_state.analyses = detect_analyses(ds)
 
-                        st.success(
-                            f"Dataset created: {len(ds['id'])} flies, {len(ds['time'])} timepoints"
+                        # Stored, then shown after the rerun below. Drawn here it
+                        # was on screen for a moment and then wiped by that rerun,
+                        # which left no sign that the dataset had been created.
+                        _groups = (
+                            sorted({str(g) for g in ds["group"].values})
+                            if "group" in ds.coords
+                            else []
                         )
-                        st.caption(
-                            f"Working folder (where saved files & exports go): "
-                            f"`{ds.attrs['source_data_dir']}` — the metadata file's "
-                            f"directory. Each save also lets you edit the destination."
-                        )
+                        st.session_state[CREATE_NOTE_KEY] = {
+                            "text": (
+                                f"Dataset created: {len(ds['id'])} flies, "
+                                f"{len(ds['time'])} timepoints, "
+                                f"{len(_groups) or 1} group(s)."
+                            ),
+                            "groups": _groups,
+                            "working_dir": ds.attrs["source_data_dir"],
+                        }
                         st.rerun()
                 except Exception as e:
                     st.error(f"Error creating dataset: {e}")

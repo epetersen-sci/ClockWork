@@ -56,16 +56,20 @@ _DAM_FIXED_COLUMNS = [
 ]
 
 
-def default_workers():
-    """How many monitor files to read at once: one per CPU core the machine has.
+#: Reading more files at once than this stops paying. Measured on 86 monitors
+#: with 16 cores: 1 thread 11.8 s, 2 8.2 s, 4 7.4 s, 8 7.0 s, 16 7.0 s. Part of
+#: each read holds the GIL, so past about four threads they mostly compete — and
+#: the cost of that is visible: with 16, every file is half-read at once, the
+#: first monitor is not done until 4.7 s in, and the progress bar sits still and
+#: then races. With 4 it advances steadily from the start for the same total.
+MAX_READ_WORKERS = 4
 
-    Reading a file is mostly pandas' C parser, which releases the GIL, so threads
-    genuinely run side by side. Scaling with the machine rather than a fixed
-    number means a lab workstation uses what it has and a laptop is not
-    oversubscribed. At least 1, so a platform that cannot report its core count
-    still loads (serially).
-    """
-    return max(1, os.cpu_count() or 1)
+
+def default_workers():
+    """How many monitor files to read at once: one per core, at most
+    :data:`MAX_READ_WORKERS`, and at least 1 (so a platform that cannot report
+    its core count still loads, serially)."""
+    return max(1, min(os.cpu_count() or 1, MAX_READ_WORKERS))
 
 
 def _read_monitor_file(path):
@@ -243,7 +247,7 @@ class MetadataProcessor:
         when the write is explicitly requested.
     max_workers : int or None
         How many monitor files are read in parallel. None (default) uses
-        ``default_workers()``, one per CPU core.
+        ``default_workers()``: one per CPU core, capped at ``MAX_READ_WORKERS``.
     """
 
     def __init__(
@@ -521,6 +525,35 @@ class MetadataProcessor:
         metadata_df["start_datetime"] = pd.to_datetime(metadata_df["start_datetime"])
         metadata_df["stop_datetime"] = pd.to_datetime(metadata_df["stop_datetime"])
         metadata_df["region_id"] = metadata_df["region_id"].astype(int)
+
+        # CT0 (first_DD_day) should fall at the ZT0 clock time (start_datetime):
+        # time-of-day profiles bin DD on the same 24 h grid as LD. Not an
+        # exclusion — flag each (Monitor, start) whose DD start is off that grid.
+        if "first_DD_day" in metadata_df.columns:
+            _dd = pd.to_datetime(metadata_df["first_DD_day"], errors="coerce")
+            _off_min = (
+                (_dd - metadata_df["start_datetime"]).dt.total_seconds() / 60.0
+            ).round() % 1440
+            _bad = _dd.notna() & (_off_min != 0)
+            for (_mon, _start), _rows in metadata_df[_bad].groupby(
+                ["Monitor", "start_datetime"], sort=True
+            ):
+                _dd_first = pd.Timestamp(_dd[_rows.index].iloc[0])
+                self.import_issues.append(
+                    ImportIssue(
+                        reason=import_diagnostics.REASON_DD_CLOCK_MISMATCH,
+                        detail=(
+                            f"start_datetime {pd.Timestamp(_start):%H:%M} (ZT0) but "
+                            f"first_DD_day {_dd_first:%Y-%m-%d %H:%M} (CT0) — "
+                            f"{int(_off_min[_rows.index].iloc[0])} min off the "
+                            f"24 h grid."
+                        ),
+                        monitor=_mon,
+                        start_datetime=_start,
+                        n_flies=len(_rows),
+                        excluded=False,
+                    )
+                )
 
         # Iterate over unique (Monitor, start_datetime) pairs
         unique_combos = (
@@ -1072,13 +1105,18 @@ class MetadataProcessor:
             out.append((monitor_id, severity, text))
         return out
 
-    def integrity_summary_lines(self):
+    def integrity_summary_lines(self, per_monitor=True):
         """Return the aggregate data-integrity summary as ``(severity, text)``
         tuples for both console and UI consumption (the FileScan role).
 
         severity is one of ``"info"`` / ``"warning"`` / ``"error"``: cosmetic
         irregularities (a real status-1 reading survived) are info; DATA-LOSS
         holes (no status-1 at a slot → NaN) are warnings the user must see.
+
+        ``per_monitor=False`` keeps only the totals. The import page and the
+        console both show each monitor's detail already (``integrity_monitor_reports``
+        and the per-monitor print during the scan), so repeating it here listed
+        every problem monitor, and its gaps, twice.
         """
         if not self.integrity_report:
             return []
@@ -1125,7 +1163,7 @@ class MetadataProcessor:
                     f"handled as no-data -> NaN, tracked for visibility: {tot_str}",
                 )
             )
-            for mon, u in undoc_by_mon.items():
+            for mon, u in undoc_by_mon.items() if per_monitor else ():
                 mon_str = " + ".join(f"{n} status-{c}" for c, n in sorted(u.items()))
                 lines.append(("info", f"    monitor {mon}: {mon_str} rows -> NaN"))
         if total_dl:
@@ -1136,7 +1174,7 @@ class MetadataProcessor:
                     f"valid reading -> stored as NaN (genuine holes).",
                 )
             )
-            for mon, r in self.integrity_report.items():
+            for mon, r in self.integrity_report.items() if per_monitor else ():
                 ndl = r["classification"]["n_dataloss_slots"]
                 if ndl:
                     interval = r["scan"].get("interval_minutes", 1.0)
@@ -1158,8 +1196,11 @@ class MetadataProcessor:
         return lines
 
     def _print_integrity_summary(self):
-        """Print the aggregate data-integrity summary to the console."""
-        lines = self.integrity_summary_lines()
+        """Print the aggregate data-integrity summary to the console.
+
+        Totals only: each monitor's own report was printed as it was scanned.
+        """
+        lines = self.integrity_summary_lines(per_monitor=False)
         if not lines:
             return
         print("\n--- Data integrity summary ---")
