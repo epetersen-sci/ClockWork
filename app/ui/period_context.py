@@ -288,16 +288,18 @@ def dd_record_days(ds):
     """Per-fly valid-data span in days (robust, aligned to id). Used to report which
     flies the floor excludes; the kernel enforces the floor on the longest analysable
     block (equal to this span for a gap-free record)."""
-    out = {}
-    for _fid in ds["id"].values:
-        _v = ds["activity"].sel(id=_fid).dropna("time")
-        if _v.size >= 2:
-            _t = _v["time"].values
-            if np.issubdtype(_t.dtype, np.datetime64):
-                _span = (np.datetime64(_t[-1]) - np.datetime64(_t[0])) / np.timedelta64(1, "D")
-            else:
-                _span = (float(_t[-1]) - float(_t[0])) / 1440.0
-        else:
-            _span = 0.0
-        out[str(_fid)] = float(_span)
-    return out
+    # Every fly at once: its first and last non-NaN minute bound the span. (A
+    # per-fly .sel().dropna() did the same one fly at a time, on every rerun.)
+    t = ds["time"].values
+    if len(t) == 0:
+        return {str(fid): 0.0 for fid in ds["id"].values}
+    valid = ~np.isnan(ds["activity"].transpose("time", "id").values)
+    n_valid = valid.sum(axis=0)
+    first = valid.argmax(axis=0)
+    last = len(t) - 1 - valid[::-1].argmax(axis=0)
+    if np.issubdtype(t.dtype, np.datetime64):
+        spans = (t[last] - t[first]) / np.timedelta64(1, "D")
+    else:
+        spans = (t[last].astype(float) - t[first].astype(float)) / 1440.0
+    spans = np.where(n_valid >= 2, spans, 0.0)
+    return {str(fid): float(span) for fid, span in zip(ds["id"].values, spans)}

@@ -363,11 +363,14 @@ else:
                         )
                         charts.plotly_chart(fig_dead, width="stretch")
 
-                # Download button for main dataset
-                df_heat = ds[heatmap_var].to_pandas()
+                # Download button for main dataset: the full per-minute data, not
+                # the binned view. Handed over as a callable so the CSV is built
+                # only when the button is clicked; building it eagerly re-ran a
+                # flies x minutes to_csv on every rerun of this page.
+                _heat_da = ds[heatmap_var]
                 st.download_button(
                     f"Download {_var_label} Heatmap Data (CSV)",
-                    df_heat.to_csv(),
+                    lambda: _heat_da.to_pandas().to_csv(),
                     f"{heatmap_var}_heatmap.csv",
                     "text/csv",
                     key="dl_heat_preproc",

@@ -1918,51 +1918,51 @@ def get_zt_binned_dataframe(
 
     bin_idx = np.clip(np.digitize(zt_minutes, zt_minute_bins) - 1, 0, n_bins - 1)
 
-    # Extract full data array: (time, n_flies)
-    data_2d = ds[value_col].transpose("time", "id").values.astype(float)
+    # Full data array: (time, n_flies). Left in its stored dtype; each bin's rows
+    # are converted to float as they are taken below.
+    data_2d = ds[value_col].transpose("time", "id").values
 
     # For the int8 state masks, -1 is the missing sentinel (§2a) — exclude it from
     # the per-bin aggregate exactly as NaN is excluded, so a bin overlapping a gap
     # reports the fraction over MEASURED minutes (never a negative fabricated value).
     drop_sentinel = value_col in MASK_VARS_WITH_MISSING_SENTINEL
 
-    # Bin across all flies at once
-    binned_data_list = []
-    for i, fly_id in enumerate(fly_ids):
-        # Normalize fly_id to scalar
+    def _scalar_id(fly_id):
+        """Normalize a fly id to a plain scalar."""
         if isinstance(fly_id, np.ndarray):
-            fly_id = fly_id.item() if fly_id.ndim == 0 else fly_id[0]
-        elif hasattr(fly_id, "item"):
-            fly_id = fly_id.item()
+            return fly_id.item() if fly_id.ndim == 0 else fly_id[0]
+        if hasattr(fly_id, "item"):
+            return fly_id.item()
+        return fly_id
 
-        fly_vals = data_2d[:, i]
-
-        binned_vals = np.full(n_bins, np.nan)
-        for b in range(n_bins):
-            b_mask = bin_idx == b
-            valid = fly_vals[b_mask]
-            valid = valid[~np.isnan(valid)]
-            if drop_sentinel:
-                valid = valid[valid != MASK_MISSING_SENTINEL]  # -1 = missing (§2a)
-            if len(valid) > 0:
-                binned_vals[b] = np.mean(valid) if bin_function == "mean" else np.sum(valid)
-
-        binned_fly = pd.DataFrame(
-            {
-                "id": fly_id,
-                "zt_bin_minute": zt_bin_labels,
-                value_col: binned_vals,
-            }
-        )
-        binned_data_list.append(binned_fly)
-
-    if not binned_data_list:
+    ids = [_scalar_id(f) for f in fly_ids]
+    if not ids:
         print("Warning: No data was binned for any fly within their specified active periods.")
         return pd.DataFrame(columns=["id", "zt_bin_minute", value_col])
 
-    result_df = pd.concat(binned_data_list, ignore_index=True)
-    result_df["zt_bin_minute"] = pd.to_numeric(result_df["zt_bin_minute"], errors="coerce")
-    return result_df
+    # Bin across all flies at once: one pass per ZT bin over every fly's column,
+    # rather than one pass per bin PER FLY. The bin assignment is shared by all
+    # flies, so each bin is a block of rows. A bin with no valid minute stays NaN.
+    binned = np.full((n_bins, len(ids)), np.nan)
+    for b in range(n_bins):
+        vals = data_2d[bin_idx == b].astype(float)
+        valid = ~np.isnan(vals)
+        if drop_sentinel:
+            valid &= vals != MASK_MISSING_SENTINEL  # -1 = missing (§2a)
+        count = valid.sum(axis=0)
+        total = np.where(valid, vals, 0.0).sum(axis=0)
+        has_data = count > 0
+        agg = total / np.where(has_data, count, 1) if bin_function == "mean" else total
+        binned[b, has_data] = agg[has_data]
+
+    # Rows are fly-major (every bin of the first fly, then the next), as before.
+    return pd.DataFrame(
+        {
+            "id": np.repeat(np.array(ids, dtype=object), n_bins),
+            "zt_bin_minute": np.tile(zt_bin_labels, len(ids)),
+            value_col: binned.T.ravel(),
+        }
+    )
 
 
 # --- ZT bin -> plotted x-coordinate convention (single source of truth) ---------
