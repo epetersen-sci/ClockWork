@@ -26,6 +26,7 @@ metadata file itself are raised as ``MetadataError`` before any monitor is read.
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import pandas as pd
@@ -39,6 +40,72 @@ from import_diagnostics import ImportIssue, MetadataError
 # here because create_xarray_dataset attaches it unconditionally as a coordinate;
 # omitting it used to surface as a bare KeyError three steps downstream.
 REQUIRED_METADATA_COLUMNS = ("Monitor", "start_datetime", "stop_datetime", "genotype")
+
+# The ten leading columns of a raw DAM file; everything after them is a channel.
+_DAM_FIXED_COLUMNS = [
+    "index",
+    "date",
+    "time",
+    "monitor_status",
+    "extras",
+    "monitor_number",
+    "tube_number",
+    "data_type",
+    "unused",
+    "light_status",
+]
+
+
+def default_workers():
+    """How many monitor files to read at once: one per CPU core the machine has.
+
+    Reading a file is mostly pandas' C parser, which releases the GIL, so threads
+    genuinely run side by side. Scaling with the machine rather than a fixed
+    number means a lab workstation uses what it has and a laptop is not
+    oversubscribed. At least 1, so a platform that cannot report its core count
+    still loads (serially).
+    """
+    return max(1, os.cpu_count() or 1)
+
+
+def _read_monitor_file(path):
+    """Read one raw DAM file into a frame with a parsed ``datetime`` column.
+
+    Pure with respect to the processor (touches nothing but ``path``) so it can
+    run on a worker thread. Exceptions propagate to the caller, which reports
+    them as an unreadable file.
+    """
+    raw_data = pd.read_csv(path, sep="\t", header=None)
+    num_channels = raw_data.shape[1] - 10
+    all_activity_columns = [f"channel_{i}" for i in range(1, num_channels + 1)]
+    raw_data.columns = _DAM_FIXED_COLUMNS + all_activity_columns
+    # Date and time are parsed separately, each over its DISTINCT values only,
+    # then recombined. A recording has a few dozen dates and at most 1440 times
+    # of day, so this parses a couple of thousand strings instead of one
+    # "date time" string per reading, which was most of the file's parse time.
+    # Same formats as before ("15 Jan 25", "09:00:00"), same strictness.
+    date_codes, date_values = pd.factorize(raw_data["date"])
+    time_codes, time_values = pd.factorize(raw_data["time"])
+    dates = pd.to_datetime(pd.Index(date_values), format="%d %b %y").values[date_codes]
+    times = (
+        pd.to_datetime(pd.Index(time_values), format="%H:%M:%S") - pd.Timestamp("1900-01-01")
+    ).values[time_codes]
+    raw_data["datetime"] = pd.Series(dates + times, index=raw_data.index)
+    # Snap reading timestamps to the 1-minute grid. Trikinetics DAM
+    # files are already minute-aligned (HH:MM:00), so this is a no-op
+    # for them. Some recorders (e.g. the FlyBox 96-well monitor) write
+    # a drifting sub-minute seconds field (HH:MM:SS with SS creeping
+    # 06 -> 07 -> ... -> 59 -> 00 across the record); left unrounded,
+    # those timestamps never match the :00 minute grid that
+    # convert_to_relative_time and dam_integrity build by exact label,
+    # so nearly every reading would reindex to NaN (fake data loss).
+    # The whole pipeline operates on a 1-minute grid (freq="1min"
+    # throughout), so rounding to the nearest minute is the correct
+    # normalization. A rare collision from two readings rounding to the
+    # same minute is resolved by resolve_status_and_duplicates (keep
+    # the status==1 row, first wins).
+    raw_data["datetime"] = raw_data["datetime"].dt.round("min")
+    return raw_data
 
 
 def _monitor_file_candidates(monitor_id):
@@ -174,6 +241,9 @@ class MetadataProcessor:
         Destination for the expanded-metadata CSV when ``write_expanded_csv`` is
         True. Defaults to ``"metadata_all.csv"`` in the cwd (legacy path) only
         when the write is explicitly requested.
+    max_workers : int or None
+        How many monitor files are read in parallel. None (default) uses
+        ``default_workers()``, one per CPU core.
     """
 
     def __init__(
@@ -185,8 +255,10 @@ class MetadataProcessor:
         strict=False,
         write_expanded_csv=False,
         expanded_csv_path=None,
+        max_workers=None,
     ):
         self.metadata_path = metadata_path
+        self.max_workers = max_workers or default_workers()
         self.data_folder = data_folder
         self.gap_threshold = timedelta(hours=gap_threshold_hours)
         self.interactive = interactive
@@ -332,14 +404,13 @@ class MetadataProcessor:
             )
         else:
             print("INFO: 'region_id' column not found. Expanding each row to 32 regions.")
-        expanded_rows = []
-        for _, row in meta_df.iterrows():
-            cell = row["region_id"] if has_region_col else None
-            for tube in _parse_region_ids(cell):
-                new_row = row.copy()
-                new_row["region_id"] = tube
-                expanded_rows.append(new_row)
-        meta_df = pd.DataFrame(expanded_rows).reset_index(drop=True)
+        # Each row is repeated once per tube it selects, in one indexing step
+        # (copying the row once per tube was slow on large metadata sheets).
+        cells = meta_df["region_id"] if has_region_col else [None] * len(meta_df)
+        tubes_per_row = [_parse_region_ids(cell) for cell in cells]
+        meta_df = meta_df.loc[meta_df.index.repeat([len(t) for t in tubes_per_row])]
+        meta_df = meta_df.reset_index(drop=True)
+        meta_df["region_id"] = [tube for tubes in tubes_per_row for tube in tubes]
         # Denominator for the import report: what the metadata asked for, before
         # any combo is excluded.
         self.n_flies_requested = len(meta_df)
@@ -458,15 +529,40 @@ class MetadataProcessor:
             .sort_values(["Monitor", "start_datetime"])
         )
 
-        # Cache raw monitor reads to avoid redundant disk I/O
+        # Every monitor file is read at most once, and all of them are read up
+        # front on a thread pool: reading is the slow part of an import and the
+        # files are independent. Each combo below then waits only for its own
+        # file, so the progress bar advances as files arrive rather than after
+        # the last one. A file that does not exist gets no read; its combo
+        # reports it as missing below, exactly as before.
+        monitor_paths = {
+            m: _find_monitor_file(self.data_folder, m) for m in unique_combos["Monitor"].unique()
+        }
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        monitor_reads = {
+            m: pool.submit(_read_monitor_file, path)
+            for m, path in monitor_paths.items()
+            if path is not None
+        }
         monitor_file_cache = {}
-        all_monitor_data = pd.DataFrame()
+        monitor_frames = []
+
+        def _combos():
+            """The combos to validate; releases the read pool however the loop ends.
+
+            Streamlit stops a script mid-run by raising from its next ``st`` call,
+            which here is the progress callback inside the loop. Shutting down in
+            this generator's ``finally`` cancels the reads still queued then too,
+            instead of leaving them to run for an import nobody is waiting on.
+            """
+            try:
+                yield from unique_combos.iterrows()
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
 
         _combo_total = len(unique_combos)
         for _combo_idx, (_, combo_row) in enumerate(
-            tqdm(
-                unique_combos.iterrows(), total=_combo_total, desc="Validating Monitor/Start combos"
-            )
+            tqdm(_combos(), total=_combo_total, desc="Validating Monitor/Start combos")
         ):
             monitor_id = combo_row["Monitor"]
             start_dt = combo_row["start_datetime"]
@@ -485,7 +581,7 @@ class MetadataProcessor:
                 # Not one hardcoded spelling: a monitor written as `1` in the
                 # metadata may be `Monitor1.txt` on disk or the zero-padded
                 # `Monitor01.txt`, in either case. See _find_monitor_file.
-                monitor_filepath = _find_monitor_file(self.data_folder, monitor_id)
+                monitor_filepath = monitor_paths[monitor_id]
                 # Names the file actually opened, so every message below reports the
                 # real filename rather than the one spelling we happened to guess.
                 # With no file found it names every spelling that was tried.
@@ -527,39 +623,8 @@ class MetadataProcessor:
                     continue
 
                 try:
-                    raw_data = pd.read_csv(monitor_filepath, sep="\t", header=None)
-                    fixed_columns = [
-                        "index",
-                        "date",
-                        "time",
-                        "monitor_status",
-                        "extras",
-                        "monitor_number",
-                        "tube_number",
-                        "data_type",
-                        "unused",
-                        "light_status",
-                    ]
-                    num_channels = raw_data.shape[1] - 10
-                    all_activity_columns = [f"channel_{i}" for i in range(1, num_channels + 1)]
-                    raw_data.columns = fixed_columns + all_activity_columns
-                    raw_data["datetime"] = pd.to_datetime(
-                        raw_data["date"] + " " + raw_data["time"], format="%d %b %y %H:%M:%S"
-                    )
-                    # Snap reading timestamps to the 1-minute grid. Trikinetics DAM
-                    # files are already minute-aligned (HH:MM:00), so this is a no-op
-                    # for them. Some recorders (e.g. the FlyBox 96-well monitor) write
-                    # a drifting sub-minute seconds field (HH:MM:SS with SS creeping
-                    # 06 -> 07 -> ... -> 59 -> 00 across the record); left unrounded,
-                    # those timestamps never match the :00 minute grid that
-                    # convert_to_relative_time and dam_integrity build by exact label,
-                    # so nearly every reading would reindex to NaN (fake data loss).
-                    # The whole pipeline operates on a 1-minute grid (freq="1min"
-                    # throughout), so rounding to the nearest minute is the correct
-                    # normalization. A rare collision from two readings rounding to the
-                    # same minute is resolved by resolve_status_and_duplicates (keep
-                    # the status==1 row, first wins).
-                    raw_data["datetime"] = raw_data["datetime"].dt.round("min")
+                    raw_data = monitor_reads[monitor_id].result()
+                    num_channels = sum(1 for c in raw_data.columns if c.startswith("channel_"))
                     monitor_file_cache[monitor_id] = raw_data
                     print(f"  Monitor {monitor_id}: Loaded file with {num_channels} channels")
                 except Exception as e:
@@ -574,7 +639,10 @@ class MetadataProcessor:
                     )
                     continue
 
-            monitor_data = monitor_file_cache[monitor_id].copy()
+            # Not copied: every path below either only reads this frame or slices
+            # it first, and a slice is a new frame, so the cached file is never
+            # modified in place.
+            monitor_data = monitor_file_cache[monitor_id]
             num_channels = sum(1 for c in monitor_data.columns if c.startswith("channel_"))
 
             # --- Check that start/stop datetimes are within the file's data range ---
@@ -738,13 +806,15 @@ class MetadataProcessor:
             selected_columns = []
             selected_regions = []
             missing_regions = []
+            # Use the metadata 'id' as the column name for uniqueness. First row
+            # wins when two rows claim a tube (expand_metadata has warned already).
+            _first = combo_meta.drop_duplicates("region_id")
+            id_by_region = dict(zip(_first["region_id"], _first["id"]))
             for region in regions_of_interest:
                 source_col = f"channel_{region}"
-                # Use the metadata 'id' as the column name for uniqueness
-                row_id = combo_meta.loc[combo_meta["region_id"] == region, "id"].values[0]
+                row_id = id_by_region[region]
 
                 if source_col in monitor_data.columns:
-                    monitor_data[row_id] = monitor_data[source_col]
                     selected_columns.append(row_id)
                     selected_regions.append(region)
                 else:
@@ -777,7 +847,12 @@ class MetadataProcessor:
                     )
                 )
 
-            monitor_data = monitor_data[["datetime"] + selected_columns].copy()
+            # Select the channels and name them by fly ID in one step (copying each
+            # channel in as a new column, one per fly, fragmented the frame).
+            monitor_data = monitor_data[
+                ["datetime"] + [f"channel_{region}" for region in selected_regions]
+            ]
+            monitor_data.columns = ["datetime"] + selected_columns
             monitor_data.set_index("datetime", inplace=True)
             print(
                 f"  {combo_label}: Selected {len(selected_columns)} channels out of {num_channels} total"
@@ -792,10 +867,9 @@ class MetadataProcessor:
             # monitor that never powered on is one line reading "tubes 1-32",
             # not 32 lines, while two dead tubes still read "tubes 5, 19".
             if selected_columns:
+                all_nan = monitor_data[selected_columns].isna().all().to_numpy()
                 empty_regions = [
-                    region
-                    for col, region in zip(selected_columns, selected_regions)
-                    if monitor_data[col].isna().all()
+                    region for region, empty in zip(selected_regions, all_nan) if empty
                 ]
                 if empty_regions:
                     self.import_issues.append(
@@ -814,12 +888,19 @@ class MetadataProcessor:
                         )
                     )
 
-            if all_monitor_data.empty:
-                all_monitor_data = monitor_data
-            else:
-                all_monitor_data = all_monitor_data.merge(
-                    monitor_data, left_index=True, right_index=True, how="outer"
-                )
+            monitor_frames.append(monitor_data)
+
+        # One outer join over every monitor at the end. Merging each monitor into
+        # the running result as it arrived re-copied the whole growing table every
+        # time, so the cost grew with the square of the monitor count.
+        if monitor_frames:
+            all_monitor_data = pd.concat(monitor_frames, axis=1, join="outer").sort_index()
+            # The join can tag the index with an inferred 1-minute frequency, which
+            # the pairwise merge never did. Nothing should depend on the tag, but
+            # dropping it keeps the result identical to what the merge produced.
+            all_monitor_data.index = pd.DatetimeIndex(all_monitor_data.index, freq=None)
+        else:
+            all_monitor_data = pd.DataFrame()
 
         # --- Handle validation failures ---
         if failed_combos:
