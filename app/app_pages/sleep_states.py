@@ -55,7 +55,7 @@ from analysis_detection import detect_analyses
 from dam_utilities import select_phase
 from dataset_meta import dataset_fingerprint, dataset_phase
 from periodograms import sleep_cwt_analysis, ultradian_rhythmicity_chi_sq
-from ui import charts, sleep_run
+from ui import charts, facet_panels, sleep_run
 from ui.filters import group_filter_sidebar
 from ui.guards import require_dataset
 
@@ -190,6 +190,10 @@ except (ValueError, KeyError) as exc:
 group_values, all_groups, selected_groups, phase_ds = group_filter_sidebar(
     phase_ds, key="sleep_states_groups", subset=True
 )
+# These figures already use colour for the sleep states, so panels here do not
+# overlay levels: they ARRANGE the one-figure-per-group layout, a row per genotype
+# (say) with its temperatures side by side.
+facet_spec, _ = facet_panels.facet_controls(phase_ds)
 
 states_declared = ssm.available_states(phase_ds)
 if not states_declared:
@@ -465,27 +469,29 @@ if tab_wave.open:
                     g for _, frame in panels for g in _groups_in(frame)
                 )
             )
-            for group in wave_groups:
-                rows = [
-                    (name, frame[frame["group"] == group])
-                    for name, frame in panels
-                ]
-                rows = [(name, frame) for name, frame in rows if not frame.empty]
-                if not rows:
-                    continue
-                for column, (name, frame) in zip(st.columns(len(rows)), rows):
-                    with column:
-                        charts.plotly_chart(
-                            plotting.normalized_waveform_overlay(
-                                frame,
-                                phase_label=name,
-                                # Group and epoch both in the FIGURE title, so
-                                # there is no second heading above it.
-                                title=f"{group} — {name}",
-                            ),
-                            width="stretch",
-                            key=f"waveform_{group}_{name}",
-                        )
+            # One draw per epoch shown (one, today — see `epochs` above).
+            def _waveform_draw(name, frame):
+                def _draw(group):
+                    sub = frame[frame["group"] == group]
+                    if sub.empty:
+                        return None
+                    return plotting.normalized_waveform_overlay(
+                        sub,
+                        phase_label=name,
+                        # Group and epoch both in the FIGURE title, so
+                        # there is no second heading above it.
+                        title=f"{group} — {name}",
+                    )
+
+                return _draw
+
+            facet_panels.render_group_figures(
+                wave_groups,
+                [_waveform_draw(name, frame) for name, frame in panels],
+                ["waveform_{g}_" + name for name, _ in panels],
+                facet_spec,
+                facet_panels.arrange_groups(phase_ds, facet_spec, wave_groups),
+            )
             st.info(
                 "The band is between-fly SEM within each group. It describes "
                 "the spread among these flies, not the reproducibility of the "
@@ -545,33 +551,31 @@ if tab_init.open:
         # heading could carry the group, but Plotly serialises a None title as
         # an empty title object, whose `text` is undefined — so both panels
         # printed the literal word "undefined" where the title belongs.
-        for group in groups:
+        def _profile_fig(group):
+            return plotting.state_profile_plot(
+                prof_stats[prof_stats["group"] == group],
+                phase_label=phase_used,
+                title=f"Daily profiles — {group}",
+            )
+
+        def _initiation_fig(group):
+            if init_stats is None:
+                return None
             g_prof = prof_stats[prof_stats["group"] == group]
-            left, right = st.columns(2)
-            with left:
-                charts.plotly_chart(
-                    plotting.state_profile_plot(
-                        g_prof,
-                        phase_label=phase_used,
-                        title=f"Daily profiles — {group}",
-                    ),
-                    width="stretch",
-                    key=f"prof_{group}",
-                )
-            with right:
-                if init_stats is None:
-                    st.empty()
-                else:
-                    charts.plotly_chart(
-                        plotting.initiation_probability_plot(
-                            init_stats[init_stats["group"] == group],
-                            activity_stats=g_prof[g_prof["state"] == "activity"],
-                            phase_label=phase_used,
-                            title=f"Bout initiation — {group}",
-                        ),
-                        width="stretch",
-                        key=f"init_{group}",
-                    )
+            return plotting.initiation_probability_plot(
+                init_stats[init_stats["group"] == group],
+                activity_stats=g_prof[g_prof["state"] == "activity"],
+                phase_label=phase_used,
+                title=f"Bout initiation — {group}",
+            )
+
+        facet_panels.render_group_figures(
+            groups,
+            [_profile_fig, _initiation_fig],
+            ["prof_{g}", "init_{g}"],
+            facet_spec,
+            facet_panels.arrange_groups(phase_ds, facet_spec, groups),
+        )
 
         if init_stats is not None:
             st.download_button(
@@ -600,17 +604,20 @@ if tab_rose.open:
         # No st.markdown heading here: rose_plot_with_activity already prints
         # "Temporal organisation of sleep states — <group>" as the figure
         # title, so the heading repeated the group label directly above it.
-        for group in groups:
-            charts.plotly_chart(
-                plotting.rose_plot_with_activity(
+        facet_panels.render_group_figures(
+            groups,
+            [
+                lambda group: plotting.rose_plot_with_activity(
                     prof_stats[prof_stats["group"] == group],
                     group=group,
                     bin_size_min=bin_size_min,
                     phase_label=phase_used,
-                ),
-                width="stretch",
-                key=f"rose_{group}",
-            )
+                )
+            ],
+            ["rose_{g}"],
+            facet_spec,
+            facet_panels.arrange_groups(phase_ds, facet_spec, groups),
+        )
 
         st.divider()
         st.subheader("Circadian gating")
@@ -626,20 +633,25 @@ if tab_rose.open:
             st.info("No circular statistics could be computed.")
         else:
             gates = ssm.group_gates(circular)
-            for group in _groups_in(circular):
+            def _gating_fig(group):
                 g_stats = circular[circular["group"] == group]
                 if g_stats.empty:
-                    continue
-                charts.plotly_chart(
-                    plotting.polar_gating_plot(
-                        g_stats,
-                        gates[gates["group"] == group],
-                        phase_label=phase_used,
-                        title=f"Circadian gating — {group}",
-                    ),
-                    width="stretch",
-                    key=f"gate_{group}",
+                    return None
+                return plotting.polar_gating_plot(
+                    g_stats,
+                    gates[gates["group"] == group],
+                    phase_label=phase_used,
+                    title=f"Circadian gating — {group}",
                 )
+
+            _gate_groups = _groups_in(circular)
+            facet_panels.render_group_figures(
+                _gate_groups,
+                [_gating_fig],
+                ["gate_{g}"],
+                facet_spec,
+                facet_panels.arrange_groups(phase_ds, facet_spec, _gate_groups),
+            )
             n_doubled = int(circular["doubled"].sum())
             if n_doubled:
                 st.caption(

@@ -11,10 +11,11 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 import dam_utilities
+import facets
 import plotting
 import sleep_deprivation as sd_module
 from analysis_detection import detect_analyses
-from ui import charts, status
+from ui import charts, facet_panels, status
 from ui.guards import require_dataset
 
 # ============================================================
@@ -264,166 +265,320 @@ def _group_color(groups, grp):
     return _COLORS[groups.index(grp) % len(_COLORS)]
 
 # ================================================================
-# Tab 1: ZT Time-Course Plots
+# Panels. The time-course figures overlay one colour per group, so with panels on
+# they draw once per panel (a genotype, say) with one colour per compared level
+# (its temperatures) — the same layout as the daily patterns on Activity & Sleep.
 # ================================================================
-if tab_timecourse.open:
-    with tab_timecourse:
-        groups = sorted(baseline_prof["group"].unique())
+facet_spec, _ = facet_panels.facet_controls(ds)
+_all_groups = sorted(baseline_prof["group"].unique())
+_facet_rows = facet_panels.arrange_groups(ds, facet_spec, _all_groups)
+if _facet_rows:
+    _level_of = facet_panels.group_levels(ds, facet_spec)
+    _level_colours = facets.facet_colours(
+        facets.order_levels({_level_of[g] for _, gs in _facet_rows for g in gs})
+    )
 
-        # --- 1a. Baseline vs Recovery line plot ---
-        st.markdown("#### Baseline vs Recovery Sleep Profiles")
-        fig1 = go.Figure()
-        _shade_ld(fig1)
 
-        for grp in groups:
-            color = _group_color(groups, grp)
-            bl = baseline_prof[baseline_prof["group"] == grp].sort_values("zt_bin_minute")
-            zt_h = dam_utilities.zt_bin_to_hours(bl["zt_bin_minute"], _bin)
+def _sets():
+    """``[(panel title, groups, label_of, colour_of)]``: one entry with every group
+    when panels are off, one per panel when they are on."""
+    if not _facet_rows:
+        return [("", _all_groups, str, lambda g: _group_color(_all_groups, g))]
+    return [
+        (title, gs, _level_of.get, lambda g: _level_colours[_level_of[g]])
+        for title, gs in _facet_rows
+    ]
 
-            # Baseline (dashed)
-            _lg_bl = f"{grp} — Baseline"
+
+def _titled(title, text):
+    return f"{text} — {title}" if title else text
+
+
+def _show(pairs, key, *, grid=True):
+    """One figure full width, or a panel per row entry when panels are on."""
+    if not _facet_rows:
+        charts.plotly_chart(pairs[0][1], width="stretch")
+        return
+    facet_panels.render_panels(
+        [(facets.Panel(key={}, title=t, series=[]), f) for t, f in pairs],
+        facet_spec,
+        ds,
+        key=key,
+        filename=key,
+        grid=grid,
+    )
+
+
+def _baseline_recovery_fig(title, groups, label_of, colour_of):
+    fig1 = go.Figure()
+    _shade_ld(fig1)
+
+    for grp in groups:
+        color = colour_of(grp)
+        name = label_of(grp)
+        bl = baseline_prof[baseline_prof["group"] == grp].sort_values("zt_bin_minute")
+        zt_h = dam_utilities.zt_bin_to_hours(bl["zt_bin_minute"], _bin)
+
+        # Baseline (dashed)
+        _lg_bl = f"{name} — Baseline"
+        fig1.add_trace(
+            go.Scatter(
+                x=zt_h,
+                y=bl["mean"],
+                mode="lines",
+                name=_lg_bl,
+                legendgroup=_lg_bl,
+                line=dict(color=color, dash="dash"),
+            )
+        )
+        # SAME legendgroup as the mean so a legend click toggles both together.
+        fig1.add_trace(
+            go.Scatter(
+                x=pd.concat([zt_h, zt_h[::-1]]),
+                y=pd.concat([bl["mean"] + bl["sem"], (bl["mean"] - bl["sem"])[::-1]]),
+                fill="toself",
+                line=dict(color="rgba(0,0,0,0)"),
+                fillcolor=color.replace(")", ",0.12)").replace("rgb", "rgba")
+                if "rgb" in color
+                else "rgba(100,100,200,0.12)",
+                legendgroup=_lg_bl,
+                showlegend=False,
+            )
+        )
+
+        # Recovery days (solid, increasing opacity)
+        for rec_num, rec_df in recovery_profs.items():
+            rec = rec_df[rec_df["group"] == grp].sort_values("zt_bin_minute")
+            if rec.empty:
+                continue
+            zt_h_r = dam_utilities.zt_bin_to_hours(rec["zt_bin_minute"], _bin)
+            _lg_rec = f"{name} — Recovery Day {rec_num}"
             fig1.add_trace(
                 go.Scatter(
-                    x=zt_h,
-                    y=bl["mean"],
+                    x=zt_h_r,
+                    y=rec["mean"],
                     mode="lines",
-                    name=_lg_bl,
-                    legendgroup=_lg_bl,
-                    line=dict(color=color, dash="dash"),
+                    name=_lg_rec,
+                    legendgroup=_lg_rec,
+                    line=dict(color=color, dash="solid", width=2),
                 )
             )
             # SAME legendgroup as the mean so a legend click toggles both together.
             fig1.add_trace(
                 go.Scatter(
-                    x=pd.concat([zt_h, zt_h[::-1]]),
-                    y=pd.concat([bl["mean"] + bl["sem"], (bl["mean"] - bl["sem"])[::-1]]),
+                    x=pd.concat([zt_h_r, zt_h_r[::-1]]),
+                    y=pd.concat([rec["mean"] + rec["sem"], (rec["mean"] - rec["sem"])[::-1]]),
                     fill="toself",
                     line=dict(color="rgba(0,0,0,0)"),
-                    fillcolor=color.replace(")", ",0.12)").replace("rgb", "rgba")
-                    if "rgb" in color
-                    else "rgba(100,100,200,0.12)",
-                    legendgroup=_lg_bl,
+                    fillcolor="rgba(100,100,200,0.10)",
+                    legendgroup=_lg_rec,
                     showlegend=False,
                 )
             )
 
-            # Recovery days (solid, increasing opacity)
-            for rec_num, rec_df in recovery_profs.items():
-                rec = rec_df[rec_df["group"] == grp].sort_values("zt_bin_minute")
-                if rec.empty:
-                    continue
-                zt_h_r = dam_utilities.zt_bin_to_hours(rec["zt_bin_minute"], _bin)
-                _lg_rec = f"{grp} — Recovery Day {rec_num}"
-                fig1.add_trace(
-                    go.Scatter(
-                        x=zt_h_r,
-                        y=rec["mean"],
-                        mode="lines",
-                        name=_lg_rec,
-                        legendgroup=_lg_rec,
-                        line=dict(color=color, dash="solid", width=2),
-                    )
-                )
-                # SAME legendgroup as the mean so a legend click toggles both together.
-                fig1.add_trace(
-                    go.Scatter(
-                        x=pd.concat([zt_h_r, zt_h_r[::-1]]),
-                        y=pd.concat([rec["mean"] + rec["sem"], (rec["mean"] - rec["sem"])[::-1]]),
-                        fill="toself",
-                        line=dict(color="rgba(0,0,0,0)"),
-                        fillcolor="rgba(100,100,200,0.10)",
-                        legendgroup=_lg_rec,
-                        showlegend=False,
-                    )
-                )
+    fig1.update_layout(
+        xaxis_title="ZT (hours)",
+        yaxis_title="Sleep (fraction of bin)",
+        xaxis=dict(range=[0, 24], dtick=2),
+        height=500,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    if title:
+        fig1.update_layout(title=_titled(title, "Baseline vs recovery"))
+    return fig1
 
-        fig1.update_layout(
-            xaxis_title="ZT (hours)",
-            yaxis_title="Sleep (fraction of bin)",
-            xaxis=dict(range=[0, 24], dtick=2),
-            height=500,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+
+def _difference_fig(title, groups, label_of, colour_of):
+    n_rec = len(diff_profs)
+    fig2 = make_subplots(
+        rows=1,
+        cols=n_rec,
+        subplot_titles=[f"Recovery Day {r}" for r in diff_profs],
+        shared_yaxes=True,
+    )
+    _shade_ld(fig2)
+
+    for col_idx, diff_df in enumerate(diff_profs.values(), start=1):
+        for grp in groups:
+            d = diff_df[diff_df["group"] == grp].sort_values("zt_bin_minute")
+            if d.empty:
+                continue
+            zt_h = dam_utilities.zt_bin_to_hours(d["zt_bin_minute"], _bin)
+            color = colour_of(grp)
+            fig2.add_trace(
+                go.Scatter(
+                    x=zt_h,
+                    y=d["mean"],
+                    mode="lines",
+                    name=label_of(grp) if col_idx == 1 else None,
+                    showlegend=(col_idx == 1),
+                    line=dict(color=color),
+                ),
+                row=1,
+                col=col_idx,
+            )
+            fig2.add_trace(
+                go.Scatter(
+                    x=zt_h,
+                    y=[0] * len(zt_h),
+                    mode="lines",
+                    line=dict(color="gray", dash="dot", width=1),
+                    showlegend=False,
+                ),
+                row=1,
+                col=col_idx,
+            )
+
+    fig2.update_xaxes(title_text="ZT (hours)", range=[0, 24], dtick=4)
+    fig2.update_yaxes(title_text="Sleep Difference (fraction)", col=1)
+    fig2.update_layout(height=400)
+    if title:
+        fig2.update_layout(title=_titled(title, "Recovery − baseline"))
+    return fig2
+
+
+def _cumulative_fig(title, groups, label_of, colour_of):
+    fig3 = go.Figure()
+    _shade_ld(fig3)
+
+    for rec_num, cum_df in cum_diffs.items():
+        for grp in groups:
+            c = cum_df[cum_df["group"] == grp].sort_values("zt_bin_minute")
+            if c.empty:
+                continue
+            zt_h = dam_utilities.zt_bin_to_hours(c["zt_bin_minute"], _bin)
+            color = colour_of(grp)
+            fig3.add_trace(
+                go.Scatter(
+                    x=zt_h,
+                    y=c["mean"],
+                    mode="lines",
+                    name=f"{label_of(grp)} — Recovery Day {rec_num}",
+                    line=dict(color=color),
+                )
+            )
+
+    fig3.add_hline(y=0, line_dash="dot", line_color="gray")
+    fig3.update_layout(
+        xaxis_title="ZT (hours)",
+        yaxis_title="Cumulative Sleep Difference (min)",
+        xaxis=dict(range=[0, 24], dtick=2),
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    if title:
+        fig3.update_layout(title=_titled(title, "Cumulative difference"))
+    return fig3
+
+
+def _shared(pairs):
+    if _facet_rows and facet_spec.shared_y:
+        plotting.apply_shared_y([f for _, f in pairs])
+    return pairs
+
+
+# ================================================================
+# Tab 1: ZT Time-Course Plots
+# ================================================================
+if tab_timecourse.open:
+    with tab_timecourse:
+        # --- 1a. Baseline vs Recovery line plot ---
+        st.markdown("#### Baseline vs Recovery Sleep Profiles")
+        _show(
+            _shared([(t, _baseline_recovery_fig(t, *rest)) for t, *rest in _sets()]),
+            "sd_baseline_recovery",
         )
-        charts.plotly_chart(fig1, width="stretch")
 
         # --- 1b. Difference plot (recovery − baseline) ---
         st.markdown("#### Sleep Difference (Recovery − Baseline)")
-        n_rec = len(diff_profs)
-        fig2 = make_subplots(
-            rows=1,
-            cols=n_rec,
-            subplot_titles=[f"Recovery Day {r}" for r in diff_profs],
-            shared_yaxes=True,
+        # Each is a row of recovery-day subplots, so it cannot go into a combined
+        # grid, and apply_shared_y leaves multi-axis figures alone.
+        _show(
+            [(t, _difference_fig(t, *rest)) for t, *rest in _sets()],
+            "sd_difference",
+            grid=False,
         )
-        _shade_ld(fig2)
-
-        for col_idx, diff_df in enumerate(diff_profs.values(), start=1):
-            for grp in groups:
-                d = diff_df[diff_df["group"] == grp].sort_values("zt_bin_minute")
-                if d.empty:
-                    continue
-                zt_h = dam_utilities.zt_bin_to_hours(d["zt_bin_minute"], _bin)
-                color = _group_color(groups, grp)
-                fig2.add_trace(
-                    go.Scatter(
-                        x=zt_h,
-                        y=d["mean"],
-                        mode="lines",
-                        name=grp if col_idx == 1 else None,
-                        showlegend=(col_idx == 1),
-                        line=dict(color=color),
-                    ),
-                    row=1,
-                    col=col_idx,
-                )
-                fig2.add_trace(
-                    go.Scatter(
-                        x=zt_h,
-                        y=[0] * len(zt_h),
-                        mode="lines",
-                        line=dict(color="gray", dash="dot", width=1),
-                        showlegend=False,
-                    ),
-                    row=1,
-                    col=col_idx,
-                )
-
-        fig2.update_xaxes(title_text="ZT (hours)", range=[0, 24], dtick=4)
-        fig2.update_yaxes(title_text="Sleep Difference (fraction)", col=1)
-        fig2.update_layout(height=400)
-        charts.plotly_chart(fig2, width="stretch")
 
         # --- 1c. Cumulative sleep difference ---
         st.markdown("#### Cumulative Sleep Difference (minutes)")
-        fig3 = go.Figure()
-        _shade_ld(fig3)
-
-        for rec_num, cum_df in cum_diffs.items():
-            for grp in groups:
-                c = cum_df[cum_df["group"] == grp].sort_values("zt_bin_minute")
-                if c.empty:
-                    continue
-                zt_h = dam_utilities.zt_bin_to_hours(c["zt_bin_minute"], _bin)
-                color = _group_color(groups, grp)
-                fig3.add_trace(
-                    go.Scatter(
-                        x=zt_h,
-                        y=c["mean"],
-                        mode="lines",
-                        name=f"{grp} — Recovery Day {rec_num}",
-                        line=dict(color=color),
-                    )
-                )
-
-        fig3.add_hline(y=0, line_dash="dot", line_color="gray")
-        fig3.update_layout(
-            xaxis_title="ZT (hours)",
-            yaxis_title="Cumulative Sleep Difference (min)",
-            xaxis=dict(range=[0, 24], dtick=2),
-            height=450,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        _show(
+            _shared([(t, _cumulative_fig(t, *rest)) for t, *rest in _sets()]),
+            "sd_cumulative",
         )
-        charts.plotly_chart(fig3, width="stretch")
+
+
+def _totals_fig(title, groups, label_of):
+    fig_bar = go.Figure()
+    bar_x = []
+    light_vals = []
+    dark_vals = []
+
+    for grp in groups:
+        grp_data = phase_totals[phase_totals["group"] == grp]
+        for _, row in grp_data.iterrows():
+            bar_x.append(f"{label_of(grp)}<br>{row['day_label']}")
+            light_vals.append(row["light_sleep_min"])
+            dark_vals.append(row["dark_sleep_min"])
+
+    fig_bar.add_trace(
+        go.Bar(
+            name="Light Phase (ZT0-12)",
+            x=bar_x,
+            y=light_vals,
+            marker_color="gold",
+        )
+    )
+    fig_bar.add_trace(
+        go.Bar(
+            name="Dark Phase (ZT12-24)",
+            x=bar_x,
+            y=dark_vals,
+            marker_color="navy",
+        )
+    )
+    plotting.apply_category_ticks(fig_bar, bar_x)
+    fig_bar.update_layout(
+        barmode="group",
+        yaxis_title="Total Sleep (minutes)",
+        height=500,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    if title:
+        fig_bar.update_layout(title=_titled(title, "Sleep totals"))
+    return fig_bar
+
+
+def _rebound_fig(title, groups, label_of):
+    fig_reb = go.Figure()
+    all_reb_labels = []
+    for phase in rebound_pct["phase"].unique():
+        ph_data = rebound_pct[rebound_pct["phase"] == phase]
+        ph_data = ph_data[ph_data["group"].isin(set(groups))]
+        x_labels = [
+            f"{label_of(row['group'])}<br>Recovery Day {row['recovery_day']}"
+            for _, row in ph_data.iterrows()
+        ]
+        all_reb_labels.extend(x_labels)
+        fig_reb.add_trace(
+            go.Bar(
+                name=phase,
+                x=x_labels,
+                y=ph_data["rebound_pct"],
+                marker_color="gold" if "Light" in phase else "navy",
+            )
+        )
+    fig_reb.add_hline(y=0, line_dash="dot", line_color="gray")
+    plotting.apply_category_ticks(fig_reb, all_reb_labels)
+    fig_reb.update_layout(
+        barmode="group",
+        yaxis_title="Sleep Rebound (%)",
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    if title:
+        fig_reb.update_layout(title=_titled(title, "Sleep rebound"))
+    return fig_reb
+
 
 # ================================================================
 # Tab 2: Bar Graphs
@@ -435,77 +590,29 @@ if tab_bars.open:
         if phase_totals.empty:
             st.warning("No phase total data available.")
         else:
-            groups_bar = sorted(phase_totals["group"].unique())
-            day_labels = phase_totals["day_label"].unique()
-
-            fig_bar = go.Figure()
-            bar_x = []
-            light_vals = []
-            dark_vals = []
-
-            for grp in groups_bar:
-                grp_data = phase_totals[phase_totals["group"] == grp]
-                for _, row in grp_data.iterrows():
-                    bar_x.append(f"{grp}<br>{row['day_label']}")
-                    light_vals.append(row["light_sleep_min"])
-                    dark_vals.append(row["dark_sleep_min"])
-
-            fig_bar.add_trace(
-                go.Bar(
-                    name="Light Phase (ZT0-12)",
-                    x=bar_x,
-                    y=light_vals,
-                    marker_color="gold",
-                )
+            _bar_groups = set(phase_totals["group"].unique())
+            if _facet_rows:
+                _bar_sets = [(t, [g for g in gs if g in _bar_groups], lab) for t, gs, lab, _ in _sets()]
+            else:
+                _bar_sets = [("", sorted(_bar_groups), str)]
+            _show(
+                _shared([(t, _totals_fig(t, gs, lab)) for t, gs, lab in _bar_sets if gs]),
+                "sd_totals",
             )
-            fig_bar.add_trace(
-                go.Bar(
-                    name="Dark Phase (ZT12-24)",
-                    x=bar_x,
-                    y=dark_vals,
-                    marker_color="navy",
-                )
-            )
-            plotting.apply_category_ticks(fig_bar, bar_x)
-            fig_bar.update_layout(
-                barmode="group",
-                yaxis_title="Total Sleep (minutes)",
-                height=500,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            )
-            charts.plotly_chart(fig_bar, width="stretch")
 
         # --- Rebound % bar chart ---
         st.markdown("#### Sleep Rebound (%)")
         if rebound_pct.empty:
             st.warning("No rebound data available.")
         else:
-            fig_reb = go.Figure()
-            all_reb_labels = []
-            for phase in rebound_pct["phase"].unique():
-                ph_data = rebound_pct[rebound_pct["phase"] == phase]
-                x_labels = [
-                    f"{row['group']}<br>Recovery Day {row['recovery_day']}"
-                    for _, row in ph_data.iterrows()
-                ]
-                all_reb_labels.extend(x_labels)
-                fig_reb.add_trace(
-                    go.Bar(
-                        name=phase,
-                        x=x_labels,
-                        y=ph_data["rebound_pct"],
-                        marker_color="gold" if "Light" in phase else "navy",
-                    )
-                )
-            fig_reb.add_hline(y=0, line_dash="dot", line_color="gray")
-            plotting.apply_category_ticks(fig_reb, all_reb_labels)
-            fig_reb.update_layout(
-                barmode="group",
-                yaxis_title="Sleep Rebound (%)",
-                height=450,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            if _facet_rows:
+                _reb_sets = [(t, gs, lab) for t, gs, lab, _ in _sets()]
+            else:
+                _reb_sets = [("", list(rebound_pct["group"].unique()), str)]
+            _show(
+                _shared([(t, _rebound_fig(t, gs, lab)) for t, gs, lab in _reb_sets]),
+                "sd_rebound",
             )
-            charts.plotly_chart(fig_reb, width="stretch")
 
 # ================================================================
 # Tab 3: Data Export

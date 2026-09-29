@@ -120,3 +120,11 @@ class TestPageWiring:
         """Guard the registry rather than each call site: anything cleared here is
         cleared because it is listed in DERIVED_CACHE_KEYS."""
         assert key in DERIVED_CACHE_KEYS
+
+
+class TestRegroupCoordNames:
+    def test_coord_names_follow_the_regroup(self, master_ds):
+        """get_group_coord_names reads the attr first, so a stale one made the
+        facet/panel defaults describe the grouping from before the regroup."""
+        out = dam_utilities.regroup_dataset(master_ds, ["genotype"])
+        assert dam_utilities.get_group_coord_names(out) == ["genotype"]

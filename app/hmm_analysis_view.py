@@ -28,6 +28,7 @@ from hmm_models import (
     plot_zt_state_fractions,
     run_genotype_workflow,
 )
+from ui import facet_panels
 
 
 def render():
@@ -353,6 +354,14 @@ def render():
     # The four result views are peers, not a sequence — tabs rather than 500
     # lines of scrolling. Lazy (on_change="rerun"): only the open view runs, and
     # the key keeps it open across the rerun its Generate button causes.
+    # Panels ARRANGE the per-group HMM figures (these are matplotlib, coloured by
+    # state): groups in panel-then-level order, and the time-of-day fractions a
+    # row per panel with its levels side by side.
+    facet_spec, _ = facet_panels.facet_controls(ds)
+    _hmm_groups = sorted({str(v) for v in ds["group"].values}) if "group" in ds.coords else []
+    _facet_rows = facet_panels.arrange_groups(ds, facet_spec, _hmm_groups)
+    _group_order = [g for _, gs in _facet_rows for g in gs] if _facet_rows else None
+
     tab_occupancy, tab_hypnogram, tab_group, tab_zt = st.tabs(
         ["Occupancy", "Hypnogram", "By group", "Time of day"],
         key="hmm_results_tab",
@@ -417,7 +426,8 @@ def render():
                 with st.spinner("Generating state occupancy..."):
                     try:
                         fig, occ_df = plot_state_occupancy_by_group(
-                            ds, n_states=n_states_display, return_data=True
+                            ds, n_states=n_states_display, return_data=True,
+                            group_order=_group_order,
                         )
                         if fig is not None:
                             st.pyplot(fig)
@@ -477,6 +487,7 @@ def render():
                             metric=_tc_metric,
                             bin_size_minutes=tc_bin_size,
                             return_data=True,
+                            group_order=_group_order,
                         )
                         if fig is not None:
                             st.pyplot(fig)
@@ -532,6 +543,8 @@ def render():
                             bin_size_minutes=zt_bin_size,
                             n_sections=n_zt_sections,
                             return_data=True,
+                            group_order=_group_order,
+                            panel_rows=_facet_rows,
                         )
                         if fig is not None:
                             st.pyplot(fig)

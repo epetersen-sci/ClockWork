@@ -38,6 +38,7 @@ import streamlit as st
 
 import dam_utilities
 import export_helpers as ex
+import facets
 import plotting
 import sleep_analysis
 from analysis_detection import detect_analyses
@@ -48,7 +49,7 @@ from dataset_meta import (
     dataset_fingerprint,
     dataset_phase,
 )
-from ui import charts, sleep_run
+from ui import charts, facet_panels, sleep_run
 from ui.filters import DISPLAY_GROUPS_KEY, bin_size_sidebar, group_filter_sidebar
 from ui.guards import require_dataset
 
@@ -180,6 +181,25 @@ def _cached_bout_duration_lines(
     )
     return fig, curves_df, summary_df, stats_result
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_faceted_profiles(fp, _ds, variable, title, phase_label, bin_size_minutes, spec_json):
+    """One ZT profile per facet panel. The spec travels as JSON so it is part of
+    the cache key; the binning underneath is the page's own cached frame."""
+    spec = facets.FacetSpec.from_json(spec_json)
+    panels = facets.resolve_panels(facets.fly_factor_table(_ds), spec)
+    zt = _cached_zt_binned(fp, _ds, variable, bin_size_minutes)
+    return plotting.faceted_profiles(
+        zt,
+        variable,
+        panels,
+        facets.facet_colours(facets.layout_levels(panels)),
+        title=title,
+        phase_label=phase_label,
+        bin_size_minutes=bin_size_minutes,
+        shared_y=spec.shared_y,
+    )
+
+
 def _summary_frame(tbl):
     """The per-group summary table with headers a reader recognises.
 
@@ -280,6 +300,40 @@ selected_temperatures = None
 
 bin_size = bin_size_sidebar(key="viz_bin_size")
 
+# Panels: one graph per genotype (say) with temperatures compared inside it. Off
+# by default, when every figure below draws as it always has.
+facet_spec, _facet_table = facet_panels.facet_controls(ds)
+_facet_panels = facets.resolve_panels(_facet_table, facet_spec) if facet_spec.active else None
+_facet_colours = (
+    facets.facet_colours(facets.layout_levels(_facet_panels)) if _facet_panels else None
+)
+
+
+def _daily_pattern(variable, title, fp):
+    """The daily pattern for ``variable``: one figure, or one per facet panel."""
+    phase_label = phase_used or dataset_phase(ds)
+    if _facet_panels:
+        pairs = _cached_faceted_profiles(
+            fp, ds, variable, title, phase_label, bin_size, facet_spec.to_json()
+        )
+        facet_panels.render_panels(
+            pairs, facet_spec, ds, key=f"{variable}_profile", filename=f"{variable}_profile"
+        )
+        return
+    fig = _cached_daily_pattern(
+        fp,
+        ds,
+        variable,
+        title,
+        tuple(selected_genotypes) if selected_genotypes else None,
+        tuple(selected_temperatures) if selected_temperatures else None,
+        phase_label,
+        bin_size,
+    )
+    # theme=None: let the figure's own styling (black text, transparent bg) drive both
+    # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
+    charts.plotly_chart(fig, width="stretch", theme=None)
+
 # One tab per MEASURE, not per kind of plot. The three old tabs — daily
 # profiles, bouts, day/night totals — each held half an activity answer and half
 # a sleep one, so "what does sleep look like here" meant visiting all three and
@@ -345,23 +399,52 @@ def _totals_violins(variable, y_label, key):
         ("Day Only", "Subjective day" if _dd else "Day"),
         ("Night Only", "Subjective night" if _dd else "Night"),
     ]
-    # One group order for all three, so the columns line up across the panels.
-    _order = sorted(per_fly["Group"].astype(str).unique())
-    # Side by side. Full width each, the three were so broad that comparing a
-    # group's day against its night meant scrolling between them — which is the
-    # comparison the three-panel split exists to make easy.
-    _cols = st.columns(3)
-    for i, (col, name) in enumerate(panels):
-        fig, _ = plotting.group_violins(
+    if _facet_panels:
+        # Faceted, the three periods would be three rows of panels each. One period
+        # at a time keeps the panels side by side and the page readable.
+        _names = {name: col for col, name in panels}
+        pick = st.segmented_control(
+            "Period",
+            list(_names),
+            default=list(_names)[0],
+            key=f"{key}_totals_period",
+            persist_state="session",
+        ) or list(_names)[0]
+        pairs = plotting.faceted_violins(
             per_fly,
-            col,
-            title=f"{variable.capitalize()} — {name}",
+            _names[pick],
+            _facet_panels,
+            _facet_colours,
+            title=f"{variable.capitalize()} — {pick}",
             y_title=y_label,
-            colour=plotting.MEASURE_COLOURS[i],
-            groups=_order,
+            x_title=facet_spec.compare_by,
+            shared_y=facet_spec.shared_y,
         )
-        with _cols[i]:
-            charts.plotly_chart(fig, width="stretch", theme=None)
+        facet_panels.render_panels(
+            pairs,
+            facet_spec,
+            ds,
+            key=f"{key}_totals_{_names[pick].replace(' ', '_')}",
+            filename=f"{variable}_{pick.replace(' ', '_').lower()}_totals",
+        )
+    else:
+        # One group order for all three, so the columns line up across the panels.
+        _order = sorted(per_fly["Group"].astype(str).unique())
+        # Side by side. Full width each, the three were so broad that comparing a
+        # group's day against its night meant scrolling between them — which is the
+        # comparison the three-panel split exists to make easy.
+        _cols = st.columns(3)
+        for i, (col, name) in enumerate(panels):
+            fig, _ = plotting.group_violins(
+                per_fly,
+                col,
+                title=f"{variable.capitalize()} — {name}",
+                y_title=y_label,
+                colour=plotting.MEASURE_COLOURS[i],
+                groups=_order,
+            )
+            with _cols[i]:
+                charts.plotly_chart(fig, width="stretch", theme=None)
 
     tbl = _cached_summary_table(
         dataset_fingerprint(ds),
@@ -399,19 +482,7 @@ if tab_activity.open:
         st.subheader("Daily Activity Pattern")
         if "activity" in ds.data_vars:
             _ds_fp = dataset_fingerprint(ds)
-            fig = _cached_daily_pattern(
-                _ds_fp,
-                ds,
-                "activity",
-                "Daily Activity Pattern",
-                tuple(selected_genotypes) if selected_genotypes else None,
-                tuple(selected_temperatures) if selected_temperatures else None,
-                phase_used or dataset_phase(ds),
-                bin_size,
-            )
-            # theme=None: let the figure's own styling (black text, transparent bg) drive both
-            # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
-            charts.plotly_chart(fig, width="stretch", theme=None)
+            _daily_pattern("activity", "Daily Activity Pattern", _ds_fp)
 
             # CSV download of binned data (grouped: mean, SD, n per condition)
             try:
@@ -482,18 +553,7 @@ if tab_sleep.open:
         if analyses["sleep"]:
             st.subheader("Daily Sleep Pattern")
             _ds_fp_sl = dataset_fingerprint(ds)
-            fig = _cached_daily_pattern(
-                _ds_fp_sl,
-                ds,
-                "sleep",
-                "Daily Sleep Pattern",
-                tuple(selected_genotypes) if selected_genotypes else None,
-                tuple(selected_temperatures) if selected_temperatures else None,
-                phase_used or dataset_phase(ds),
-                bin_size,
-            )
-            # theme=None: the figure's black-text / transparent-bg styling drives screen + PNG.
-            charts.plotly_chart(fig, width="stretch", theme=None)
+            _daily_pattern("sleep", "Daily Sleep Pattern", _ds_fp_sl)
 
             try:
                 binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)

@@ -38,6 +38,7 @@ import plotly.graph_objects as go
 import xarray as xr
 
 import dam_utilities
+import facets
 
 
 def _circadian_period_ticks(min_period: float, max_period: float) -> list:
@@ -305,6 +306,174 @@ def dataset_to_heatmap(
     return fig
 
 
+_PCT_LABELS = {"sleep": "% time asleep", "moving": "% time moving"}
+
+
+def profile_y_label(value_col):
+    """The y-axis title a ZT profile of ``value_col`` carries."""
+    return _PCT_LABELS.get(value_col, value_col.capitalize())
+
+
+def zt_profile_agg(zt_df, value_col, labels, bin_size_minutes=30):
+    """Mean ± SEM per label per ZT bin, from a per-fly ZT-binned frame.
+
+    ``zt_df`` is :func:`dam_utilities.get_zt_binned_dataframe` output (``id``,
+    ``zt_bin_minute``, ``value_col``); ``labels`` maps fly id (str) to the trace it
+    belongs to. Flies with no label are left out, which is how a faceted panel
+    takes its own flies from one frame binned once for the whole dataset.
+
+    0/1 fraction masks (sleep, moving) read most naturally as a PERCENT of measured
+    time. The bin value is already the fraction over MEASURED minutes (the -1
+    missing sentinel is excluded in get_zt_binned_dataframe, §2a), so they are
+    scaled to % here; activity counts are left as they are.
+    """
+    cols = ["group", "zt_bin_minute", "mean_val", "sem_val", "n", "zt_hours"]
+    if zt_df is None or zt_df.empty or value_col not in zt_df.columns:
+        return pd.DataFrame(columns=cols)
+    df = zt_df[["id", "zt_bin_minute", value_col]].copy()
+    df["group"] = df["id"].astype(str).map(labels)
+    df = df[df["group"].notna()]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    g = df.groupby(["group", "zt_bin_minute"])[value_col]
+    agg = g.agg(mean_val="mean", sd="std", n="count").reset_index()
+    # SEM over the flies with data in that bin; a lone fly has no spread (0).
+    agg["sem_val"] = np.where(agg["n"] > 1, agg["sd"] / np.sqrt(agg["n"].clip(lower=1)), 0.0)
+    agg = agg.drop(columns="sd")
+    if value_col in _PCT_LABELS:
+        agg["mean_val"] = agg["mean_val"] * 100.0
+        agg["sem_val"] = agg["sem_val"] * 100.0
+    agg["zt_hours"] = dam_utilities.zt_bin_to_hours(agg["zt_bin_minute"], bin_size_minutes)
+    agg = agg[cols]
+    # Flies per trace, for the legend (a bin count would vary bin to bin).
+    agg.attrs["n_flies"] = df.groupby("group")["id"].nunique().to_dict()
+    return agg
+
+
+def profile_lines(
+    agg,
+    value_col,
+    title,
+    *,
+    phase_label=None,
+    bin_size_minutes=30,
+    colours=None,
+    order=None,
+    reference_agg=None,
+    reference_label=None,
+    show_n=False,
+):
+    """Draw a ZT profile from :func:`zt_profile_agg` output: one line ± SEM band
+    per group, and optionally a grey reference drawn underneath.
+
+    ``colours`` (``{group: colour}``) and ``order`` fix the colour and legend order
+    — a faceted layout passes the same ones to every panel so a level keeps its
+    colour throughout. Without them, groups are coloured in their order of
+    appearance, as the single-figure page always did.
+    """
+    if agg is None or agg.empty:
+        return go.Figure()
+
+    present = [str(g) for g in agg["group"].unique()]
+    groups_in_order = [g for g in order if g in set(present)] if order else present
+    n_flies = agg.attrs.get("n_flies", {})
+
+    fig = go.Figure()
+
+    def _band(sub, color, alpha, lg):
+        # SEM shading — SAME legendgroup as the mean line so a legend click toggles
+        # BOTH the mean AND its error band together (not just the line).
+        fig.add_trace(
+            go.Scatter(
+                x=pd.concat([sub["zt_hours"], sub["zt_hours"][::-1]]),
+                y=pd.concat(
+                    [sub["mean_val"] + sub["sem_val"], (sub["mean_val"] - sub["sem_val"])[::-1]]
+                ),
+                fill="toself",
+                line=dict(color="rgba(0,0,0,0)"),
+                fillcolor=_rgba(color, alpha),
+                legendgroup=lg,
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+    # The reference goes in first so every coloured trace is drawn over it. One
+    # legend entry for all its levels: they are one comparison, not several.
+    if reference_agg is not None and not reference_agg.empty:
+        ref_present = [str(g) for g in reference_agg["group"].unique()]
+        ref_levels = [g for g in order if g in set(ref_present)] if order else ref_present
+        name = f"{reference_label} (reference)" if reference_label else "Reference"
+        for i, lvl in enumerate(ref_levels):
+            sub = reference_agg[reference_agg["group"].astype(str) == lvl]
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["zt_hours"],
+                    y=sub["mean_val"],
+                    mode="lines",
+                    name=name,
+                    legendgroup="__reference__",
+                    showlegend=i == 0,
+                    line=dict(color=facets.REFERENCE_COLOUR, width=1.2, dash="dot"),
+                    hovertemplate=f"{name} {lvl}<br>%{{x}}: %{{y:.3g}}<extra></extra>",
+                )
+            )
+            _band(sub, facets.REFERENCE_COLOUR, 0.12, "__reference__")
+
+    # Colours assigned EXPLICITLY, one per group, and the SEM band takes its
+    # group's own colour. Two things were wrong with leaving it to Plotly:
+    #
+    # - The band was a hardcoded blue, so every group's error region was blue
+    #   whatever colour its mean line happened to get.
+    # - Each group adds TWO traces, and plotly.js walks its colourway by trace
+    #   index, so the mean lines landed on every OTHER colour. With a 10-colour
+    #   cycle that means six groups wrap around and the sixth is drawn in the
+    #   first one's colour — two genotypes rendered identically.
+    palette = pc.qualitative.Plotly
+    for idx, grp_key in enumerate(groups_in_order):
+        sub = agg[agg["group"].astype(str) == grp_key]
+        color = (colours or {}).get(grp_key) or palette[idx % len(palette)]
+        name = f"{grp_key} (n={n_flies[grp_key]})" if show_n and grp_key in n_flies else grp_key
+        fig.add_trace(
+            go.Scatter(
+                x=sub["zt_hours"],
+                y=sub["mean_val"],
+                mode="lines",
+                name=name,
+                legendgroup=grp_key,
+                line=dict(color=color),
+            )
+        )
+        _band(sub, color, 0.15, grp_key)
+
+    is_dd = (str(phase_label).upper() == "DD") if phase_label else False
+    x_label = "CT (hours, subjective time)" if is_dd else "ZT (hours)"
+    # Transparent background + explicit BLACK text so the "Download plot as PNG" export
+    # is a clear-background figure with legible labels (not the theme's white text, which
+    # is invisible on a clear/light export). Page 4 renders these with theme=None so this
+    # styling — not Streamlit's dark theme — drives both the on-screen chart and the PNG.
+    _BLACK = "black"
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=profile_y_label(value_col),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=_BLACK),
+        legend=dict(font=dict(color=_BLACK)),
+    )
+    fig.update_xaxes(
+        range=[0, 24],
+        dtick=4,
+        title_font=dict(color=_BLACK),
+        tickfont=dict(color=_BLACK),
+        linecolor=_BLACK,
+    )
+    fig.update_yaxes(title_font=dict(color=_BLACK), tickfont=dict(color=_BLACK), linecolor=_BLACK)
+    return fig
+
+
 def daily_pattern_line(
     ds: xr.Dataset,
     value_col: str,
@@ -371,116 +540,13 @@ def daily_pattern_line(
     if df.empty:
         return go.Figure()
 
-    # Build group labels for each fly
-    id_to_group = {}
-    for fly_id in df["id"].unique():
-        try:
-            fly_ds = ds.sel(id=fly_id)
-            if "group" in ds.coords:
-                id_to_group[fly_id] = str(fly_ds["group"].item())
-            elif "genotype" in ds.coords and "temperature" in ds.coords:
-                id_to_group[fly_id] = f"{fly_ds['genotype'].item()}-{fly_ds['temperature'].item()}"
-            else:
-                id_to_group[fly_id] = "All"
-        except (KeyError, IndexError):
-            id_to_group[fly_id] = "All"
-
-    df["group"] = df["id"].map(id_to_group)
-
-    # Aggregate: mean and SEM per group per ZT bin
-    agg = (
-        df.groupby(["group", "zt_bin_minute"])
-        .agg(
-            mean_val=(value_col, "mean"),
-            sem_val=(
-                value_col,
-                lambda x: x.std(ddof=1) / (len(x.dropna()) ** 0.5) if len(x.dropna()) > 1 else 0,
-            ),
-        )
-        .reset_index()
+    # Group labels for every fly at once (a ds.sel per fly was most of this
+    # function's time on a large dataset).
+    labels = dam_utilities.fly_group_map(ds, default="All")
+    agg = zt_profile_agg(df, value_col, {str(k): v for k, v in labels.items()})
+    return profile_lines(
+        agg, value_col, title, phase_label=phase_label, bin_size_minutes=bin_size_minutes
     )
-
-    # 0/1 fraction masks (sleep, moving) read most naturally as a PERCENT of measured
-    # time. The bin value is already the fraction over MEASURED minutes (the -1 missing
-    # sentinel is excluded in get_zt_binned_dataframe, §2a), so scale to % for display
-    # and label the axis accordingly. Activity (counts) is left as-is.
-    _pct_labels = {"sleep": "% time asleep", "moving": "% time moving"}
-    if value_col in _pct_labels:
-        agg["mean_val"] = agg["mean_val"] * 100.0
-        agg["sem_val"] = agg["sem_val"] * 100.0
-        y_label = _pct_labels[value_col]
-    else:
-        y_label = value_col.capitalize()
-    agg["zt_hours"] = dam_utilities.zt_bin_to_hours(agg["zt_bin_minute"], bin_size_minutes)
-
-    fig = go.Figure()
-    # Colours assigned EXPLICITLY, one per group, and the SEM band takes its
-    # group's own colour. Two things were wrong with leaving it to Plotly:
-    #
-    # - The band was a hardcoded blue, so every group's error region was blue
-    #   whatever colour its mean line happened to get.
-    # - Each group adds TWO traces, and plotly.js walks its colourway by trace
-    #   index, so the mean lines landed on every OTHER colour. With a 10-colour
-    #   cycle that means six groups wrap around and the sixth is drawn in the
-    #   first one's colour — two genotypes rendered identically.
-    groups_in_order = [str(g) for g in agg["group"].unique()]
-    palette = pc.qualitative.Plotly
-    for idx, grp_key in enumerate(groups_in_order):
-        sub = agg[agg["group"].astype(str) == grp_key]
-        color = palette[idx % len(palette)]
-        fig.add_trace(
-            go.Scatter(
-                x=sub["zt_hours"],
-                y=sub["mean_val"],
-                mode="lines",
-                name=grp_key,
-                legendgroup=grp_key,
-                line=dict(color=color),
-            )
-        )
-        # SEM shading — SAME legendgroup as the mean line so a legend click toggles
-        # BOTH the mean AND its error band together (not just the line).
-        fig.add_trace(
-            go.Scatter(
-                x=pd.concat([sub["zt_hours"], sub["zt_hours"][::-1]]),
-                y=pd.concat(
-                    [sub["mean_val"] + sub["sem_val"], (sub["mean_val"] - sub["sem_val"])[::-1]]
-                ),
-                fill="toself",
-                line=dict(color="rgba(0,0,0,0)"),
-                fillcolor=_rgba(color, 0.15),
-                legendgroup=grp_key,
-                showlegend=False,
-                hoverinfo="skip",
-            )
-        )
-
-    is_dd = (str(phase_label).upper() == "DD") if phase_label else False
-    x_label = "CT (hours, subjective time)" if is_dd else "ZT (hours)"
-    # Transparent background + explicit BLACK text so the "Download plot as PNG" export
-    # is a clear-background figure with legible labels (not the theme's white text, which
-    # is invisible on a clear/light export). Page 4 renders these with theme=None so this
-    # styling — not Streamlit's dark theme — drives both the on-screen chart and the PNG.
-    _BLACK = "black"
-    fig.update_layout(
-        title=title,
-        xaxis_title=x_label,
-        yaxis_title=y_label,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=_BLACK),
-        legend=dict(font=dict(color=_BLACK)),
-    )
-    fig.update_xaxes(
-        range=[0, 24],
-        dtick=4,
-        title_font=dict(color=_BLACK),
-        tickfont=dict(color=_BLACK),
-        linecolor=_BLACK,
-    )
-    fig.update_yaxes(title_font=dict(color=_BLACK), tickfont=dict(color=_BLACK), linecolor=_BLACK)
-    return fig
-
 
 _SLEEP_STATE_VARS = [
     ("sleep_short", "Short"),
@@ -987,6 +1053,36 @@ def summary_bars(
 
 
 
+#: A legend UNDER the plot, two entries to a row (a 2×2 block for the four
+#: states), so it costs a little height instead of a third of the width — these
+#: figures are drawn several to a row, where width is what there is least of.
+#: Anchored to the bottom of the whole figure (``yref="container"``), below the
+#: x-axis title, so it cannot land on a title or a subplot's heading; the
+#: figure's bottom margin (:data:`BOTTOM_LEGEND_MARGIN`) leaves it the room.
+BOTTOM_LEGEND = dict(
+    orientation="h",
+    x=0,
+    xanchor="left",
+    yref="container",
+    y=0.0,
+    yanchor="bottom",
+    entrywidth=0.45,
+    entrywidthmode="fraction",
+)
+BOTTOM_LEGEND_MARGIN = 110
+
+#: Short state names, for panel titles where the full "Short sleep (5 to
+#: 30-min)" labels overprint each other. The bout-length definitions are the
+#: user's own settings, stated at the top of the Sleep states page.
+STATE_SHORT_LABELS = {
+    "activity": "Activity",
+    "standard": "Standard",
+    "short": "Short",
+    "intermediate": "Intermediate",
+    "long": "Long",
+}
+
+
 def _state_palette():
     """Paper colours, imported lazily so plotting.py keeps no import-time dep."""
     from sleep_state_metrics import STATE_COLORS, STATE_LABELS
@@ -1320,7 +1416,7 @@ def normalized_waveform_overlay(
             y = sdf["mean_normalized"].values
             sem = sdf["sem_normalized"].values
 
-            label = STATE_LABELS.get(state, state)
+            label = STATE_SHORT_LABELS.get(state, STATE_LABELS.get(state, state))
             name = f"{label} ({group})" if len(groups) > 1 else label
 
             fig.add_trace(
@@ -1363,7 +1459,8 @@ def normalized_waveform_overlay(
         ),
         yaxis=dict(title="Normalized sleep (fraction of max)", range=[0, 1.05]),
         hovermode="x unified",
-        legend=dict(orientation="v"),
+        legend=BOTTOM_LEGEND,
+        margin=dict(b=BOTTOM_LEGEND_MARGIN),
     )
     return fig
 
@@ -1635,7 +1732,13 @@ def initiation_probability_plot(
         row=len(states),
         col=1,
     )
-    fig.update_layout(title=title or "", height=185 * len(states) + 90, bargap=0.12)
+    fig.update_layout(
+        title=title or "",
+        height=185 * len(states) + 90 + BOTTOM_LEGEND_MARGIN - 60,
+        bargap=0.12,
+        legend=BOTTOM_LEGEND,
+        margin=dict(b=BOTTOM_LEGEND_MARGIN - 20),
+    )
     return fig
 
 
@@ -1922,18 +2025,7 @@ def period_amplitude_plot(
     return fig
 
 
-_GROUP_PALETTE = [
-    "#4477AA",
-    "#EE6677",
-    "#228833",
-    "#CCBB44",
-    "#66CCEE",
-    "#AA3377",
-    "#BBBBBB",
-    "#000000",
-    "#EE7733",
-    "#009988",
-]
+_GROUP_PALETTE = list(facets.CATEGORICAL_PALETTE)
 
 
 def group_spectrum_plot(
@@ -1950,6 +2042,10 @@ def group_spectrum_plot(
     group_order=None,
     show_individual=False,
     return_data=False,
+    colours=None,
+    reference_curves=None,
+    reference_label=None,
+    show_legend_title=True,
 ):
     """Overlay one group-averaged curve (mean ± SEM band) per group on a shared x-axis.
 
@@ -1985,6 +2081,12 @@ def group_spectrum_plot(
         If True, draw each fly's own curve as a faint line under the group
         mean (same colour/legendgroup as its group, so a legend click hides
         the individual lines along with the mean and its band).
+    colours : dict or None
+        ``{group: colour}``, overriding the palette — a faceted layout passes one
+        mapping to every panel so a level keeps its colour across panels.
+    reference_curves : dict or None
+        Same shape as ``per_group_curves``: control flies drawn in grey (mean ±
+        SEM) underneath every group, one legend entry for all of them.
 
     Returns
     -------
@@ -2009,6 +2111,57 @@ def group_spectrum_plot(
     groups = group_order if group_order is not None else sorted(per_group_curves)
     export_cols = {xlabel: x_axis}  # for the save-to-working-folder export
 
+    # Grey control curves first, so every coloured group is drawn over them.
+    if reference_curves:
+        ref_name = f"{reference_label} (reference)" if reference_label else "Reference"
+        ref_order = [g for g in groups if g in reference_curves] or sorted(reference_curves)
+        shown_legend = False
+        for gname in ref_order:
+            mat = np.asarray(reference_curves[gname], dtype=float)
+            if mat.ndim == 1:
+                mat = mat[np.newaxis, :]
+            if mat.shape[0] == 0 or mat.shape[1] != len(x_axis):
+                continue
+            n_valid = np.sum(np.isfinite(mat), axis=0)
+            with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                mean = np.nanmean(mat, axis=0)
+                sd = np.nanstd(mat, axis=0, ddof=1)
+            sem = np.where(n_valid > 1, sd / np.sqrt(np.maximum(n_valid, 1)), 0.0)
+            export_cols[f"{ref_name} {gname} mean (n={mat.shape[0]})"] = mean
+            export_cols[f"{ref_name} {gname} sem"] = sem
+            fig.add_trace(
+                go.Scatter(
+                    x=x_axis,
+                    y=mean,
+                    mode="lines",
+                    name=ref_name,
+                    legendgroup="__reference__",
+                    showlegend=not shown_legend,
+                    line=dict(color=facets.REFERENCE_COLOUR, width=1.2, dash="dot"),
+                    hovertemplate=f"{ref_name} {gname}: %{{y:.3g}}<extra></extra>",
+                )
+            )
+            shown_legend = True
+            valid = np.isfinite(mean) & np.isfinite(sem)
+            if np.any(valid):
+                xv = x_axis[valid]
+                hi, lo = (mean + sem)[valid], (mean - sem)[valid]
+                if y_log:
+                    lo = np.maximum(lo, 1e-6)
+                fig.add_trace(
+                    go.Scatter(
+                        x=np.concatenate([xv, xv[::-1]]),
+                        y=np.concatenate([hi, lo[::-1]]),
+                        fill="toself",
+                        fillcolor=_rgba(facets.REFERENCE_COLOUR, 0.12),
+                        line=dict(color="rgba(0,0,0,0)"),
+                        legendgroup="__reference__",
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
+                )
+
     for gi, gname in enumerate(groups):
         mat = per_group_curves.get(gname)
         if mat is None:
@@ -2030,7 +2183,7 @@ def group_spectrum_plot(
         export_cols[f"{gname} mean (n={mat.shape[0]})"] = mean
         export_cols[f"{gname} sem"] = sem
 
-        color = _GROUP_PALETTE[gi % len(_GROUP_PALETTE)]
+        color = (colours or {}).get(str(gname)) or _GROUP_PALETTE[gi % len(_GROUP_PALETTE)]
         r, g_c, b_c = tuple(int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
         n_flies = mat.shape[0]
 
@@ -2124,7 +2277,11 @@ def group_spectrum_plot(
     fig.update_layout(
         title=title,
         hovermode="x unified",
-        legend=dict(title="Group", font=dict(color=_BLACK), title_font=dict(color=_BLACK)),
+        legend=dict(
+            title="Group" if show_legend_title else None,
+            font=dict(color=_BLACK),
+            title_font=dict(color=_BLACK),
+        ),
         font=dict(color=_BLACK),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -2712,7 +2869,7 @@ def rose_plot_with_activity(
         rows=1,
         cols=len(panels),
         specs=[[{"type": "polar"}] * len(panels)],
-        subplot_titles=[labels.get(p, p) for p in panels],
+        subplot_titles=[STATE_SHORT_LABELS.get(p, labels.get(p, p)) for p in panels],
         horizontal_spacing=0.02,
     )
 
@@ -2848,7 +3005,7 @@ def polar_gating_plot(
                     colors[state],
                     width=7,
                     alpha=1.0,
-                    name=labels.get(state, state),
+                    name=STATE_SHORT_LABELS.get(state, labels.get(state, state)),
                     show_legend=True,
                 )
             )
@@ -2857,20 +3014,21 @@ def polar_gating_plot(
     layout["radialaxis"]["range"] = [0, 1.0 + 0.055 * len(present) + 0.05]
     # Pin the polar domain rather than letting the legend squeeze it, so the
     # CT/ZT label in the middle of the rings can be placed on the actual centre
-    # of the circle. With an auto domain the legend shifts the plot left and a
-    # paper-space x of 0.5 lands off-centre.
-    domain_x = (0.0, 0.66)
-    layout["domain"] = dict(x=list(domain_x), y=[0.0, 1.0])
+    # of the circle. The legend sits under the rings (BOTTOM_LEGEND), so the
+    # rings keep the full width and give up only the bottom of the height.
+    domain_x = (0.0, 1.0)
+    domain_y = (0.14, 1.0)
+    layout["domain"] = dict(x=list(domain_x), y=list(domain_y))
     fig.update_layout(
         title=title,
         polar=layout,
         showlegend=True,
-        legend=dict(x=0.70, y=0.9, yanchor="top"),
+        legend=BOTTOM_LEGEND,
         annotations=[
             dict(
                 text="CT" if phase_label == "DD" else "ZT",
                 x=sum(domain_x) / 2,
-                y=0.5,
+                y=sum(domain_y) / 2,
                 xref="paper",
                 yref="paper",
                 showarrow=False,
@@ -4702,6 +4860,30 @@ def phase_response_violins(
 
 
 
+#: Axis styling for a publication-style panel: solid black axis lines with
+#: outward tick marks — one at each category (each temperature) on x — and
+#: black labels a size up from plotly's default.
+FRAMED_AXIS = dict(
+    showline=True,
+    linecolor="black",
+    linewidth=1.5,
+    ticks="outside",
+    ticklen=6,
+    tickwidth=1.5,
+    tickcolor="black",
+    tickfont=dict(size=13, color="black"),
+    title_font=dict(size=14, color="black"),
+    zeroline=False,
+)
+
+
+def framed_axes(fig):
+    """Apply :data:`FRAMED_AXIS` to every x and y axis of ``fig``. Returns it."""
+    fig.update_xaxes(**FRAMED_AXIS)
+    fig.update_yaxes(**FRAMED_AXIS)
+    return fig
+
+
 #: One violin colour per measure, so the three panels of a set are told apart at a
 #: glance without the colour ever encoding a group (the x axis does that).
 #:
@@ -4720,6 +4902,11 @@ def group_violins(
     show_points=True,
     colour=MEASURE_COLOURS[0],
     groups=None,
+    colours=None,
+    x_numeric=False,
+    reference=None,
+    reference_label=None,
+    x_title="group",
 ):
     """One violin per group, for ONE measure. The distribution behind a group bar.
 
@@ -4744,56 +4931,472 @@ def group_violins(
         Fixes the x order across a set of panels. Without it a group that is absent
         from one measure shifts every later column, and three panels meant to be
         read down a page no longer line up.
+    colours : dict, optional
+        ``{group: colour}``: one colour per violin, where the x axis is a level of
+        the compared factor (a temperature series) rather than a group. Without
+        it every violin takes ``colour``, as before.
+    x_numeric : bool
+        Place the violins at the number each group stands for (18, 22, 25 °C —
+        :func:`facets.level_value`) instead of evenly spaced categories.
+    reference : pd.DataFrame, optional
+        Control flies (same ``group_col``/``value_col``), drawn as grey violins
+        at the same x, behind the coloured ones.
 
     Returns
     -------
     (go.Figure, pd.DataFrame)
         The figure, and the rows actually drawn.
     """
+    def _nothing(frame):
+        # A panel with nothing to draw — every fly in it filtered out ("rhythmic
+        # only" on a genotype with no rhythmic flies). Still titled and styled
+        # like its neighbours, and it says so, rather than a bare default figure
+        # that reads as a broken chart.
+        empty = go.Figure()
+        empty.add_annotation(
+            text="No flies with a value to show",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(color="#777777"),
+        )
+        empty.update_layout(
+            title=title or str(value_col),
+            height=380,
+            plot_bgcolor="white",
+            margin=dict(l=70, r=30, t=60, b=110),
+        )
+        empty.update_xaxes(visible=False)
+        empty.update_yaxes(visible=False)
+        return empty, frame
+
     fig = go.Figure()
     if per_fly is None or per_fly.empty or value_col not in per_fly.columns:
-        return fig, pd.DataFrame()
+        return _nothing(pd.DataFrame())
 
     drawn = per_fly[[group_col, value_col]].copy()
     drawn[value_col] = pd.to_numeric(drawn[value_col], errors="coerce")
     drawn = drawn[drawn[value_col].notna()]
     if drawn.empty:
-        return fig, drawn
+        return _nothing(drawn)
 
     order = list(groups) if groups is not None else sorted(
         drawn[group_col].astype(str).unique()
     )
-    fig.add_trace(
-        go.Violin(
-            x=drawn[group_col].astype(str),
-            y=np.asarray(drawn[value_col], dtype=float),
-            name=str(value_col),
-            line=dict(color=colour, width=1.3),
-            fillcolor=colour,
-            opacity=0.55,
-            points="all" if show_points else False,
-            jitter=0.3,
-            pointpos=0,
-            marker=dict(size=4, opacity=0.65, color="#333333"),
-            meanline=dict(visible=True),
-            box=dict(visible=False),
-            spanmode="hard",
-            showlegend=False,
-            hoverinfo="y+x",
+
+    if colours is None and reference is None and not x_numeric:
+        fig.add_trace(
+            go.Violin(
+                x=drawn[group_col].astype(str),
+                y=np.asarray(drawn[value_col], dtype=float),
+                name=str(value_col),
+                line=dict(color=colour, width=1.3),
+                fillcolor=colour,
+                opacity=0.55,
+                points="all" if show_points else False,
+                jitter=0.3,
+                pointpos=0,
+                marker=dict(size=4, opacity=0.65, color="#333333"),
+                meanline=dict(visible=True),
+                box=dict(visible=False),
+                spanmode="hard",
+                showlegend=False,
+                hoverinfo="y+x",
+            )
         )
-    )
+        fig.update_xaxes(
+            title=x_title,
+            categoryorder="array",
+            categoryarray=order,
+            tickangle=-25,
+            showgrid=False,
+        )
+    else:
+        # One trace per level so each can take its own colour. Overlay mode puts a
+        # level's reference violin exactly behind it instead of beside it.
+        pos = {g: (facets.level_value(g) if x_numeric else g) for g in order}
+        if x_numeric and any(v is None for v in pos.values()):
+            x_numeric, pos = False, {g: g for g in order}
+        width = None
+        if x_numeric:
+            xs = sorted({float(v) for v in pos.values()})
+            gaps = np.diff(xs)
+            width = 0.8 * float(gaps.min()) if len(gaps) else 1.0
+
+        ref = None
+        if reference is not None and not reference.empty and value_col in reference.columns:
+            ref = reference[[group_col, value_col]].copy()
+            ref[value_col] = pd.to_numeric(ref[value_col], errors="coerce")
+            ref = ref[ref[value_col].notna()]
+        ref_name = f"{reference_label} (reference)" if reference_label else "Reference"
+
+        def _violin(vals, x, color, *, name, legendgroup, showlegend, points, opacity):
+            return go.Violin(
+                x=[x] * len(vals),
+                y=vals,
+                name=name,
+                legendgroup=legendgroup,
+                line=dict(color=color, width=1.3),
+                fillcolor=color,
+                opacity=opacity,
+                points=points,
+                jitter=0.3,
+                pointpos=0,
+                marker=dict(size=4, opacity=0.65, color="#333333"),
+                meanline=dict(visible=True),
+                box=dict(visible=False),
+                spanmode="hard",
+                width=width,
+                showlegend=showlegend,
+                hoverinfo="y+name",
+            )
+
+        if ref is not None and not ref.empty:
+            first = True
+            for g in order:
+                vals = np.asarray(ref.loc[ref[group_col].astype(str) == g, value_col], float)
+                if len(vals) == 0:
+                    continue
+                fig.add_trace(
+                    _violin(
+                        vals, pos[g], facets.REFERENCE_COLOUR,
+                        name=ref_name, legendgroup="__reference__", showlegend=first,
+                        points=False, opacity=0.5,
+                    )
+                )
+                first = False
+
+        for g in order:
+            vals = np.asarray(drawn.loc[drawn[group_col].astype(str) == g, value_col], float)
+            if len(vals) == 0:
+                continue
+            color = (colours or {}).get(g, colour)
+            fig.add_trace(
+                _violin(
+                    vals, pos[g], color,
+                    name=f"{g} (n={len(vals)})", legendgroup=g, showlegend=False,
+                    points="all" if show_points else False, opacity=0.6,
+                )
+            )
+
+        fig.update_layout(violinmode="overlay", showlegend=ref is not None and not ref.empty)
+        if x_numeric:
+            fig.update_xaxes(
+                title=x_title,
+                tickmode="array",
+                tickvals=[pos[g] for g in order],
+                ticktext=order,
+                showgrid=False,
+            )
+        else:
+            fig.update_xaxes(
+                title=x_title,
+                categoryorder="array",
+                categoryarray=order,
+                showgrid=False,
+            )
+        if ref is not None and not ref.empty:
+            drawn = pd.concat(
+                [drawn.assign(reference=False), ref.assign(reference=True)], ignore_index=True
+            )
+
     fig.update_layout(
         title=title or str(value_col),
         height=380,
         plot_bgcolor="white",
         margin=dict(l=70, r=30, t=60, b=110),
     )
-    fig.update_xaxes(
-        title="group",
-        categoryorder="array",
-        categoryarray=order,
-        tickangle=-25,
-        showgrid=False,
-    )
     fig.update_yaxes(title=y_title, showgrid=True, gridcolor="#eeeeee", rangemode="tozero")
+    framed_axes(fig)
     return fig, drawn
+
+
+
+# ---------------------------------------------------------------------------
+# Faceted layouts — one panel per combination of factors (see core/facets.py)
+# ---------------------------------------------------------------------------
+#
+# Each builder takes data computed ONCE for the whole dataset and a list of
+# facets.Panel, and returns ``[(panel, fig), ...]``. They only select each
+# panel's flies and hand them to the ordinary renderers above with one shared
+# colour map, so a faceted figure and an unfaceted one of the same flies agree
+# trace for trace. Nothing here computes anything the page did not already have.
+
+
+def _panel_title(title, panel):
+    return f"{title} — {panel.title}" if title and panel.title else (panel.title or title)
+
+
+def _trace_y_values(trace):
+    y = getattr(trace, "y", None)
+    if y is None:
+        return np.array([])
+    y = np.asarray(y, dtype=float) if len(y) else np.array([])
+    return y[np.isfinite(y)]
+
+
+_SHAREABLE_TRACES = {"scatter", "scattergl", "bar", "violin", "box"}
+
+
+def _single_linear_y(fig):
+    """True for a plain figure: one linear y-axis, cartesian traces only. Polar
+    plots, heatmaps and multi-row subplots have no single y-range to share."""
+    if (fig.layout.yaxis.type or "linear") == "log" or "yaxis2" in fig.layout:
+        return False
+    return all(t.type in _SHAREABLE_TRACES for t in fig.data)
+
+
+def apply_shared_y(figs, *, pad=0.05, include_zero=False):
+    """Give every figure in ``figs`` the same y-range, covering every trace in all
+    of them — SEM bands included, so the widest band is never clipped.
+
+    Figures on a log y-axis are left alone (their range is in log units, and a
+    shared one would need the data's own positive floor), and so are figures
+    with more than one y-axis or with non-cartesian traces. Returns ``figs``.
+    """
+    figs = [f for f in figs if f is not None]
+    linear = [f for f in figs if _single_linear_y(f)]
+    vals = [v for f in linear for t in f.data for v in [_trace_y_values(t)] if v.size]
+    if not vals:
+        return figs
+    allv = np.concatenate(vals)
+    lo, hi = float(allv.min()), float(allv.max())
+    if include_zero:
+        lo, hi = min(lo, 0.0), max(hi, 0.0)
+    span = (hi - lo) or abs(hi) or 1.0
+    rng = [lo - pad * span if not (include_zero and lo == 0.0) else 0.0, hi + pad * span]
+    for f in linear:
+        f.update_yaxes(range=rng, autorange=False)
+    return figs
+
+
+def faceted_profiles(
+    zt_df,
+    value_col,
+    panels,
+    colours,
+    *,
+    title="",
+    phase_label=None,
+    bin_size_minutes=30,
+    shared_y=True,
+):
+    """ZT profiles, one figure per panel, one line per compare level.
+
+    ``zt_df`` is the per-fly ZT-binned frame for the WHOLE dataset (binned once;
+    each panel takes its own flies from it). The grey reference is drawn only in a
+    panel with a single level (:attr:`facets.Panel.line_reference_series`).
+    """
+    out = []
+    for p in panels:
+        agg = zt_profile_agg(zt_df, value_col, p.labels(), bin_size_minutes)
+        ref = (
+            zt_profile_agg(zt_df, value_col, p.reference_labels(lines=True), bin_size_minutes)
+            if p.line_reference_series
+            else None
+        )
+        fig = profile_lines(
+            agg,
+            value_col,
+            _panel_title(title, p),
+            phase_label=phase_label,
+            bin_size_minutes=bin_size_minutes,
+            colours=colours,
+            order=p.levels,
+            reference_agg=ref,
+            reference_label=p.reference_label,
+            show_n=True,
+        )
+        out.append((p, fig))
+    if shared_y:
+        apply_shared_y([f for _, f in out])
+    return out
+
+
+def faceted_violins(
+    per_fly,
+    value_col,
+    panels,
+    colours,
+    *,
+    id_col="ID",
+    title="",
+    y_title="minutes",
+    x_title=None,
+    x_numeric=None,
+    shared_y=True,
+    show_points=True,
+    y_from_zero=True,
+):
+    """Per-fly distributions, one figure per panel, one violin per compare level.
+
+    ``per_fly`` has one row per fly with ``id_col`` and ``value_col``
+    (:func:`per_fly_summary_table`, the rhythmicity per-fly table, …).
+    ``x_numeric=None`` places the violins by value whenever every level is a
+    number (the 18/22/25/27/29 °C spacing); pass False for even spacing.
+    """
+    out = []
+    if per_fly is None or per_fly.empty or value_col not in per_fly.columns:
+        return out
+    ids = per_fly[id_col].astype(str)
+    levels = facets.layout_levels(panels)
+    if x_numeric is None:
+        x_numeric = facets.is_numeric_levels(levels)
+    for p in panels:
+        lab = p.labels()
+        sub = per_fly[ids.isin(lab)].assign(_level=ids[ids.isin(lab)].map(lab))
+        ref = None
+        if p.reference_series:
+            rlab = p.reference_labels()
+            ref = per_fly[ids.isin(rlab)].assign(_level=ids[ids.isin(rlab)].map(rlab))
+        fig, _ = group_violins(
+            sub,
+            value_col,
+            group_col="_level",
+            title=_panel_title(title, p),
+            y_title=y_title,
+            show_points=show_points,
+            groups=p.levels,
+            colours=colours,
+            x_numeric=x_numeric,
+            reference=ref,
+            reference_label=p.reference_label,
+            x_title=x_title or "",
+        )
+        if not y_from_zero:
+            fig.update_yaxes(rangemode="normal")
+        out.append((p, fig))
+    if shared_y:
+        apply_shared_y([f for _, f in out], include_zero=y_from_zero)
+    return out
+
+
+def curves_by_label(ids, mat, labels, order=None):
+    """``{label: (n_flies, n_points) array}`` from a per-fly curve matrix.
+
+    ``ids`` aligns to ``mat``'s rows; flies whose id has no label are left out,
+    and so are flies whose whole curve is NaN (unanalysable).
+    """
+    ids = np.asarray([str(i) for i in ids])
+    mat = np.asarray(mat, dtype=float)
+    lab = np.asarray([labels.get(i) for i in ids], dtype=object)
+    keys = order if order is not None else sorted({v for v in lab if v is not None})
+    out = {}
+    for k in keys:
+        rows = mat[lab == k]
+        rows = rows[~np.all(~np.isfinite(rows), axis=1)] if rows.size else rows
+        if rows.shape[0]:
+            out[k] = rows
+    return out
+
+
+def faceted_spectra(ids, mat, x_axis, panels, colours, *, title="", shared_y=True, **plot_kw):
+    """Group-averaged spectra, one figure per panel, one curve per compare level.
+
+    ``ids``/``mat`` are the per-fly curves (already normalised as the page wants)
+    for the whole dataset. ``plot_kw`` goes to :func:`group_spectrum_plot`.
+    """
+    out = []
+    for p in panels:
+        per_level = curves_by_label(ids, mat, p.labels(), p.levels)
+        ref = (
+            curves_by_label(ids, mat, p.reference_labels(lines=True), p.levels)
+            if p.line_reference_series
+            else None
+        )
+        fig = group_spectrum_plot(
+            per_level,
+            x_axis,
+            group_order=[lvl for lvl in p.levels if lvl in per_level],
+            title=_panel_title(title, p),
+            colours=colours,
+            reference_curves=ref,
+            reference_label=p.reference_label,
+            show_legend_title=False,
+            **plot_kw,
+        )
+        out.append((p, fig))
+    if shared_y:
+        apply_shared_y([f for _, f in out])
+    return out
+
+
+def _remap_ref(ref, n):
+    """Map a single-plot axis reference (``x``, ``y domain``) onto subplot ``n``."""
+    if not ref or ref == "paper" or n == 1:
+        return ref
+    axis, _, rest = ref.partition(" ")
+    if axis in ("x", "y"):
+        return f"{axis}{n}" + (f" {rest}" if rest else "")
+    return ref
+
+
+def combine_panels(panel_figs, *, ncols=3, title=None, shared_y=True, panel_height=340):
+    """One figure holding every panel on a grid — for "save all panels as one
+    image" and for a command-line export of the whole layout.
+
+    ``panel_figs`` is ``[(panel, fig), ...]`` from a ``faceted_*`` builder. Traces,
+    axis settings and shapes (the 24 h reference line) are copied across; the
+    legend keeps one entry per name, since every panel carries the same levels.
+    """
+    from plotly.subplots import make_subplots
+
+    panel_figs = [(p, f) for p, f in panel_figs if f is not None]
+    if not panel_figs:
+        return go.Figure()
+    n = len(panel_figs)
+    ncols = max(1, min(int(ncols), n))
+    nrows = -(-n // ncols)
+    grid = make_subplots(
+        rows=nrows,
+        cols=ncols,
+        subplot_titles=[p.title or "" for p, _ in panel_figs],
+        shared_yaxes="all" if shared_y else False,
+        horizontal_spacing=0.06,
+        vertical_spacing=min(0.12, 0.35 / max(nrows - 1, 1)),
+    )
+    seen = set()
+    for i, (_, f) in enumerate(panel_figs):
+        r, c = i // ncols + 1, i % ncols + 1
+        for t in f.data:
+            t = go.Figure(data=[t]).data[0]  # a copy, so the panel figure is untouched
+            # One legend entry per level across the grid. Panel legends carry each
+            # panel's own n, so the grid names an entry by its level alone.
+            key = t.legendgroup or t.name
+            if t.showlegend is not False and t.name:
+                if t.legendgroup and t.legendgroup != "__reference__":
+                    t.name = t.legendgroup
+                t.showlegend = key not in seen
+                seen.add(key)
+            grid.add_trace(t, row=r, col=c)
+        src_x, src_y = f.layout.xaxis, f.layout.yaxis
+        x_kw = {
+            k: getattr(src_x, k)
+            for k in ("type", "range", "tickmode", "tickvals", "ticktext", "dtick",
+                      "categoryorder", "categoryarray")
+            if getattr(src_x, k) is not None
+        }
+        y_kw = {k: getattr(src_y, k) for k in ("type", "range") if getattr(src_y, k) is not None}
+        if r == nrows:
+            x_kw["title_text"] = src_x.title.text
+        if c == 1:
+            y_kw["title_text"] = src_y.title.text
+        grid.update_xaxes(row=r, col=c, **x_kw)
+        grid.update_yaxes(row=r, col=c, **y_kw)
+        n_ax = i + 1
+        for shp in f.layout.shapes or ():
+            d = shp.to_plotly_json()
+            d["xref"] = _remap_ref(d.get("xref", "x"), n_ax)
+            d["yref"] = _remap_ref(d.get("yref", "y"), n_ax)
+            grid.add_shape(d)
+    violins = any(isinstance(t, go.Violin) for _, f in panel_figs for t in f.data)
+    grid.update_layout(
+        title=title,
+        height=panel_height * nrows + 80,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color="black"),
+        showlegend=bool(seen),
+        **({"violinmode": "overlay"} if violins else {}),
+    )
+    framed_axes(grid)
+    grid.update_yaxes(gridcolor="#eeeeee")
+    return grid

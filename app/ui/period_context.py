@@ -1,16 +1,12 @@
-"""The phase and period-range context shared by Period analysis and Rhythmicity.
+"""The phase and period-range context for the Period & rhythmicity page.
 
-Splitting the old 1361-line Period Analysis page into a "run" half and an
-"explore" half exposed a coupling that was previously invisible because both
-halves lived in one script: the classification window is not its own control.
-It is ``min_period`` / ``max_period`` from the top of the page, reused verbatim
-when classifying (old ``3_Period_Analysis.py:1237-1241``). The phase cascade that
-produces ``period_ds`` is shared the same way.
-
-So both live here and both pages render them, sharing widget keys. Same defaults
-and same values as before, so behaviour is unchanged — the Rhythmicity page just
-now shows you which phase and which window it is classifying against, instead of
-inheriting them from a scroll position.
+The classification window is not its own control: it is ``min_period`` /
+``max_period``, the same range the period search runs over. Those, the DD-days
+floor and the gap-bridging ceiling are rendered here in one row
+(:func:`render_period_row`), and the phase cascade that produces ``period_ds``
+is resolved here too (:func:`render_phase_picker`). The page hands the result
+to every tab, so the tabs cannot disagree about which epoch or which window a
+number came from.
 """
 
 import numpy as np
@@ -19,10 +15,9 @@ import streamlit as st
 # Streamlit garbage-collects a keyed widget's session-state entry as soon as a
 # run does not instantiate that widget — and on a page switch it does that
 # BEFORE the new page's script runs. So a widget key alone does NOT carry a
-# value from Period analysis to Rhythmicity: the second page re-seeds from its
-# own default. These two pages must agree on the phase and the period range
-# (the range IS the classification window), so each widget is backed by a
-# shadow key with no widget attached to it, which nothing collects.
+# value away from the page and back: it re-seeds from its default. Each of these
+# widgets is backed by a shadow key with no widget attached, which nothing
+# collects, so the phase and range you set are still set when you return.
 _PERSIST_PREFIX = "_persist_"
 
 
@@ -136,38 +131,22 @@ def render_phase_picker(ds, *, quiet=False):
     return phase_selection, period_ds, analysis_src, phase_arg
 
 
-def render_period_range(*, show_caption=True, quiet=False):
-    """Render the min/max period inputs and return ``(min_period, max_period)``.
+def render_period_row():
+    """The four numbers every period analysis runs on, in ONE row:
+    ``(min_period, max_period, min_dd_days, max_bridge_gap)``.
 
-    ``quiet=True`` returns the remembered range without drawing the inputs, for a
-    page that consumes the classification window rather than setting it.
-
-    Keyed so the value carries between Period analysis and Rhythmicity: the same
-    range drives the search on one page and the classification window on the
-    other, and they must not be allowed to disagree.
+    Min/max period is the search range AND the classification window; the DD-days
+    floor excludes short records; the gap ceiling is how much missing data CWT,
+    AC and MESA bridge. Same widget keys as when they were separate rows, so a
+    remembered value carries over.
     """
     import periodograms
 
-    if quiet:
-        return (
-            float(_remembered("period_min_h", float(periodograms.DEFAULT_CWT_MIN_PERIOD))),
-            float(_remembered("period_max_h", float(periodograms.DEFAULT_CWT_MAX_PERIOD))),
-        )
-
     st.subheader("Period range")
-    if show_caption:
-        st.caption(
-            "This range drives BOTH the period search and the classification window "
-            "(they track together). Rejecting arrhythmic red-noise ramps is the "
-            "metric's job (CWT `global_rednoise`), not the window's — so the range can "
-            "be widened for long-period lines without inflating false positives. A "
-            "short record cannot resolve the top of the band; CWT warns and analyses "
-            "only the resolvable sub-band."
-        )
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
         min_period = st.number_input(
-            "Min period (hours)",
+            "Min period (h)",
             min_value=1.0,
             max_value=48.0,
             value=_remembered("period_min_h", float(periodograms.DEFAULT_CWT_MIN_PERIOD)),
@@ -175,43 +154,59 @@ def render_period_range(*, show_caption=True, quiet=False):
             key="period_min_h",
         )
         _remember("period_min_h", min_period)
-    with col2:
+    with c2:
         max_period = st.number_input(
-            "Max period (hours)",
+            "Max period (h)",
             min_value=1.0,
             max_value=72.0,
             value=_remembered("period_max_h", float(periodograms.DEFAULT_CWT_MAX_PERIOD)),
             step=1.0,
             key="period_max_h",
+            help="Widen for known long-period lines: a ~43 h rhythm reads arrhythmic at "
+            "a 36 h ceiling. CWT `global_rednoise` stays range-robust when widened.",
         )
         _remember("period_max_h", max_period)
+    with c3:
+        floor = st.number_input(
+            "Min DD days",
+            min_value=0.0,
+            max_value=30.0,
+            value=_remembered("min_days_floor_shared", float(periodograms.DEFAULT_MIN_DD_DAYS_FLOOR)),
+            step=0.5,
+            key="min_days_floor_shared",
+            help="Flies whose longest analysable DD block is shorter than this are "
+            "EXCLUDED from period analysis (no period computed; absent from the period "
+            "graphs). ~4 days is a reasonable floor. 0 keeps every fly.",
+        )
+        remember_min_days_floor(floor)
+    with c4:
+        max_gap = st.number_input(
+            "Max gap to bridge (min)",
+            min_value=0.0,
+            max_value=120.0,
+            value=_remembered("max_bridge_gap", float(periodograms.DEFAULT_MAX_BRIDGE_GAP_MINUTES)),
+            step=5.0,
+            key="max_bridge_gap",
+            help="Interior gaps up to this long are bridged by linear interpolation for "
+            "CWT, autocorrelation and MESA only (never written to the .nc). Longer gaps "
+            "break the record and the longest clean segment is analysed. 0 = off. "
+            "Validated to 60 min; Lomb-Scargle is gap-native and ignores this.",
+        )
+        _remember("max_bridge_gap", max_gap)
+    st.caption(
+        "The period range drives both the period search and the classification window."
+    )
 
     if min_period >= max_period:
         st.error("Min period must be less than max period.")
         st.stop()
-
-    return min_period, max_period
+    return min_period, max_period, floor, max_gap
 
 
 def remember_min_days_floor(value):
-    """Record the DD-days floor so Rhythmicity can flag under-floor flies with
-    the same number Period analysis filtered on. Called by the page that owns
-    the widget; see :func:`min_days_floor` for the read side."""
+    """Record the DD-days floor past the widget's lifetime, so it survives a
+    page switch (see ``_PERSIST_PREFIX``)."""
     return _remember("min_days_floor_shared", float(value))
-
-
-def min_days_floor():
-    """The DD-days retention floor set on the Period analysis page.
-
-    Read from the widget key rather than passed along, so the Rhythmicity page
-    can flag under-floor flies with the same number the run page filtered on
-    without the two pages having to hand it between them.
-    """
-    import periodograms
-
-    return float(
-        _remembered("min_days_floor_shared", float(periodograms.DEFAULT_MIN_DD_DAYS_FLOOR))
-    )
 
 
 def merge_analysis_outputs(master, result_ds):

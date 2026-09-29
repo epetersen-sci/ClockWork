@@ -21,8 +21,9 @@ CACHED_HELPERS = [
     ("app_pages.sleep_activity", "_cached_daily_pattern"),
     ("app_pages.sleep_activity", "_cached_summary_table"),
     ("app_pages.sleep_activity", "_cached_bout_duration_lines"),
-    ("app_pages.periodograms", "_curves_by_group"),
-    ("app_pages.rhythmicity", "_build_period_summary_df"),
+    ("app_pages.sleep_activity", "_cached_faceted_profiles"),
+    ("period_views.periodograms_tab", "_curve_matrix"),
+    ("period_views.period_length_tab", "_build_period_summary_df"),
 ]
 
 

@@ -110,20 +110,12 @@ if __name__ == "__main__":
                     title="Actograms",
                     icon=":material/view_day:",
                 ),
+                # One page, five tabs: it was Period analysis, Rhythmicity and
+                # Periodograms, which had to agree on the phase and the period range.
                 st.Page(
-                    "app_pages/period_analysis.py",
-                    title="Period analysis",
+                    "app_pages/period_rhythmicity.py",
+                    title="Period & rhythmicity",
                     icon=":material/schedule:",
-                ),
-                st.Page(
-                    "app_pages/periodograms.py",
-                    title="Periodograms",
-                    icon=":material/graphic_eq:",
-                ),
-                st.Page(
-                    "app_pages/rhythmicity.py",
-                    title="Rhythmicity",
-                    icon=":material/rule:",
                 ),
                 st.Page(
                     "app_pages/phase_shift.py",

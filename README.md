@@ -29,9 +29,7 @@ any point and reload without recomputing.
   - [Groups & subsets](#groups--subsets)
   - [Curate & split](#curate--split)
   - [Actograms](#actograms)
-  - [Period analysis](#period-analysis)
-  - [Periodograms](#periodograms)
-  - [Rhythmicity](#rhythmicity)
+  - [Period & rhythmicity](#period--rhythmicity)
   - [Phase shift](#phase-shift)
   - [Activity & Sleep](#activity--sleep)
   - [Sleep states](#sleep-states)
@@ -131,7 +129,7 @@ taken, append `--server.port 8502`.
    downstream (**Sleep states**, **Sleep deprivation**, **Save & export**) reads
    the result from here.
 7. Then whichever analysis you need: **Actograms** to see the raw pattern,
-   **Period analysis** for circadian period, **Activity & Sleep** for
+   **Period & rhythmicity** for circadian period, **Activity & Sleep** for
    sleep/activity profiles, **HMM analysis** for sleep-state structure,
    **Phase shift** for light-pulse experiments.
 8. **Export → Save & export** → save the dataset as `.nc` so you never have to
@@ -278,10 +276,10 @@ completed.
 Within each section the order is the order the work actually takes. Two
 dependencies are worth knowing about:
 
-- **Periodograms** and **Rhythmicity** both read what **Period analysis**
-  computed and stay empty until it has run. Rhythmicity shares its phase and
-  period-range controls with Period analysis — the period range is *also* the
-  classification window, so changing it on either page changes both.
+- On **Period & rhythmicity**, the Rhythmicity cutoff, Period length,
+  Rhythmicity and Periodograms tabs read what the **Analysis** tab computed and
+  stay empty until it has run. All five tabs share the phase and period-range
+  controls at the top — the period range is *also* the classification window.
 - Sleep detection runs from the top of **Activity & Sleep**'s Sleep tab.
   **Sleep states**, **Sleep deprivation**, the HMM agreement statistic and the
   sleep exports all read what it produces.
@@ -361,49 +359,40 @@ the window and minimum-alive threshold behind the call. Before curation it draws
 every imported fly, including any that died mid-recording, and says that
 instead.
 
-### Period analysis
+### Period & rhythmicity
 
-The core circadian engine. Runs up to four
-independent period estimators — [CWT](#continuous-wavelet-transform-cwt),
-[Lomb-Scargle](#lomb-scargle-periodogram),
-[Autocorrelation](#autocorrelation-rhythmicity-index) and [MESA](#mesa--maximum-entropy-spectral-analysis) —
-one per tab, each with its own advanced-parameter expander and a plain-language
-explanation of the method.
+The core circadian engine: running the period estimators, deciding which flies
+are rhythmic, and reading the results, on one page. Four shared controls sit at
+the top, in one row, and govern every tab:
 
-Four shared controls sit above the tabs and govern all four methods:
-
-- **Period search range** (default 16–36 h) — one knob that drives both the
-  search and the classification window, so they can't drift apart. It carries
-  over to the Rhythmicity page.
-- **Minimum DD days** (default 4) — a *filter*: flies below it are excluded, and
-  the page reports how many.
+- **Min / Max period** (default 16–36 h) — one knob that drives both the search
+  and the classification window, so they can't drift apart.
+- **Min DD days** (default 4) — a *filter*: flies below it are excluded, and the
+  page reports how many.
 - **Max gap to bridge** (default 60 min) — see [Gap handling](#gap-handling).
-- **Preprocessing (per-method)** — bin / smooth / low-pass / detrend / normalize,
-  with per-method defaults following their reference implementations.
 
-Defaults to the DD partition when a split exists, which is the correct epoch
-for free-running period.
+Defaults to the DD partition when a split exists, which is the correct epoch for
+free-running period. Below the controls, five tabs:
 
-### Periodograms
-
-A read-only companion to Period analysis. Shows group-averaged spectra (mean ± SEM) for
-whichever methods you've run — one panel per method, each on its own y-axis
-because the strength metrics are **not comparable across methods**. Run
-Period analysis first; this module only displays what that one stored.
-
-### Rhythmicity
-
-The other half of Period analysis: what the numbers mean rather than how to
-compute them. A per-fly summary table (period plus strength for all four
-methods); an **interactive threshold explorer** that shows live which flies
-would be called rhythmic as you drag each algorithm's cutoff; the
-**rhythmicity classification** itself; and a threshold sensitivity sweep.
-
-**Autocorrelation is the canonical classifier** — its call is what gates
-downstream group filtering. The LS and CWT classifiers are diagnostic.
-
-The phase picker and period range at the top mirror Period analysis's, sharing
-the same values, because the period range is also the classification window.
+- **Analysis** — tick any of [CWT](#continuous-wavelet-transform-cwt),
+  [Lomb-Scargle](#lomb-scargle-periodogram),
+  [Autocorrelation](#autocorrelation-rhythmicity-index) and
+  [MESA](#mesa--maximum-entropy-spectral-analysis), then **Run analysis** runs
+  each in turn. **Advanced options** holds every method's parameters and the
+  per-method preprocessing (bin / smooth / low-pass / detrend / normalize).
+- **Rhythmicity cutoff** — pick an algorithm and drag its threshold: the
+  explorer shows live which flies it calls rhythmic, with their periods beside
+  their strengths. **Classify** applies that algorithm at that threshold.
+  **Autocorrelation is the canonical classifier** — its call is what gates
+  downstream group filtering; the LS and CWT flags are diagnostic, and MESA
+  (no significance test of its own) borrows autocorrelation's.
+- **Period length** — per-fly periods by condition, and the per-fly table
+  (period plus strength for all four methods).
+- **Rhythmicity** — rhythm strength by condition, the rhythmic counts per
+  group, the per-fly classification, and a threshold sensitivity sweep.
+- **Periodograms** — group-averaged spectra (mean ± SEM) for whichever methods
+  you've run, one figure per method, each on its own y-axis because the
+  strength metrics are **not comparable across methods**.
 
 ### Phase shift
 

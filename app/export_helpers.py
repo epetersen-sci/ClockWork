@@ -252,9 +252,14 @@ def save_figures_png_button(label, figures, ds, key, *, scale=2, subfolder=None,
     """
     import streamlit as st
 
-    figures = list(figures or [])
-    if st.button(label, key=key, help=help, disabled=not figures):
+    # A callable is built only when the button is pressed — for a figure that is
+    # costly to assemble and rarely saved (a faceted layout's combined grid).
+    build = figures if callable(figures) else None
+    figures = [] if build else list(figures or [])
+    if st.button(label, key=key, help=help, disabled=not (figures or build)):
         try:
+            if build:
+                figures = list(build() or [])
             out = _export_dir(ds, subfolder)
             paths = []
             for filename, fig in figures:

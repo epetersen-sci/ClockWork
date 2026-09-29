@@ -100,6 +100,15 @@ Regrouping is a thing the user does, never a thing an analysis does in passing.
 Actograms page ended up drawing a different partition than the rest of the app
 while looking correct.
 
+**Facet layouts are display, not grouping.** "Compare within panels"
+(`core/facets.py`, sidebar in `ui/facet_panels.py`) arranges the flies of
+`ds['group']` into one panel per genotype (say), with another factor compared
+inside each. It reads factor values off the per-fly coords, never by splitting a
+label, and writes nothing back. The layout is a `FacetSpec`, plain data that
+round-trips through JSON, so a figure set made in the app can be replayed without
+it. A renderer that takes part accepts `colours`/`order`/`reference` and stays
+unchanged when they are absent.
+
 > **Earned by:** `7c5dbc5`. A dataset grouped by genotype + pulse time + pulse
 > duration drew actograms grouped by genotype alone. Nothing failed; the page was
 > simply answering a different question. Note the author: this was introduced by
