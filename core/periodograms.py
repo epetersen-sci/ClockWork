@@ -315,6 +315,72 @@ def cwt_gpu(data, scales, wavelet="cmor1.5-1.0", sampling_period=1):
     return coefficients, frequencies, power
 
 
+def cwt_powers(signals, scales, wavelet="cmor1.5-1.0", n_workers=1):
+    """Yield the CWT power ``(n_scales, n_time)`` of each signal, in order, as float32.
+
+    ``signals`` must all be the same length. On the GPU path (``cwt_gpu``'s own
+    rule: ptwt with CUDA, and more than 1000 samples) they are transformed in
+    BATCHES. ptwt loops over the scales in Python, so per-fly calls spend almost
+    all their time in that loop rather than on the GPU; one call for many flies
+    pays for the loop once. The batch size is set from the GPU's free memory at
+    call time, so it adapts to the card, and a batch that still runs out of
+    memory is halved and retried.
+
+    Batched results match per-fly ``cwt_gpu`` to float32 FFT rounding (~2e-7 of
+    peak power), not bit for bit: the batched FFTs round differently. Off the GPU
+    path each signal goes through ``cwt_gpu`` on its own, as before, on
+    ``n_workers`` threads.
+    """
+    signals = [np.asarray(sig, dtype=np.float32) for sig in signals]
+    if not signals:
+        return
+    if not (PTWT_AVAILABLE and len(signals[0]) > 1000):
+        with ThreadPoolExecutor(max_workers=max(1, int(n_workers))) as pool:
+            for _c, _f, power in pool.map(
+                lambda sig: cwt_gpu(sig, scales, wavelet, sampling_period=1), signals
+            ):
+                yield power.astype(np.float32)
+        return
+
+    scales_t = torch.from_numpy(np.asarray(scales, dtype=np.float32))
+    n_scales, n_time = len(scales), len(signals[0])
+    # complex64 coefficients plus the power and ptwt's FFT workspace: allow four
+    # times the coefficient size per signal, and use half of what is free.
+    per_signal = n_scales * n_time * 8 * 4
+    try:
+        free_bytes = torch.cuda.mem_get_info()[0]
+    except Exception:
+        free_bytes = per_signal * 16
+    batch = max(1, min(len(signals), int(free_bytes * 0.5 // per_signal)))
+
+    i = 0
+    while i < len(signals):
+        block = np.stack(signals[i : i + batch])
+        try:
+            data_t = torch.from_numpy(block).cuda()
+            coef, _ = ptwt.cwt(data_t, scales_t, wavelet, sampling_period=1)
+            power_t = torch.abs(coef) ** 2 if "cmor" in wavelet else coef**2
+            # ptwt returns (n_scales, batch, n_time); hand back one (n_scales,
+            # n_time) surface per signal.
+            powers = power_t.permute(1, 0, 2).contiguous().cpu().numpy().astype(np.float32)
+            del data_t, coef, power_t
+            torch.cuda.empty_cache()
+        except Exception as e:  # noqa: BLE001 — any GPU failure degrades, never aborts
+            with contextlib.suppress(Exception):
+                torch.cuda.empty_cache()
+            if batch > 1 and "out of memory" in str(e).lower():
+                batch = max(1, batch // 2)
+                continue
+            # Not a memory problem, or already one at a time: this block goes
+            # through cwt_gpu, which falls back to the CPU on its own.
+            for sig in block:
+                yield cwt_gpu(sig, scales, wavelet, sampling_period=1)[2].astype(np.float32)
+            i += len(block)
+            continue
+        yield from powers
+        i += len(block)
+
+
 def get_optimal_workers(n_tasks, use_gpu=False, period_range=None):
     """
     Determine the optimal number of worker processes based on available resources.
@@ -1062,6 +1128,56 @@ def _running_median_baseline(spectrum, frac=0.35):
     return base
 
 
+def _cwt_period_grid(min_period, max_period, sampling_rate_min, resolution):
+    """The CWT's scales (in samples) and the matching periods in hours.
+
+    A log grid at ``1/resolution`` voices per octave, clipped to the requested
+    range. One definition, used both per fly and by the batched sleep-state path,
+    so the two can never disagree about which periods they transform.
+    """
+    min_period_samples = (min_period * 60) / sampling_rate_min
+    max_period_samples = (max_period * 60) / sampling_rate_min
+
+    lower_power = np.floor(np.log2(min_period_samples))
+    upper_power = np.ceil(np.log2(max_period_samples))
+
+    # round() not int(): resolution = 1/voices can be a hair below the integer
+    # (e.g. 1/(1/10) == 9.999...), and int() would truncate 10 voices to 9.
+    n_voices_per_octave = max(1, int(round(1 / resolution)))
+    n_octaves = upper_power - lower_power
+
+    j = np.arange(0, n_octaves * n_voices_per_octave + 1) / n_voices_per_octave
+    periods_samples = 2 ** (lower_power + j)
+
+    mask = (periods_samples >= min_period_samples) & (periods_samples <= max_period_samples)
+    periods_samples = periods_samples[mask]
+    periods_hours = (periods_samples * sampling_rate_min) / 60.0
+    return periods_samples, periods_hours
+
+
+def _ridge_has_confident_point(power, periods_hours, sampling_rate_min):
+    """Whether a power surface has any timepoint the ridge method would keep.
+
+    The ``cwt_method='ridge'`` reduction in :func:`_preprocess_and_compute_cwt`
+    blanks every timepoint whose peak is low-confidence (peak-to-mean power ratio
+    below 2) or inside the cone of influence, and rejects the fly outright (returns
+    None) when that blanks all of them. The batched sleep-state path computes the
+    surface without that function, so it applies the same test here, to the same
+    float32 surface, to keep the same flies in and out of the group average.
+    """
+    n_timepoints = power.shape[1]
+    t_indices = np.arange(n_timepoints)
+    edge_distance = np.minimum(t_indices, n_timepoints - 1 - t_indices)
+    coi_periods = edge_distance * sampling_rate_min / (60.0 * np.sqrt(2))
+    raw_ridge_periods = periods_hours[np.argmax(power, axis=0)].astype(np.float64)
+    instantaneous_powers = np.max(power, axis=0).astype(np.float64)
+    mean_power_per_timepoint = np.mean(power, axis=0)
+    mean_power_per_timepoint[mean_power_per_timepoint == 0] = 1e-10
+    low_confidence = instantaneous_powers / mean_power_per_timepoint < 2.0
+    inside_coi = raw_ridge_periods > coi_periods
+    return bool(np.any(~(low_confidence | inside_coi)))
+
+
 def _preprocess_and_compute_cwt(
     activity,
     time_coords,
@@ -1150,25 +1266,7 @@ def _preprocess_and_compute_cwt(
     # Mean-center only (Rethomics/WaveletComp convention with loess.span=0).
     activity = activity - np.mean(activity)
 
-    # Period / scale grid
-    min_period_samples = (min_period * 60) / sampling_rate_min
-    max_period_samples = (max_period * 60) / sampling_rate_min
-
-    lower_power = np.floor(np.log2(min_period_samples))
-    upper_power = np.ceil(np.log2(max_period_samples))
-
-    # round() not int(): resolution = 1/voices can be a hair below the integer
-    # (e.g. 1/(1/10) == 9.999...), and int() would truncate 10 voices to 9.
-    n_voices_per_octave = max(1, int(round(1 / resolution)))
-    n_octaves = upper_power - lower_power
-
-    j = np.arange(0, n_octaves * n_voices_per_octave + 1) / n_voices_per_octave
-    periods_samples = 2 ** (lower_power + j)
-
-    mask = (periods_samples >= min_period_samples) & (periods_samples <= max_period_samples)
-    periods_samples = periods_samples[mask]
-    scales = periods_samples
-    periods_hours = (periods_samples * sampling_rate_min) / 60.0
+    scales, periods_hours = _cwt_period_grid(min_period, max_period, sampling_rate_min, resolution)
 
     # --- WARN-don't-return-junk guard: requested range too wide for the record ---
     # A long period cannot be resolved in a short record: outside the cone of
@@ -3344,16 +3442,18 @@ def sleep_cwt_analysis(
             fly_spectra = []  # per-fly time-averaged spectrum, or None
             fly_ultradian_amps = []  # list of (offset, values) or None
 
-            # Each fly's transform is independent, so they run on a thread pool
-            # (the transform itself is numpy/pywt or GPU work that releases the
-            # GIL). Results come back IN FLY ORDER and are accumulated below on
-            # this thread in that order, so the sums, and therefore the output,
-            # are exactly what a one-fly-at-a-time loop produces.
+            # Three passes. First every fly is PREPARED on the CPU (missing
+            # minutes, longest clean run, 5-minute bins). Then flies with the
+            # same record length are transformed together: cwt_powers batches
+            # them on the GPU, where one call for many flies costs about what one
+            # fly used to. Finally each fly is reduced (rectified, normalised,
+            # placed on the shared grid) exactly as before. The per-fly outputs
+            # land at the fly's own index, so their order is unchanged.
             state_values = analysis_ds[var].transpose("time", "id").values
 
-            def _fly_power(fly_idx, state_values=state_values, min_p=min_p, max_p=max_p):
-                """One fly's normalised power surface and where it sits on the
-                shared grid, or None when the fly has too little clean data."""
+            def _prepare(fly_idx, state_values=state_values):
+                """The fly's mean-centred 5-minute series, its time axis and
+                sampling interval, or None when it has too little clean data."""
                 fly_arr = state_values[:, fly_idx].astype(np.float32)
 
                 # Missing minutes reach this function in TWO representations and
@@ -3392,73 +3492,93 @@ def sleep_cwt_analysis(
 
                 if n_bins < 10:
                     return None
-
-                # CWT — only the raw power matrix is consumed below, so use
-                # the lightweight ridge mode.
-                # NOTE: resolution here is INTENTIONALLY independent of the
-                # circadian-period default (DEFAULT_CWT_RESOLUTION). This is the
-                # sleep-state SURFACE path, and its grid is pinned to
-                # WaveletComp's dj = 1/100 so the surface matches the paper's.
-                # Not the period-analysis default; do not fold the two together.
-                cwt_result = _preprocess_and_compute_cwt(
-                    binned,
-                    t_binned,
-                    min_p,
-                    max_p,
-                    cwt_method="ridge",
-                    resolution=resolution,
-                    wavelet=wavelet_name,
-                )
-
-                if cwt_result is None:
+                deltas = _time_diff_seconds(t_binned)
+                deltas = deltas[deltas > 0]
+                if len(deltas) == 0:
                     return None
-
-                power = cwt_result["power"].astype(np.float64)  # (n_scales, n_time)
-                period_axis = cwt_result["periods_hours"]
-
-                if rectify_scale_bias:
-                    # WaveletComp: Power = Mod(Wave)^2 / scale (Liu et al. 2007).
-                    # `scales` are periods expressed in SAMPLES, and this path
-                    # samples every `bin_size` minutes — so convert the period
-                    # axis to samples rather than reusing hours, which would
-                    # rectify by a constant factor off the correct one.
-                    scales_samples = period_axis * 60.0 / bin_size
-                    power = power / scales_samples[:, None]
-
-                # Normalise to the mean of this fly's own surface, THEN average
-                # across flies further down. Reversing those two steps weights
-                # flies by how much they slept.
-                mat_mean = np.mean(power)
-                if mat_mean > 0:
-                    power = power / mat_mean
-
-                power = power.astype(np.float32)
-
-                # Where this fly's clean run starts on the shared grid.
+                sampling_rate_min = float(np.median(deltas)) / 60.0
+                # Mean-centre only (Rethomics/WaveletComp convention), as
+                # _preprocess_and_compute_cwt does for the single-fly path.
+                centred = binned - np.mean(binned)
                 offset = _bin_offset(time_vals, clean_time, bin_size)
-                return power, period_axis, offset
+                return centred, sampling_rate_min, offset
+
+            prepared = [_prepare(k) for k in range(n_flies)]
+
+            # Flies transform together when they share a length and sampling
+            # interval (so they share a scale grid). Most flies of a phase do.
+            batches = {}
+            for k, prep in enumerate(prepared):
+                if prep is not None:
+                    batches.setdefault((len(prep[0]), prep[1]), []).append(k)
 
             n_workers = n_processes or get_optimal_workers(
                 n_flies, use_gpu=PTWT_AVAILABLE, period_range=(min_p, max_p)
             )
-            with ThreadPoolExecutor(max_workers=max(1, n_workers)) as pool:
-                for fly_result in pool.map(_fly_power, range(n_flies)):
-                    usable = fly_result is not None
-                    if usable:
-                        power, fly_period_axes, offset = fly_result
-                        take = min(power.shape[1], n_bins_total - offset)
-                        usable = take > 0
-                    if not usable:
-                        fly_spectra.append(None)
-                        fly_ultradian_amps.append(None)
-                    else:
+            fly_spectra = [None] * n_flies
+            fly_ultradian_amps = [None] * n_flies
+
+            state_total_ops = n_flies * len(states) * len(ranges_to_run)
+
+            def _tick(total_ops=state_total_ops):
+                nonlocal completed
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total_ops)
+
+            for _ in range(n_flies - sum(len(v) for v in batches.values())):
+                _tick()  # flies with too little data still count toward progress
+
+            for (n_samples, sampling_rate_min), members in batches.items():
+                scales, period_axis = _cwt_period_grid(min_p, max_p, sampling_rate_min, resolution)
+                coi_max_period_h = (n_samples / 2.0) * sampling_rate_min / (60.0 * np.sqrt(2))
+                if max_p > coi_max_period_h:
+                    print(
+                        f"Warning: CWT requested max_period={max_p:.1f} h exceeds the "
+                        f"COI-resolvable limit {coi_max_period_h:.1f} h for "
+                        f"{len(members)} fly record(s) of {n_samples} samples; periods "
+                        "above it lie inside the cone of influence and are NOT reliable."
+                    )
+                powers = cwt_powers(
+                    [prepared[k][0] for k in members], scales, wavelet_name, n_workers=n_workers
+                )
+                for k, power in zip(members, powers):
+                    # The single-fly path ran the ridge reduction, which drops a
+                    # fly with no confident ridge point anywhere; same rule here.
+                    if not _ridge_has_confident_point(power, period_axis, sampling_rate_min):
+                        _tick()
+                        continue
+                    offset = prepared[k][2]
+                    power = power.astype(np.float64)  # (n_scales, n_time)
+                    fly_period_axes = period_axis
+
+                    if rectify_scale_bias:
+                        # WaveletComp: Power = Mod(Wave)^2 / scale (Liu et al. 2007).
+                        # `scales` are periods expressed in SAMPLES, and this path
+                        # samples every `bin_size` minutes — so convert the period
+                        # axis to samples rather than reusing hours, which would
+                        # rectify by a constant factor off the correct one.
+                        scales_samples = fly_period_axes * 60.0 / bin_size
+                        power = power / scales_samples[:, None]
+
+                    # Normalise to the mean of this fly's own surface, THEN average
+                    # across flies further down. Reversing those two steps weights
+                    # flies by how much they slept.
+                    mat_mean = np.mean(power)
+                    if mat_mean > 0:
+                        power = power / mat_mean
+
+                    power = power.astype(np.float32)
+
+                    take = min(power.shape[1], n_bins_total - offset)
+                    if take > 0:
                         if surface_sum is None:
                             surface_sum = np.zeros((power.shape[0], n_bins_total))
                             surface_count = np.zeros(n_bins_total, dtype=np.int32)
                         surface_sum[:, offset : offset + take] += power[:, :take]
                         surface_count[offset : offset + take] += 1
 
-                        fly_spectra.append(np.mean(power[:, :take], axis=1))
+                        fly_spectra[k] = np.mean(power[:, :take], axis=1)
 
                         # Extract ultradian amplitude from ultradian sub-range
                         if range_name == "ultradian" or (
@@ -3467,22 +3587,13 @@ def sleep_cwt_analysis(
                             u_min, u_max = ultradian_range
                             u_mask = (fly_period_axes >= u_min) & (fly_period_axes <= u_max)
                             if np.any(u_mask):
-                                # Carry the offset so the per-fly traces line up on the
-                                # shared grid too, not just the averaged surface.
-                                fly_ultradian_amps.append(
-                                    (offset, np.mean(power[u_mask, :take], axis=0))
+                                # Carry the offset so the per-fly traces line up on
+                                # the shared grid too, not just the averaged surface.
+                                fly_ultradian_amps[k] = (
+                                    offset,
+                                    np.mean(power[u_mask, :take], axis=0),
                                 )
-                            else:
-                                fly_ultradian_amps.append(None)
-                        else:
-                            fly_ultradian_amps.append(None)
-
-                    # Every fly counts toward progress, usable or not, so the bar
-                    # reaches the end (skipped flies used to leave it short).
-                    completed += 1
-                    if progress_callback:
-                        total_ops = n_flies * len(states) * len(ranges_to_run)
-                        progress_callback(completed, total_ops)
+                    _tick()
 
             # Group-average normalised surfaces: per-cell mean over the flies
             # that actually cover each time bin.
