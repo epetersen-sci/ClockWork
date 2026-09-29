@@ -1571,18 +1571,47 @@ def select_phase(ds, phase="auto", discard_first_dd_day=False):
     else:  # "LD"
         keep = time < split_minute
 
-    # Mask each (id, time) data_var to NaN where out of phase. xr.where preserves
-    # the in-phase values verbatim (real 0s stay 0; existing NaN gaps stay NaN).
+    # Mask each (id, time) data_var to NaN where out of phase. In-phase values are
+    # kept verbatim (real 0s stay 0; existing NaN gaps stay NaN). Done on one copy
+    # of each array that keeps the array's memory layout (order="K"): the loader
+    # builds these column-major, and both xr.where and a default copy rewrote the
+    # whole grid into row-major order, ten times slower than a straight copy, on
+    # every rerun of every phase-aware page.
     masked = ds.copy()
+    out_of_phase = {}  # per (dim order, layout), so each mask is built once
     for var in ds.data_vars:
         da = ds[var]
-        if "id" in da.dims and "time" in da.dims:
+        if "id" in da.dims and "time" in da.dims and da.ndim == 2:
             if np.issubdtype(da.dtype, np.floating):
                 # float32 stays float32; float64 stays float64 (NaN fill is dtype-safe).
-                m = xr.where(keep, da, np.nan).astype(da.dtype)
+                values = da.values.copy(order="K")
             else:
                 # Integer/bool vars can't hold NaN → upcast to float for the masked
                 # VIEW only (transient; never written back to the master).
+                values = da.values.astype(np.float64, order="K")
+            # The mask in the same memory layout as the values, or writing
+            # through it strides across the whole array. It is built directly in
+            # that layout: row-major in the orientation the values are stored in,
+            # transposed back to the variable's dim order if that is the reverse.
+            layout = "F" if values.flags.f_contiguous and not values.flags.c_contiguous else "C"
+            key = (da.dims, layout)
+            if key not in out_of_phase:
+                stored = da.dims if layout == "C" else da.dims[::-1]
+                t_vals = time.values
+                b_vals = boundary.values if phase_used == "DD" else split_minute.values
+                if stored[0] == "time":
+                    t_vals, b_vals = t_vals[:, None], b_vals[None, :]
+                else:
+                    t_vals, b_vals = t_vals[None, :], b_vals[:, None]
+                oop = (t_vals < b_vals) if phase_used == "DD" else (t_vals >= b_vals)
+                out_of_phase[key] = oop if layout == "C" else oop.T
+            np.copyto(values, np.nan, where=out_of_phase[key])
+            masked[var] = da.copy(data=values)
+        elif "id" in da.dims and "time" in da.dims:
+            # Anything with more than the two dims keeps the general path.
+            if np.issubdtype(da.dtype, np.floating):
+                m = xr.where(keep, da, np.nan).astype(da.dtype)
+            else:
                 m = xr.where(keep, da, np.nan)
             # xr.where may reorder dims when broadcasting; restore the original
             # dim order so downstream `.transpose('time','id')` callers are unaffected.
