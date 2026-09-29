@@ -46,6 +46,9 @@ ignore = [
 # from the test modules (they use it for REPO_ROOT).
 testpaths = ["tests"]
 pythonpath = ["tests"]
+markers = [
+    "gpu: needs a CUDA GPU with torch + ptwt; skipped automatically where there is none",
+]
 # Streamlit's ScriptRunContext warning is expected: AppTest drives the script
 # runner from the main thread, and the warning says it can be ignored in bare mode.
 filterwarnings = [

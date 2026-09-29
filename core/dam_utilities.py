@@ -921,7 +921,7 @@ def _compute_moving(ds, force=False):
 
     E1 guard (2026-06-30): when it (re)computes, it does so on a COPY — it never
     mutates the caller's Dataset in place (a stale 'moving' silently carried into a
-    re-curation could otherwise mask a death; see tests/test_simulated_death_curation).
+    re-curation could otherwise mask a death; see tests/test_curation.py).
     ``force=True`` recomputes 'moving' from the CURRENT activity even if a (possibly
     stale) 'moving' already exists; the default keeps the cheap no-op for the common
     repeat-call case where the existing 'moving' is known good.

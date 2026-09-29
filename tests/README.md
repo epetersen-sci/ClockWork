@@ -5,7 +5,9 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-79 tests, about 20 seconds. No browser, no server, no port.
+About 600 tests, a few minutes on a laptop. Most of that time goes to the
+real-data period estimators and the page Run buttons. No browser, no server, no
+port.
 
 ## How the app tests work
 
@@ -33,7 +35,9 @@ Two things matter about that fixture:
 ## The fixtures are synthetic, and must stay faithful
 
 `conftest.py` builds a small xarray dataset by hand rather than committing a
-`.nc`. A real one is tens of megabytes and would rot against the loader.
+`.nc`. A real one is tens of megabytes and would rot against the loader. The
+exception is the real-data fixture described below, which is imported from the
+raw monitor files on every run, never loaded from a saved `.nc`.
 
 The catch is that a synthetic fixture only tests what it faithfully imitates.
 Three contracts were discovered the hard way while writing these, and are
@@ -51,22 +55,60 @@ failures a long way from the cause:
 
 If a page needs something else a real import produces, add it to the fixture.
 
+## Real data, and pinned snapshots
+
+A synthetic fixture checks that a contract is kept. It cannot check what an
+estimator says about a real fly, because a sine wave with noise is far easier
+than a real record with its dead channels, weak rhythms and phase drift. Those
+tests use `example_ds` (in `conftest.py`) instead: Monitors 17 and 18 of the
+committed `example_data`, 64 flies, imported through the real loader.
+
+Real flies have no ground truth, so those tests compare against a **snapshot**:
+the per-fly output that a person reviewed and committed under `tests/snapshots/`
+(see `snapshot_util.py`). When a number changes, the failure lists the flies that
+moved and by how much. If the change is intended, regenerate:
+
+```bash
+python -m pytest --update-snapshots
+git diff tests/snapshots/
+```
+
+Each regenerated file begins with a `_summary` block, for example the median
+period and the number of rhythmic flies per genotype. Read it, and the diff,
+before you commit. A missing snapshot fails the test; it is never written
+automatically.
+
+Tests marked `gpu` need CUDA with torch and ptwt, and skip everywhere else,
+including CI. On a GPU machine, run them with `python -m pytest -m gpu`.
+
 ## What is covered
 
-| File | Covers |
+| Area | Files |
 |---|---|
-| `test_pages_smoke.py` | Every page renders, with a dataset, without one, and on an unsplit dataset. Pages are top-level scripts, so a `NameError` in an unclicked branch still takes the page down. |
-| `test_phase_metadata.py` | Canonical `phase` / `split_applied` attrs, and the legacy `split_phase` alias that is still **read** for old `.nc` files (backlog item 4). |
-| `test_cache_keys.py` | `@st.cache_data` helpers take the fingerprint as `fp`, not `_fp` (backlog item 14), plus a test pinning the upstream Streamlit behaviour that rule depends on. |
-| `test_exports.py` | ZT summary column order and casing (item 2), `phase_slice` dtypes and parameters (item 5), the single bout-dataframe source (item 1). |
-| `test_page_behaviour.py` | The HMM phase picker (item 3) and the shared display group filter surviving a page switch (item 11) — both previously verified by hand in a browser. |
+| Pages render, and their Run buttons work | `test_pages_smoke`, `test_page_runs`, `test_page_behaviour`, `test_file_dialogs` |
+| Import: raw files, status codes, gaps, metadata pairing | `test_dam_parsing`, `test_monitor_file_resolution`, `test_monitor_label_pairing`, `test_integrity_surfacing` |
+| Curation, split, gap trim | `test_curation`, `test_segment_trim_masking`, `test_phase_metadata` |
+| Grouping | `test_grouping_provenance`, `test_regroup` |
+| Period estimators (LS, AC, MESA, CWT) and rhythmicity calls on real flies | `test_period_estimators_snapshot` |
+| Sleep: bouts, states, re-runs, deprivation, sleep-state CWT | `test_sleep_bout_boundaries`, `test_sleep_analysis_alignment`, `test_sleep_analysis_rerun`, `test_sleep_reorganisation`, `test_sleep_state_metrics`, `test_sleep_states_edge_cases`, `test_sleep_cwt_truth`, `test_sleep_deprivation` |
+| Phase shifts and the phase response curve | `test_phase_response`, `test_phase_response_figures`, `test_phase_shift_controls` |
+| Performance rewrites match the code they replaced (gap fill, rolling mean, batched GPU CWT, worker counts) | `test_vectorized_equivalence` |
+| Figures | `test_actograms`, `test_dd_heatmap_alignment`, `test_plotting_seam`, `test_figure_export` |
+| Exports and the saved `.nc` | `test_exports`, `test_workbook_exports`, `test_scamp_export`, `test_netcdf_roundtrip`, `test_experiment_export_dirs`, `test_experiment_naming_applies` |
+| Caching | `test_cache_keys` |
+
+Each file's docstring says which bug or contract it protects.
+`test_sleep_bout_boundaries` also documents an open question: bout duration is
+off by one minute compared with the standard 5-minute definition. It holds that
+with `xfail(strict=True)` tests, which will need updating if the rule is fixed.
 
 ## When not to use AppTest
 
 Reach for the real app when the thing under test is not the script's output:
 byte-level export files, actual rendering, CSS, or custom-component JavaScript.
-The SCAMP export was verified by diffing 724 real files against a baseline —
-`AppTest` could not have told you those bytes matched.
+The SCAMP export was first verified by diffing 724 real files against a
+baseline, which `AppTest` could not have done. `test_scamp_export` now reads the
+files back and pins a checksum of each one.
 
 Pure logic that never touches `st.*` should be tested directly with pytest
 rather than through `AppTest`; see `test_exports.py`, most of which does.
