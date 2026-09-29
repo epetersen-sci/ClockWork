@@ -72,12 +72,12 @@ ds = require_dataset()
 # input (e.g. bin size) happened to change.
 # ----------------------------------------------------------------
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_zt_binned(fp, _ds, value_col, bin_size_minutes):
     """Wrap dam_utilities.get_zt_binned_dataframe with a fingerprint key."""
     return dam_utilities.get_zt_binned_dataframe(_ds, value_col, bin_size_minutes)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_per_fly_summary(
     fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes
 ):
@@ -96,7 +96,7 @@ def _cached_per_fly_summary(
         bin_size_minutes=bin_size_minutes,
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_daily_pattern(
     fp,
     _ds,
@@ -120,7 +120,7 @@ def _cached_daily_pattern(
         bin_size_minutes=bin_size_minutes,
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_summary_table(
     fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
 ):
@@ -135,7 +135,7 @@ def _cached_summary_table(
         phase_label=phase_label,
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_bout_duration_lines(
     fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
 ):
@@ -407,19 +407,8 @@ with tab_activity:
         # CSV download of binned data (grouped: mean, SD, n per condition)
         try:
             binned_df = _cached_zt_binned(_ds_fp, ds, "activity", bin_size)
-            _id_to_group = {}
-            for _fid in binned_df["id"].unique():
-                try:
-                    _fly = ds.sel(id=_fid)
-                    if "group" in ds.coords:
-                        _id_to_group[_fid] = str(_fly["group"].item())
-                    elif "genotype" in ds.coords and "temperature" in ds.coords:
-                        _id_to_group[_fid] = f"{_fly['genotype'].item()}-{_fly['temperature'].item()}"
-                    else:
-                        _id_to_group[_fid] = "All"
-                except Exception:
-                    _id_to_group[_fid] = "All"
-            binned_df["group"] = binned_df["id"].map(_id_to_group)
+            _id_to_group = dam_utilities.fly_group_map(ds, default="All")
+            binned_df["group"] = binned_df["id"].map(lambda f: _id_to_group.get(f, "All"))
             # Same builder as the Export page's ZT table: Mean/SD/N per group, in
             # GraphPad's grouped-table order. This used to sort_index the columns
             # instead, which gave the alphabetical Mean/N/SD — a different header
@@ -498,21 +487,10 @@ with tab_sleep:
 
         try:
             binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)
-            _id_to_group_sl = {}
-            for _fid in binned_sleep["id"].unique():
-                try:
-                    _fly = ds.sel(id=_fid)
-                    if "group" in ds.coords:
-                        _id_to_group_sl[_fid] = str(_fly["group"].item())
-                    elif "genotype" in ds.coords and "temperature" in ds.coords:
-                        _id_to_group_sl[_fid] = (
-                            f"{_fly['genotype'].item()}-{_fly['temperature'].item()}"
-                        )
-                    else:
-                        _id_to_group_sl[_fid] = "All"
-                except Exception:
-                    _id_to_group_sl[_fid] = "All"
-            binned_sleep["group"] = binned_sleep["id"].map(_id_to_group_sl)
+            _id_to_group_sl = dam_utilities.fly_group_map(ds, default="All")
+            binned_sleep["group"] = binned_sleep["id"].map(
+                lambda f: _id_to_group_sl.get(f, "All")
+            )
             # Shared builder — see the activity block above.
             _pivot_sl = ex.zt_group_summary_table(binned_sleep, "sleep", bin_size)
             # Per-fly binned time course (long) so other stats can be computed:

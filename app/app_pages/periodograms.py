@@ -39,7 +39,7 @@ st.caption(
     "explanations of each method are on the **Period analysis** page."
 )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 # `fp`, NOT `_fp`: Streamlit's underscore rule is syntactic and drops ANY
 # leading-underscore parameter from the cache key, not just the unhashable
 # dataset. Named `_fp` it was the one argument that could not reach the key —

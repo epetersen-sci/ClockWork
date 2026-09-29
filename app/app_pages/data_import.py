@@ -80,9 +80,14 @@ with tab_fresh:
             data_dir_target="data_dir_input",
         )
 
+    # Seeded through the key, not `value=`: the Browse buttons above also write
+    # this key, and a widget given both a `value` and a session-state value logs
+    # a "created with a default value but also had its value set via the Session
+    # State API" warning on every rerun. setdefault leaves a browsed or typed
+    # path alone and only fills an empty field from the working folder.
+    st.session_state.setdefault("data_dir_input", st.session_state.get("working_dir") or "")
     data_dir = st.text_input(
         "Data directory (folder containing MonitorXXX.txt files)",
-        value=st.session_state.get("working_dir", ""),
         key="data_dir_input",
     )
     metadata_path = st.text_input(

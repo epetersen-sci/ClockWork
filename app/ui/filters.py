@@ -83,7 +83,9 @@ def group_filter_sidebar(ds, key, *, label=None, subset=False, help=None):
 
     if subset and len(selected) < len(all_groups):
         chosen = set(selected)
-        keep = [str(i) for i in ds["id"].values if str(ds[coord].sel(id=i).item()) in chosen]
+        # Positional, off the labels already read above: a .sel per fly ran on
+        # every rerun of every page that subsets by group.
+        keep = [str(i) for i, g in zip(ds["id"].values, group_values) if g in chosen]
         if keep:
             ds = ds.sel(id=keep)
 

@@ -482,22 +482,22 @@ def per_fly_sleep_state_totals(
                 return pd.DataFrame(columns=cols)
             ds = ds.sel(id=fids)
 
-    def _grp(fid):
-        try:
-            f = ds.sel(id=fid)
-            if "group" in ds.coords:
-                return str(f["group"].item())
-            if "genotype" in ds.coords and "temperature" in ds.coords:
-                return f"{f['genotype'].item()}-{f['temperature'].item()}"
-        except Exception:
-            pass
-        return "All"
+    # Minutes in each state for every fly at once: count the 1s along every dim
+    # but id, instead of a .sel per fly per state.
+    counts = {}
+    for v, lbl in present:
+        da = ds[v]
+        other_axes = tuple(i for i, d in enumerate(da.dims) if d != "id")
+        counts[lbl] = (np.asarray(da.values) == 1).sum(axis=other_axes)
+    id_axis_ids = ds["id"].values
+    group_of = dam_utilities.fly_group_map(ds, default="All")
 
     rows = []
-    for fid in ds["id"].values:
-        mins = {lbl: int(np.sum(np.asarray(ds[v].sel(id=fid).values) == 1)) for v, lbl in present}
+    for k, fid in enumerate(id_axis_ids):
+        mins = {lbl: int(c[k]) for lbl, c in counts.items()}
         total = sum(mins.values())
-        row = {"ID": str(fid), "Group": _grp(fid)}
+        key = fid.item() if hasattr(fid, "item") else fid
+        row = {"ID": str(fid), "Group": group_of.get(key, "All")}
         for lbl, m in mins.items():
             row[lbl] = (m / total * 100.0) if (as_percent and total > 0) else float(m)
         rows.append(row)
@@ -731,16 +731,9 @@ def per_fly_summary_table(
     if df.empty:
         return pd.DataFrame(columns=cols)
 
-    # Group labels, read off the coordinate arrays once for every fly (a ds.sel
-    # per fly was most of this function's time on a large dataset).
-    ds_ids = [v.item() if hasattr(v, "item") else v for v in ds["id"].values]
-    if "group" in ds.coords:
-        labels = [str(g) for g in ds["group"].values]
-    elif "genotype" in ds.coords and "temperature" in ds.coords:
-        labels = [f"{g}-{t}" for g, t in zip(ds["genotype"].values, ds["temperature"].values)]
-    else:
-        labels = ["All Flies"] * len(ds_ids)
-    id_to_group = dict(zip(ds_ids, labels))
+    # Group labels for every fly at once (a ds.sel per fly was most of this
+    # function's time on a large dataset).
+    id_to_group = dam_utilities.fly_group_map(ds, default="All Flies")
 
     # get_zt_binned_dataframe returns every fly's full set of bins, fly-major, so
     # the values reshape to one row per fly and one column per bin.

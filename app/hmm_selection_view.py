@@ -23,7 +23,7 @@ from dataset_meta import dataset_fingerprint
 from hmm_models import HMMConfig, compare_n_states
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _usable_fly_count(fp, _ds):
     """Flies with at least one finite observation minute, and the mean number of
     them per fly.

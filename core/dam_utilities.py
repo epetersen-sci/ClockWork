@@ -536,6 +536,33 @@ def derive_group_labels(metadata: pd.DataFrame, group_columns):
     return label
 
 
+def fly_group_map(ds, default="All Flies"):
+    """``{fly id: group label}`` for every fly, read off the coords in one pass.
+
+    The label is ``group`` when present, else ``genotype-temperature``, else
+    ``default``. Both ids and labels go through ``.item()`` first, so they are the
+    same Python values a per-fly ``ds.sel(id=f)[coord].item()`` returned. That is
+    what callers used to do, one ``.sel`` per fly, which on thousands of flies
+    was most of a page's rerun. (Formatting the numpy scalar instead is NOT the
+    same: a float32 coord prints as ``0.1`` rather than ``0.10000000149011612``.)
+    """
+
+    def _item(v):
+        return v.item() if hasattr(v, "item") else v
+
+    ids = [_item(v) for v in ds["id"].values]
+    if "group" in ds.coords:
+        labels = [str(_item(g)) for g in ds["group"].values]
+    elif "genotype" in ds.coords and "temperature" in ds.coords:
+        labels = [
+            f"{_item(g)}-{_item(t)}"
+            for g, t in zip(ds["genotype"].values, ds["temperature"].values)
+        ]
+    else:
+        labels = [default] * len(ids)
+    return dict(zip(ids, labels))
+
+
 def get_group_columns(ds):
     """Return the list of metadata columns currently defining ``ds['group']`` (read
     from ``ds.attrs['group_columns']``), robust to netCDF's single-element-list →

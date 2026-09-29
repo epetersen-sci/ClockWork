@@ -229,7 +229,7 @@ st.subheader("Per-fly period summary")
 # merged onto the master anyway, so the slice never added anything here.
 period_ds = st.session_state.dataset
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8)
 def _build_period_summary_df(fp, _ds):
     """Build the per-fly Period Analysis summary table. Cached so a page
     rerun (no analysis-state change) doesn't redo the per-fly `.sel()`
@@ -244,42 +244,38 @@ def _build_period_summary_df(fp, _ds):
     docstring promises. ``_ds`` keeps its underscore because a Dataset is what
     the fingerprint exists to stand in for.
     """
-    rows = []
-    for fly_id in _ds["id"].values:
-        row = {"ID": fly_id}
-        if "group" in _ds.coords:
-            row["Group"] = str(_ds["group"].sel(id=fly_id).values)
-        if "cwt_period" in _ds.data_vars:
-            row["CWT Period (h)"] = float(_ds["cwt_period"].sel(id=fly_id).values)
-        if "ls_period" in _ds.data_vars:
-            row["LS Period (h)"] = float(_ds["ls_period"].sel(id=fly_id).values)
-        if "ac_period" in _ds.data_vars:
-            row["AC Period (h)"] = float(_ds["ac_period"].sel(id=fly_id).values)
-        if "mesa_period" in _ds.data_vars:
-            row["MESA Period (h)"] = float(_ds["mesa_period"].sel(id=fly_id).values)
+    # Each column read off its (id,) array in one go rather than a .sel per fly
+    # per quantity, which made the first render of this table slow on large
+    # datasets.
+    cols = {"ID": list(_ds["id"].values)}
+    if "group" in _ds.coords:
+        cols["Group"] = [str(g) for g in _ds["group"].values]
+    for col, var in (
+        ("CWT Period (h)", "cwt_period"),
+        ("LS Period (h)", "ls_period"),
+        ("AC Period (h)", "ac_period"),
+        ("MESA Period (h)", "mesa_period"),
         # Per-algorithm STRENGTH metrics — the values the Interactive threshold
         # explorer plots (so this table is a superset of the explorer: no separate
         # export needed). AC RI = ac_power; LS power/FAP; CWT rhythmicity; MESA SNR.
-        if "ac_power" in _ds.data_vars:
-            row["AC RI (strength)"] = float(_ds["ac_power"].sel(id=fly_id).values)
-        if "ls_power" in _ds.data_vars:
-            row["LS Power (strength)"] = float(_ds["ls_power"].sel(id=fly_id).values)
-        if "ls_fap" in _ds.data_vars:
-            row["LS FAP"] = float(_ds["ls_fap"].sel(id=fly_id).values)
-        if "cwt_rhythmicity" in _ds.data_vars:
-            row["CWT Rhythmicity (strength)"] = float(_ds["cwt_rhythmicity"].sel(id=fly_id).values)
-        if "mesa_power" in _ds.data_vars:
-            row["MESA SNR (peak/median)"] = float(_ds["mesa_power"].sel(id=fly_id).values)
-        # Per-algorithm rhythmic flags. AC is the canonical filter; LS/CWT
-        # appear here for diagnostic comparison only and never gate downstream.
-        if "ac_rhythmic" in _ds.coords:
-            row["AC Rhythmic"] = bool(_ds["ac_rhythmic"].sel(id=fly_id).values)
-        if "ls_rhythmic" in _ds.coords:
-            row["LS Rhythmic (diagnostic)"] = bool(_ds["ls_rhythmic"].sel(id=fly_id).values)
-        if "cwt_rhythmic" in _ds.coords:
-            row["CWT Rhythmic (diagnostic)"] = bool(_ds["cwt_rhythmic"].sel(id=fly_id).values)
-        rows.append(row)
-    _df = pd.DataFrame(rows)
+        ("AC RI (strength)", "ac_power"),
+        ("LS Power (strength)", "ls_power"),
+        ("LS FAP", "ls_fap"),
+        ("CWT Rhythmicity (strength)", "cwt_rhythmicity"),
+        ("MESA SNR (peak/median)", "mesa_power"),
+    ):
+        if var in _ds.data_vars:
+            cols[col] = [float(v) for v in _ds[var].values]
+    # Per-algorithm rhythmic flags. AC is the canonical filter; LS/CWT
+    # appear here for diagnostic comparison only and never gate downstream.
+    for col, coord in (
+        ("AC Rhythmic", "ac_rhythmic"),
+        ("LS Rhythmic (diagnostic)", "ls_rhythmic"),
+        ("CWT Rhythmic (diagnostic)", "cwt_rhythmic"),
+    ):
+        if coord in _ds.coords:
+            cols[col] = [bool(v) for v in _ds[coord].values]
+    _df = pd.DataFrame(cols)
     # Alphabetical (Group then ID) for a predictable, GraphPad-friendly export.
     _sort_keys = [c for c in ("Group", "ID") if c in _df.columns]
     return _df.sort_values(_sort_keys).reset_index(drop=True) if _sort_keys else _df

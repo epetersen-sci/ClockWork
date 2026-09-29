@@ -238,41 +238,38 @@ with tab_results:
     if any(analyses[k] for k in ["cwt", "lomb_scargle", "autocorrelation"]):
         st.subheader("Export Period Analysis Summary (CSV)")
 
-        summary_data = []
-        for fly_id in ds["id"].values:
-            row = {"ID": fly_id}
-            if "group" in ds.coords:
-                row["Group"] = str(ds["group"].sel(id=fly_id).values)
+        # One column per quantity, each read off its (id,) array in one go. A .sel
+        # per fly per quantity (about fifteen of them) ran on every rerun of this
+        # page, whichever tab was open.
+        _float_cols = [
+            ("CWT_Period_h", "cwt_period", "cwt_period"),
+            ("CWT_Power", "cwt_power", "cwt_period"),
+            ("CWT_Period_Stability_h", "cwt_period_stability", "cwt_period_stability"),
+            ("CWT_Rhythmicity", "cwt_rhythmicity", "cwt_rhythmicity"),
+            ("LS_Period_h", "ls_period", "ls_period"),
+            ("LS_Power", "ls_power", "ls_period"),
+            ("LS_FAP", "ls_fap", "ls_fap"),
+            ("AC_Period_h", "ac_period", "ac_period"),
+            ("AC_Power_RI", "ac_power", "ac_period"),
+            ("AC_Rhythm_Strength", "ac_rhythm_strength", "ac_rhythm_strength"),
+        ]
+        # Per-algorithm rhythmic flags (written by rhythmicity_classification.classify_*)
+        _flag_cols = [
+            ("LS_Rhythmic", "ls_rhythmic"),
+            ("AC_Rhythmic", "ac_rhythmic"),
+            ("CWT_Rhythmic", "cwt_rhythmic"),
+        ]
+        summary_cols = {"ID": list(ds["id"].values)}
+        if "group" in ds.coords:
+            summary_cols["Group"] = [str(g) for g in ds["group"].values]
+        for col, var, present_if in _float_cols:
+            if present_if in ds.data_vars:
+                summary_cols[col] = [float(v) for v in ds[var].values]
+        for col, coord in _flag_cols:
+            if coord in ds.coords:
+                summary_cols[col] = [bool(v) for v in ds[coord].values]
 
-            if "cwt_period" in ds.data_vars:
-                row["CWT_Period_h"] = float(ds["cwt_period"].sel(id=fly_id).values)
-                row["CWT_Power"] = float(ds["cwt_power"].sel(id=fly_id).values)
-            if "cwt_period_stability" in ds.data_vars:
-                row["CWT_Period_Stability_h"] = float(ds["cwt_period_stability"].sel(id=fly_id).values)
-            if "cwt_rhythmicity" in ds.data_vars:
-                row["CWT_Rhythmicity"] = float(ds["cwt_rhythmicity"].sel(id=fly_id).values)
-            if "ls_period" in ds.data_vars:
-                row["LS_Period_h"] = float(ds["ls_period"].sel(id=fly_id).values)
-                row["LS_Power"] = float(ds["ls_power"].sel(id=fly_id).values)
-            if "ls_fap" in ds.data_vars:
-                row["LS_FAP"] = float(ds["ls_fap"].sel(id=fly_id).values)
-            if "ac_period" in ds.data_vars:
-                row["AC_Period_h"] = float(ds["ac_period"].sel(id=fly_id).values)
-                row["AC_Power_RI"] = float(ds["ac_power"].sel(id=fly_id).values)
-            if "ac_rhythm_strength" in ds.data_vars:
-                row["AC_Rhythm_Strength"] = float(ds["ac_rhythm_strength"].sel(id=fly_id).values)
-
-            # Per-algorithm rhythmic flags (written by rhythmicity_classification.classify_*)
-            if "ls_rhythmic" in ds.coords:
-                row["LS_Rhythmic"] = bool(ds["ls_rhythmic"].sel(id=fly_id).values)
-            if "ac_rhythmic" in ds.coords:
-                row["AC_Rhythmic"] = bool(ds["ac_rhythmic"].sel(id=fly_id).values)
-            if "cwt_rhythmic" in ds.coords:
-                row["CWT_Rhythmic"] = bool(ds["cwt_rhythmic"].sel(id=fly_id).values)
-
-            summary_data.append(row)
-
-        summary_df = pd.DataFrame(summary_data)
+        summary_df = pd.DataFrame(summary_cols)
         # Alphabetical order for a predictable, GraphPad-friendly layout: by Group
         # then ID (or just ID when there is no group coord).
         _sort_keys = [c for c in ("Group", "ID") if c in summary_df.columns]
@@ -394,12 +391,13 @@ with tab_results:
 
                     zt_df = get_hmm_zt_fractions(ds, bin_size_minutes=hmm_export_bin)
                     if not zt_df.empty:
-                        # Add group info
-                        for fid in zt_df["id"].unique():
-                            if "group" in ds.coords:
-                                zt_df.loc[zt_df["id"] == fid, "group"] = str(
-                                    ds.sel(id=fid).coords["group"].values
-                                )
+                        # Add group info, mapped in one pass rather than a
+                        # .sel and a table filter per fly.
+                        if "group" in ds.coords:
+                            _group_of = {
+                                i: str(g) for i, g in zip(ds["id"].values, ds["group"].values)
+                            }
+                            zt_df["group"] = zt_df["id"].map(_group_of)
                         csv_zt = zt_df.to_csv(index=False)
                         st.download_button(
                             "Download HMM ZT Fractions CSV",
