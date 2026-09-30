@@ -492,7 +492,9 @@ def sleep_analysis(
         start_datetime, …) along with it and pull them into the merge's
         alignment, which is not what this is for.
         """
-        stacked = xr.concat(masks, dim="id").rename(name)
+        stacked = xr.concat(
+            masks, dim="id", coords="different", compat="equals", join="outer"
+        ).rename(name)
         return stacked.sel(id=data["id"].values)
 
     combined_sleep_mask_da = _in_dataset_order(all_sleep_masks, "sleep")
@@ -536,6 +538,7 @@ def sleep_analysis(
     merged_ds = xr.merge(
         [data, combined_sleep_mask_da, combined_short_da, combined_inter_da, combined_long_da],
         join="exact",
+        compat="no_conflicts",
     )
 
     # Step 2: Add bout-level variables individually so their (id, sleep_bout_number)

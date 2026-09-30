@@ -923,14 +923,14 @@ def lomb_scargle_analysis(
         print("Warning: Lomb-Scargle analysis failed for all individuals.")
         return ds
 
-    combined_results = xr.concat(valid_results, dim=id_var)
+    combined_results = xr.concat(valid_results, dim=id_var, data_vars="all", coords="different", compat="equals", join="outer")
 
     # Merge results back into original (unsplit) dataset
     # Drop any existing LS variables so re-runs don't conflict
     existing_ls_vars = [v for v in combined_results.data_vars if v in ds.data_vars]
     existing_ls_coords = [c for c in combined_results.coords if c in ds.coords and c != "id"]
     merged_ds = ds.drop_vars(existing_ls_vars + existing_ls_coords, errors="ignore").merge(
-        combined_results
+        combined_results, compat="no_conflicts", join="outer"
     )
     merged_ds.attrs["ls_min_period"] = min_period
     merged_ds.attrs["ls_max_period"] = max_period
@@ -2142,12 +2142,12 @@ def wavelet_analysis(
         # than the empty list.
         return ds, []
     print("CWT analysis done.")
-    combined_results = xr.concat(results, dim=id_var)
+    combined_results = xr.concat(results, dim=id_var, data_vars="all", coords="different", compat="equals", join="outer")
 
     existing_cwt_vars = [v for v in combined_results.data_vars if v in ds.data_vars]
     existing_cwt_coords = [c for c in combined_results.coords if c in ds.coords and c != "id"]
     merged_ds = ds.drop_vars(existing_cwt_vars + existing_cwt_coords, errors="ignore").merge(
-        combined_results
+        combined_results, compat="no_conflicts", join="outer"
     )
 
     merged_ds.attrs["cwt_min_period"] = min_period
@@ -2774,13 +2774,13 @@ def autocorrelation_analysis(
         "Autocorrelation", fail_dict, _ac_total, len(results_dict), phase=phase_used
     )
 
-    combined_results = xr.concat(all_results, dim=id_var)
+    combined_results = xr.concat(all_results, dim=id_var, data_vars="all", coords="different", compat="equals", join="outer")
 
     # Replace prior autocorrelation outputs when rerunning analysis.
     # xarray.merge raises MergeError on conflicting values by default.
     ac_output_vars = [var_name for var_name in ds.data_vars if var_name.startswith("ac_")]
     ds_without_ac = ds.drop_vars(ac_output_vars, errors="ignore")
-    merged_ds = ds_without_ac.merge(combined_results)
+    merged_ds = ds_without_ac.merge(combined_results, compat="no_conflicts", join="outer")
 
     # Metadata for reproducibility. Preprocessing flags now live on
     # ``ds.attrs['preprocess_config']`` (stamped by ``preprocess_activity``).
@@ -3182,11 +3182,11 @@ def mesa_analysis(
             all_results.append(create_nan_result(fly_id))
     _report_analysis_skips("MESA", fail_dict, _total, len(results_dict), phase=phase_used)
 
-    combined_results = xr.concat(all_results, dim=id_var)
+    combined_results = xr.concat(all_results, dim=id_var, data_vars="all", coords="different", compat="equals", join="outer")
 
     mesa_output_vars = [v for v in ds.data_vars if v.startswith("mesa_")]
     ds_without_mesa = ds.drop_vars(mesa_output_vars, errors="ignore")
-    merged_ds = ds_without_mesa.merge(combined_results)
+    merged_ds = ds_without_mesa.merge(combined_results, compat="no_conflicts", join="outer")
 
     merged_ds.attrs["mesa_bin_minutes"] = float(bin_minutes)
     merged_ds.attrs["mesa_order"] = (

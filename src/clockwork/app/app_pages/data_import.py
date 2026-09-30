@@ -701,7 +701,7 @@ with tab_combine:
                             new_ids.append(resolved_id)
                         datasets[ds_idx] = ds.assign_coords(id=new_ids)
 
-                combined = xr.concat(datasets, dim="id")
+                combined = xr.concat(datasets, dim="id", data_vars="all", coords="different", compat="equals", join="outer")
                 combined = dam_utilities.ensure_numpy_backed(combined)
                 # concat keeps the FIRST input's attrs, so a combination of two
                 # experiments would inherit one of their names and export as though

@@ -123,4 +123,10 @@ markers = [
 # runner from the main thread, and the warning says it can be ignored in bare mode.
 filterwarnings = [
     "ignore::DeprecationWarning",
+    # xarray is changing the defaults of merge/concat (join "outer" -> "exact",
+    # compat -> "override", ...). "override" would silently keep the first copy
+    # of a conflicting variable instead of raising, so every call in clockwork
+    # passes these arguments explicitly, and a call that relies on the default
+    # fails the suite rather than changing meaning on an xarray upgrade.
+    "error:In a future version of xarray the default value:FutureWarning",
 ]

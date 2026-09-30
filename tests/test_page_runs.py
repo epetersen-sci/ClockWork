@@ -71,7 +71,8 @@ def period_results_ds(page_ds):
     )
     ls_vars = [v for v in ls.data_vars if v.startswith("ls_")]
     ac_vars = [v for v in ac.data_vars if v.startswith("ac_")]
-    return page_ds.merge(ls[ls_vars]).merge(ac[ac_vars])
+    merge_kw = {"compat": "no_conflicts", "join": "outer"}
+    return page_ds.merge(ls[ls_vars], **merge_kw).merge(ac[ac_vars], **merge_kw)
 
 
 def test_rhythmicity_classification_runs(app, period_results_ds):

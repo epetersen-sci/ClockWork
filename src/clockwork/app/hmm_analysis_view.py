@@ -55,7 +55,7 @@ def render():
         hmm_vars = [v for v in ("hmm_state", "hmm_sleep", "hmm_confidence") if v in res_ds.data_vars]
         out = master_ds.drop_vars([v for v in hmm_vars if v in master_ds.data_vars], errors="ignore")
         if hmm_vars:
-            out = out.merge(res_ds[hmm_vars])
+            out = out.merge(res_ds[hmm_vars], compat="no_conflicts", join="outer")
         for k, v in res_ds.attrs.items():
             if str(k).startswith("hmm_"):
                 out.attrs[k] = v

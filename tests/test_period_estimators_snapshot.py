@@ -173,7 +173,9 @@ def test_cwt(dd_src, update_snapshots):
 def test_classify_all_agrees_with_the_individual_classifiers(ls_ds, ac_ds):
     """The Rhythmicity page calls ``classify_all``; the tests above call each
     classifier. The two must give the same calls on the same results."""
-    merged = ls_ds.merge(ac_ds[["ac_period", "ac_power", "ac_rhythm_strength"]])
+    merged = ls_ds.merge(
+        ac_ds[["ac_period", "ac_power", "ac_rhythm_strength"]], compat="no_conflicts", join="outer"
+    )
     both = rc.classify_all(merged, period_window=(MIN_P, MAX_P), run_cwt=False)
     ls_only = rc.classify_lomb_scargle(ls_ds, period_window=(MIN_P, MAX_P))
     ac_only = rc.classify_autocorrelation(ac_ds, period_window=(MIN_P, MAX_P))

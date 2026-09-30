@@ -245,7 +245,7 @@ def merge_analysis_outputs(master, result_ds):
     if _to_drop:
         master = master.drop_vars(_to_drop, errors="ignore")
     if _scalar_vars or _array_vars:
-        master = master.merge(result_ds[_scalar_vars + _array_vars])
+        master = master.merge(result_ds[_scalar_vars + _array_vars], compat="no_conflicts", join="outer")
     if _scalar_coords:
         master = master.assign_coords({c: result_ds[c] for c in _scalar_coords})
     # Copy analysis attrs (CWT/LS/AC/MESA + classification thresholds + paths)
