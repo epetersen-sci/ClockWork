@@ -6,4 +6,5 @@
 # The test suite uses streamlit's own AppTest (streamlit.testing.v1), which ships
 # with streamlit — no browser, no server, no webdriver.
 pytest>=8
+pytest-cov>=5
 ruff>=0.6
