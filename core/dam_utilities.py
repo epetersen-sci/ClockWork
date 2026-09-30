@@ -649,6 +649,10 @@ def regroup_dataset(ds, group_columns):
     out = ds.assign_coords(group=("id", _as_numpy_array(label)))
     out.attrs = dict(ds.attrs)
     out.attrs["group_columns"] = list(chosen)
+    # `chosen` are coord names, so they are also the new coord-name record. Leaving
+    # the Import-time value here made get_group_coord_names — and every "one panel
+    # per …" default read through it — describe the grouping from before the regroup.
+    out.attrs["group_coord_names"] = list(chosen)
     return out
 
 

@@ -1428,6 +1428,16 @@ def _print_model_summary(model, config, group_name):
 # ---------------------------------------------------------------------------
 # 1.11  Visualization
 # ---------------------------------------------------------------------------
+def _ordered_groups(groups, group_order):
+    """Group names in ``group_order`` (a facet layout's panel-then-level order),
+    any it does not name after them; sorted when there is no order."""
+    names = sorted(groups.keys())
+    if not group_order:
+        return names
+    named = [g for g in group_order if g in groups]
+    return named + [g for g in names if g not in set(named)]
+
+
 def plot_hypnogram_heatmap(ds, group_name=None, n_states=4, ax=None):
     """Color-coded state assignment heatmap (rows=flies, columns=time).
 
@@ -1535,7 +1545,7 @@ def plot_hypnogram_heatmap(ds, group_name=None, n_states=4, ax=None):
     return fig
 
 
-def plot_state_occupancy_by_group(ds, n_states=4, return_data=False):
+def plot_state_occupancy_by_group(ds, n_states=4, return_data=False, group_order=None):
     """Grouped bar chart of % time in each state per genotype.
 
     Parameters
@@ -1556,7 +1566,7 @@ def plot_state_occupancy_by_group(ds, n_states=4, return_data=False):
     state_names = STATE_NAMES_4[:n_states] if n_states <= 4 else [f"S{i}" for i in range(n_states)]
 
     records = []
-    for group_name in sorted(groups.keys()):
+    for group_name in _ordered_groups(groups, group_order):
         fly_ids = groups[group_name]
         for fly_id in fly_ids:
             states = ds["hmm_state"].sel(id=fly_id).values
@@ -1759,7 +1769,13 @@ def get_hmm_zt_fractions(ds, bin_size_minutes=30, n_states=None):
 
 
 def plot_zt_state_fractions(
-    ds, n_states=None, bin_size_minutes=30, n_sections=4, return_data=False
+    ds,
+    n_states=None,
+    bin_size_minutes=30,
+    n_sections=4,
+    return_data=False,
+    group_order=None,
+    panel_rows=None,
 ):
     """Stacked area chart of HMM state fractions across ZT, one subplot per genotype.
 
@@ -1820,12 +1836,32 @@ def plot_zt_state_fractions(
     # Convert fractions to percentages
     group_means[pct_cols] = group_means[pct_cols] * 100
 
-    group_names = sorted(groups.keys())
+    group_names = _ordered_groups(groups, group_order)
     n_groups = len(group_names)
 
-    fig, axes = plt.subplots(1, n_groups, figsize=(max(5 * n_groups, 8), 5), sharey=True)
-    if n_groups == 1:
-        axes = [axes]
+    # ``panel_rows`` ([(panel title, [group, ...]), ...], from a facet layout) puts
+    # each panel on its own row, its levels side by side, instead of every group
+    # in one long row.
+    rows = [[g for g in gs if g in groups] for _, gs in (panel_rows or [])]
+    rows = [r for r in rows if r]
+    if rows:
+        ncols = max(len(r) for r in rows)
+        fig, grid = plt.subplots(
+            len(rows), ncols, figsize=(max(4 * ncols, 8), 3.6 * len(rows)),
+            sharey=True, squeeze=False,
+        )
+        cells = [(grid[r][c], g) for r, gs in enumerate(rows) for c, g in enumerate(gs)]
+        for r, gs in enumerate(rows):
+            for c in range(len(gs), ncols):
+                grid[r][c].set_visible(False)
+        first_col = {id(grid[r][0]) for r in range(len(rows))}
+        axes = [ax for ax, _ in cells]
+        group_names = [g for _, g in cells]
+    else:
+        fig, axes = plt.subplots(1, n_groups, figsize=(max(5 * n_groups, 8), 5), sharey=True)
+        if n_groups == 1:
+            axes = [axes]
+        first_col = {id(axes[0])}
 
     for i, gname in enumerate(group_names):
         ax = axes[i]
@@ -1838,7 +1874,7 @@ def plot_zt_state_fractions(
         ax.set_ylim(0, 100)
         ax.set_title(gname)
         ax.set_xlabel("ZT (hours)")
-        if i == 0:
+        if id(ax) in first_col:
             ax.set_ylabel("% Time in State")
 
         # Light/dark shading: ZT12-24 is typically dark phase
@@ -1856,7 +1892,7 @@ def plot_zt_state_fractions(
 
 
 def plot_group_state_timecourse(
-    ds, n_states=None, metric="sleep", bin_size_minutes=30, return_data=False
+    ds, n_states=None, metric="sleep", bin_size_minutes=30, return_data=False, group_order=None
 ):
     """Group-comparison time-course: mean % time in ONE metric across ZT, with all
     genotype groups OVERLAID on shared axes (± SEM across flies).
@@ -1923,7 +1959,7 @@ def plot_group_state_timecourse(
         .merge((grp.sem() * 100).rename("sem").reset_index(), on=["group", "zt_hour"])
     )
 
-    group_names = sorted(groups.keys())
+    group_names = _ordered_groups(groups, group_order)
     cmap = plt.cm.tab10.colors
     fig, ax = plt.subplots(figsize=(10, 6))
     for i, gname in enumerate(group_names):

@@ -60,7 +60,7 @@ class TestSharedGroupFilter:
     """Item 11: one app-wide display group selection, surviving page switches."""
 
     def test_both_pages_use_the_same_session_key(self, app, master_ds):
-        for page in ("periodograms", "sleep_activity"):
+        for page in ("period_rhythmicity", "sleep_activity"):
             at = app(ds=master_ds, page=page)
             assert DISPLAY_GROUPS_KEY in at.session_state, (
                 f"{page} should render its group filter under the shared key"
@@ -71,7 +71,7 @@ class TestSharedGroupFilter:
         widget stops being rendered, and a page switch is exactly that. Sharing
         the key is not enough on its own — persist_state="session" is what makes
         it survive."""
-        at = app(ds=master_ds, page="periodograms")
+        at = app(ds=master_ds, page="period_rhythmicity")
         all_groups = list(at.multiselect(key=DISPLAY_GROUPS_KEY).value)
         assert len(all_groups) > 1, "fixture needs >1 group for this to mean anything"
 

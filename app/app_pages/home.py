@@ -26,11 +26,10 @@ The sidebar groups the modules into four sections.
 
 **Circadian analysis** — free-running period and light-pulse responses.
 
-- **Period analysis** — per-fly period from four independent estimators:
-  autocorrelation, Lomb–Scargle, CWT and MESA.
-- **Periodograms** — group-averaged spectra for whichever of those you ran.
-- **Rhythmicity** — the per-fly summary table, an interactive threshold explorer, and
-  the rhythmic/arrhythmic classification that gates downstream group filtering.
+- **Period & rhythmicity** — per-fly period from four independent estimators
+  (autocorrelation, Lomb–Scargle, CWT and MESA), the rhythmic/arrhythmic cutoff that
+  gates downstream group filtering, and tabs for period length, rhythmicity and the
+  group-averaged periodograms.
 - **Phase shift** — how far each fly's rhythm shifted after a light pulse
   (needs a `pulse_time` ZT column in your metadata).
 

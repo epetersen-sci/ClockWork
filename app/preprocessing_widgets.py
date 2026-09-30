@@ -134,31 +134,42 @@ def render_preprocess_expander(
         Keys are method names (``"LS"``, ``"AC"``, ``"CWT"``); values are
         :class:`PreprocessConfig`.
     """
+    with st.expander("Preprocessing (per-method)", expanded=expanded):
+        return render_preprocess_controls(key_prefix, methods, method_defaults)
+
+
+def render_preprocess_controls(
+    key_prefix: str,
+    methods: list | None = None,
+    method_defaults: dict[str, PreprocessConfig] | None = None,
+) -> dict[str, PreprocessConfig]:
+    """The body of :func:`render_preprocess_expander`, in whatever container is
+    current — for a page that already holds its options in an expander (Streamlit
+    does not nest expanders)."""
     methods = methods or ["LS", "AC", "CWT"]
     method_defaults = method_defaults or METHOD_DEFAULTS
     out: dict[str, PreprocessConfig] = {}
 
-    with st.expander("Preprocessing (per-method)", expanded=expanded):
-        st.caption(
-            "All three methods share the same five-step pipeline "
-            "(bin → smooth → lopass → detrend → normalize). Defaults: "
-            "LS uses the generalized (Zechmeister-Kürster) periodogram "
-            "with floating-mean fit per trial frequency — z-scoring is "
-            "recommended for cross-recording amplitude comparability but "
-            "not required for correctness. CWT: no preprocessing besides "
-            "mean-centering. AC: 4 h Butterworth low-pass + linear "
-            "detrend, SCAMP-style."
-        )
-        cols = st.columns(len(methods))
-        for col, m in zip(cols, methods):
-            with col:
-                st.markdown(f"**{m}**")
-                out[m] = _render_one_method(
-                    m,
-                    method_defaults.get(m, PreprocessConfig()),
-                    key_prefix,
-                )
+    st.caption(
+        "All three methods share the same five-step pipeline "
+        "(bin → smooth → lopass → detrend → normalize). Defaults: "
+        "LS uses the generalized (Zechmeister-Kürster) periodogram "
+        "with floating-mean fit per trial frequency — z-scoring is "
+        "recommended for cross-recording amplitude comparability but "
+        "not required for correctness. CWT: no preprocessing besides "
+        "mean-centering. AC: 4 h Butterworth low-pass + linear "
+        "detrend, SCAMP-style."
+    )
+    cols = st.columns(len(methods))
+    for col, m in zip(cols, methods):
+        with col:
+            st.markdown(f"**{m}**")
+            out[m] = _render_one_method(
+                m,
+                method_defaults.get(m, PreprocessConfig()),
+                key_prefix,
+            )
     return out
 
 
-__all__ = ["render_preprocess_expander", "METHOD_DEFAULTS"]
+__all__ = ["render_preprocess_expander", "render_preprocess_controls", "METHOD_DEFAULTS"]

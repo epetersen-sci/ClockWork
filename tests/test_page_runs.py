@@ -3,8 +3,9 @@
 ``test_pages_smoke`` renders every page, but each heavy analysis sits behind an
 ``st.button``, and a page that renders fine can still fail the moment Run is
 pressed: the page builds the arguments, wires the progress callback, and stores
-the result, and none of that runs until the click. These press them — Period
-analysis (all four methods), Rhythmicity, Sleep deprivation, and Curate & split —
+the result, and none of that runs until the click. These press them — Period &
+rhythmicity (Run analysis for each of the four methods, and Classify), Sleep
+deprivation, and Curate & split —
 on four real flies from example_data, and assert each run neither raised nor
 reported an error and left its result where the next page looks for it.
 
@@ -41,24 +42,23 @@ def _click(at, key, *, tab_key=None, tab=None):
     return at.run()
 
 
-PERIOD_TAB = "period_analysis_tab"
+PAGE = "period_rhythmicity"
+PERIOD_TAB = "period_rhythm_tab"
+METHODS = ("cwt", "ls", "ac", "mesa")
 
 
 @pytest.mark.parametrize(
-    "tab, button, result_var",
-    [
-        ("Lomb-Scargle", "run_ls", "ls_period"),
-        ("Autocorrelation", "run_ac", "ac_period"),
-        ("MESA", "run_mesa", "mesa_period"),
-        ("CWT", "run_cwt", "cwt_period"),
-    ],
+    "method, result_var",
+    [("ls", "ls_period"), ("ac", "ac_period"), ("mesa", "mesa_period"), ("cwt", "cwt_period")],
 )
-def test_period_analysis_runs(app, page_ds, tab, button, result_var):
-    at = app(ds=page_ds, page="period_analysis", **{PERIOD_TAB: tab})
-    _ok(at, f"period analysis ({tab} tab)")
-    at = _click(at, button, tab_key=PERIOD_TAB, tab=tab)
-    _ok(at, f"the {tab} run")
-    assert result_var in at.session_state["dataset"], f"{tab} stored no {result_var}"
+def test_period_analysis_runs(app, page_ds, method, result_var):
+    # Tick only this method, so each parametrisation presses Run for one of them.
+    ticks = {f"run_method_{m}": m == method for m in METHODS}
+    at = app(ds=page_ds, page=PAGE, **{PERIOD_TAB: "Analysis"}, **ticks)
+    _ok(at, f"period & rhythmicity (Analysis tab, {method} ticked)")
+    at = _click(at, "run_period_analysis", tab_key=PERIOD_TAB, tab="Analysis")
+    _ok(at, f"the {method} run")
+    assert result_var in at.session_state["dataset"], f"{method} stored no {result_var}"
 
 
 @pytest.fixture(scope="module")
@@ -77,13 +77,14 @@ def period_results_ds(page_ds):
 
 
 def test_rhythmicity_classification_runs(app, period_results_ds):
-    at = app(ds=period_results_ds, page="rhythmicity")
-    _ok(at, "rhythmicity")
-    at = _click(at, "run_rhythmicity")
+    tab = "Rhythmicity cutoff"
+    at = app(ds=period_results_ds, page=PAGE, **{PERIOD_TAB: tab})
+    _ok(at, "rhythmicity cutoff")
+    at = _click(at, "classify_rhythmicity", tab_key=PERIOD_TAB, tab=tab)
     _ok(at, "the classification run")
-    per_fly = at.session_state["rhythmicity_per_fly_df"]
-    assert len(per_fly) == len(FLIES)
-    assert "ac_rhythmic" in at.session_state["dataset"].coords
+    ds = at.session_state["dataset"]
+    assert "ac_rhythmic" in ds.coords
+    assert ds["ac_rhythmic"].sizes["id"] == len(FLIES)
 
 
 @pytest.fixture(scope="module")

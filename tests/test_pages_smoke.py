@@ -14,9 +14,7 @@ PAGES = [
     "data_groups",
     "data_curate_split",
     "actograms",
-    "period_analysis",
-    "periodograms",
-    "rhythmicity",
+    "period_rhythmicity",
     "phase_shift",
     "sleep_activity",
     "sleep_states",
@@ -46,7 +44,7 @@ def test_page_renders_without_dataset(app, page):
 def test_unsplit_dataset_renders(app, unsplit_ds):
     """A dataset with no LD/DD boundary hits the fallback branch on every page
     that offers a phase choice — the branch the LD/DD fixtures never reach."""
-    for page in ("sleep_activity", "hmm", "period_analysis"):
+    for page in ("sleep_activity", "hmm", "period_rhythmicity"):
         at = app(ds=unsplit_ds, page=page)
         assert not at.exception, f"{page} raised on an unsplit dataset: {at.exception}"
 
