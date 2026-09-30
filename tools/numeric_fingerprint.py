@@ -10,8 +10,9 @@ every numeric output unrounded, so two environments can be diffed exactly.
     python tools/numeric_fingerprint.py diff a.npz b.npz
 
 ``--cpu`` hides the GPU (CUDA_VISIBLE_DEVICES=-1 and HMM_USE_GPU=0) before
-anything imports torch, so the CWT and ZIP-HMM take their CPU paths in the
-worker processes too; a monkeypatch would not reach spawned workers.
+anything imports torch, so the ZIP-HMM takes its CPU path in the worker
+processes too; a monkeypatch would not reach spawned workers. (The CWT is
+CPU-only in any case.)
 """
 
 from __future__ import annotations
@@ -174,7 +175,8 @@ def run(path, quick):
 
     meta = {"versions": _versions(), "timings": timings,
             "cpu_forced": os.environ.get("CUDA_VISIBLE_DEVICES") == "-1",
-            "gpu_cwt_available": bool(periodograms.PTWT_AVAILABLE)}
+            "cwt": {k: getattr(periodograms, k, None)
+                    for k in ("CWT_WAVELET_PRECISION", "CWT_CONVOLUTION_METHOD")}}
     np.savez_compressed(path, __meta__=np.array(json.dumps(meta)), **out)
     print(json.dumps(meta, indent=1))
 
@@ -187,7 +189,7 @@ def diff(a_path, b_path):
         m = json.loads(str(f["__meta__"]))
         v = m["versions"]
         print(f"{label}: " + ", ".join(f"{k}={v[k]}" for k in v if v[k]) +
-              f" | gpu_cwt_available={m.get('gpu_cwt_available', m.get('gpu_cwt_used'))}")
+              f" | cwt={m.get('cwt', 'pre-precision-16')}")
     keys = sorted((set(a.files) | set(b.files)) - {"__meta__"})
     identical, rows = 0, []
     for k in keys:

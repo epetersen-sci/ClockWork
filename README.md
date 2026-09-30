@@ -58,8 +58,9 @@ any point and reload without recomputing.
 
 ## Installation
 
-ClockWork needs **Python 3.10 or later**; 3.11 is what it's developed and tested
-on, and what the instructions below create.
+ClockWork needs **Python 3.11 or later** (its scipy and astropy floors require
+it); 3.11 is what it's developed and tested on, and what the instructions below
+create.
 
 ### 1. Create and activate the environment
 
@@ -83,12 +84,23 @@ This installs ClockWork and its dependencies, and puts the `clockwork` command
 on your path. `-e` (editable) means edits to the source take effect without
 reinstalling; use `pip install -e ".[dev]"` to also get the test and lint tools.
 
-Three packages are **version-pinned on purpose** — `numpy`, `scipy` and
-`astropy`. Their default behaviour is baked into the numbers ClockWork reports,
-so upgrading them can silently shift results. Don't bump them casually.
-`PyWavelets` is not pinned: ClockWork passes the wavelet settings that matter
+**Version ranges are measured, not guessed.** The numerical libraries —
+`numpy`, `scipy`, `astropy`, `PyWavelets` — decide the numbers ClockWork
+reports, so every range in `pyproject.toml` was checked by running each
+estimator on `example_data` in each version and diffing the unrounded output
+(`tools/numeric_fingerprint.py`). Within the declared ranges results agree to
+floating-point rounding. `astropy` 8 is excluded because it changes the
+Lomb-Scargle numbers. ClockWork passes the wavelet settings that matter
 explicitly (see [Continuous wavelet transform](#continuous-wavelet-transform-cwt)),
-so it needs only version 1.9 or later.
+which is why `PyWavelets` needs 1.9 or later.
+
+**PNG export needs Chrome or Chromium.** Plotly's image exporter (`kaleido`)
+renders through a browser it does not ship. If you have no Chrome, run this
+once in the environment:
+
+```bash
+plotly_get_chrome
+```
 
 ### 3. Optional — GPU acceleration
 

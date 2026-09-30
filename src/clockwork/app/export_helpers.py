@@ -271,10 +271,18 @@ def save_figures_png_button(label, figures, ds, key, *, scale=2, subfolder=None,
             _show_remembered(key)
             return paths
         except Exception as e:
-            st.error(
-                f"PNG export failed: {e}. Static image export needs the "
-                "`kaleido` package (`pip install kaleido`)."
-            )
+            # kaleido >= 1 renders through a Chrome/Chromium it does not ship.
+            # A missing browser is by far the likeliest failure on a fresh
+            # install, and "install kaleido" (the old message) sent people to
+            # fix a package that was already there.
+            if type(e).__name__ == "ChromeNotFoundError" or "chrome" in str(e).lower():
+                st.error(
+                    f"PNG export failed: {e}. Static image export renders through "
+                    "Chrome or Chromium. Install Google Chrome, or run "
+                    "`plotly_get_chrome` once in this environment, then retry."
+                )
+            else:
+                st.error(f"PNG export failed: {e}")
             return None
     _show_remembered(key)
     return None

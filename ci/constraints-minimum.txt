@@ -1,0 +1,25 @@
+# Every runtime dependency at the floor declared in pyproject.toml.
+#
+#   python -m pip install -e ".[dev]" -c ci/constraints-minimum.txt
+#
+# CI runs the suite against this as well as against the newest allowed
+# versions, so a floor that stops being true fails a build instead of a
+# user's install. Keep it in step with [project.dependencies]:
+# tests/test_dependency_floors.py checks that it is.
+numpy==2.0.0
+scipy==1.13.0
+astropy==6.1.0
+PyWavelets==1.9.0
+pandas==2.2.2
+xarray==2024.7.0
+netCDF4==1.7.1.post1
+openpyxl==3.1.5
+hmmlearn==0.3.3
+statsmodels==0.14.2
+joblib==1.4.0
+streamlit==1.63.0
+plotly==6.1.0
+kaleido==1.0.0
+matplotlib==3.9.0
+seaborn==0.13.0
+tqdm==4.67.0

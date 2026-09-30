@@ -13,33 +13,90 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, py${{ matrix.python }}, ${{ matrix.deps }} deps)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The newest versions pyproject.toml allows.
+          - os: ubuntu-latest
+            python: "3.11"
+            deps: latest
+          # Every dependency at its declared floor (ci/constraints-minimum.txt):
+          # a floor that stops being true fails here, not in a user's install.
+          - os: ubuntu-latest
+            python: "3.11"
+            deps: minimum
+          # The newest Python the numbers were verified on (PyWavelets >= 1.10
+          # needs >= 3.12, so this is also the only job that sees it).
+          - os: ubuntu-latest
+            python: "3.12"
+            deps: latest
+          # Windows spawns multiprocessing workers, which re-import clockwork by
+          # package name; Linux forks and would not notice a broken import.
+          - os: windows-latest
+            python: "3.11"
+            deps: latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
-          # Matches [tool.ruff] target-version = "py311" in pyproject.toml.
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
 
       - name: Install
         # The package itself plus the [dev] extra (pytest + ruff). The test suite
         # needs the real dependencies because it imports clockwork and drives the
         # actual pages through Streamlit's AppTest.
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          if [ "${{ matrix.deps }}" = "minimum" ]; then
+            python -m pip install -e ".[dev]" -c ci/constraints-minimum.txt
+          else
+            python -m pip install -e ".[dev]"
+          fi
+          python -m pip freeze
 
       - name: Lint
-        run: python -m ruff check src/ tests/
+        if: matrix.os == 'ubuntu-latest' && matrix.deps == 'latest' && matrix.python == '3.11'
+        run: python -m ruff check src/ tests/ tools/
 
       - name: Test
         # No browser and no server: the suite runs Streamlit in-process via
         # st.testing.v1.AppTest, so a plain runner is enough. Coverage is
         # REPORTED, not gated: the listing of untested lines is the point.
-        # GPU-marked tests skip themselves on this runner (no CUDA).
         run: >-
           python -m pytest -q
           --cov=clockwork
           --cov-report=term-missing:skip-covered
+
+  package:
+    # What PyPI and conda-forge will actually ship: build the sdist and wheel,
+    # install the wheel into a clean environment outside the checkout, and run
+    # the command. Catches files missing from the wheel, which an editable
+    # install (every job above) can never see.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install the wheel and run it
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv wheel-env
+          wheel-env/bin/python -m pip install "$GITHUB_WORKSPACE"/dist/*.whl
+          wheel-env/bin/clockwork --version
+          wheel-env/bin/clockwork scamp --help > /dev/null
+          wheel-env/bin/python -c "import clockwork.core.periodograms, clockwork.scamp_export"
+          wheel-env/bin/python -c "import clockwork.app, pathlib; p = pathlib.Path(clockwork.app.__file__).parent; assert (p / 'ClockWork.py').is_file() and (p / 'app_pages' / 'home.py').is_file(), 'app files missing from the wheel'"
