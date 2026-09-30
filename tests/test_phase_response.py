@@ -23,13 +23,13 @@ the control mean itself.
 import numpy as np
 import pandas as pd
 import pytest
+
+from clockwork.core import phase_shift as ps
 from conftest import (
     PULSE_DD_DAY,
     PULSE_SHIFT_H,
     _build_pulse_cohort,
 )
-
-import phase_shift as ps
 
 GROUP_BY = ("genotype", "pulse_zt_hour", "pulse_duration_minutes")
 
@@ -260,7 +260,7 @@ class TestSummary:
 def test_grouping_suggestion_names_real_coords(prc_ds):
     """The message shown when no control matched has to suggest columns this
     dataset actually has, or it is just noise."""
-    import dam_utilities
+    from clockwork.core import dam_utilities
 
     sugg = ps.grouping_suggestion(prc_ds)
     assert sugg, "expected a suggestion"

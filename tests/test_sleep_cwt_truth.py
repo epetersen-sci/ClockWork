@@ -20,7 +20,7 @@ discrepancy that would make the output irreconcilable with the paper.
 import numpy as np
 import pytest
 
-from periodograms import _chi_sq_periodogram, _preprocess_and_compute_cwt
+from clockwork.core.periodograms import _chi_sq_periodogram, _preprocess_and_compute_cwt
 
 BIN_MIN = 5  # the sleep-state path bins to 5 minutes
 BINS_PER_DAY = 24 * 60 // BIN_MIN
@@ -191,7 +191,7 @@ class TestFullPipeline:
     """The wiring, on a small real-shaped dataset."""
 
     def test_produces_one_full_range_surface_per_state(self, states_ds):
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         out = sleep_cwt_analysis(
             states_ds, states=("standard", "long"), phase="DD", full_range=(1, 32)
@@ -208,7 +208,7 @@ class TestFullPipeline:
     def test_narrow_band_mode_still_available(self, states_ds):
         """full_range=None restores the old split-band behaviour, which is only
         useful for reproducing an older run."""
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         out = sleep_cwt_analysis(
             states_ds, states=("long",), phase="DD", full_range=None
@@ -217,7 +217,7 @@ class TestFullPipeline:
         assert "sleep_cwt_long_ultradian_avg_surface" in out.data_vars
 
     def test_chi_squared_runs_on_the_amplitude_series(self, states_ds):
-        from periodograms import sleep_cwt_analysis, ultradian_rhythmicity_chi_sq
+        from clockwork.core.periodograms import sleep_cwt_analysis, ultradian_rhythmicity_chi_sq
 
         cwt = sleep_cwt_analysis(states_ds, states=("long",), phase="DD")
         chi = ultradian_rhythmicity_chi_sq(cwt, states=("long",))
@@ -230,8 +230,8 @@ class TestFullPipeline:
         every cell of the averaged surface came back NaN. Guarding both
         representations, and then taking each fly's longest clean run, is what
         keeps a pre-sliced dataset usable."""
-        from dam_utilities import select_phase
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.dam_utilities import select_phase
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         view, used = select_phase(states_ds, phase="DD")
         assert np.isnan(view["sleep_long"].values).any(), (
@@ -246,8 +246,8 @@ class TestFullPipeline:
         """The surface should span the in-phase epoch only. Carrying the
         out-of-phase minutes through as zeros would both halve the effective
         signal and put a step at the boundary."""
-        from dam_utilities import select_phase
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.dam_utilities import select_phase
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         view, used = select_phase(states_ds, phase="DD")
         out = sleep_cwt_analysis(view, states=("long",), phase=used, full_range=(1, 32))
@@ -283,7 +283,7 @@ class TestRaggedFliesOnASharedGrid:
         """Measured on a real 31-fly group: three flies with 1.1-, 2.3- and
         3.4-day usable runs cut the GROUP surface from 9 days to 3.4, because
         the accumulator cropped to the running minimum length."""
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         clean = sleep_cwt_analysis(states_ds, states=("long",), phase="DD")
         full_bins = clean["sleep_cwt_long_full_avg_surface"].shape[1]
@@ -300,7 +300,7 @@ class TestRaggedFliesOnASharedGrid:
         """Re-zeroing each clean run to t=0 would average a fly's day-5 column
         into everyone else's day 0, smearing the daily structure the scalogram
         exists to show."""
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         n_time = states_ds.sizes["time"]
         # Every fly but one loses the FIRST half, so the early bins are covered
@@ -332,7 +332,7 @@ class TestRaggedFliesOnASharedGrid:
         is two empty leading days. Left in, the scalogram would render them
         blank under an axis labelled "days since start of constant darkness".
         """
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         out = sleep_cwt_analysis(states_ds, states=("long",), phase="DD")
         surface = out["sleep_cwt_long_full_avg_surface"].values
@@ -351,7 +351,7 @@ class TestRaggedFliesOnASharedGrid:
         Cropping to a common length would keep only the intersection, and a
         fixed divisor would dilute the sparsely covered columns toward zero.
         """
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         n_time = states_ds.sizes["time"]
         n_id = states_ds.sizes["id"]

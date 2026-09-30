@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-import actograms as act
+from clockwork.core import actograms as act
 
 MPD = act.MINUTES_PER_DAY
 

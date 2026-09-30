@@ -13,8 +13,8 @@ Two exits, and they are not interchangeable:
 import plotly.graph_objects as go
 import pytest
 
-import export_helpers
-from ui import charts
+from clockwork.app import export_helpers
+from clockwork.app.ui import charts
 
 
 def _fig(title=None):

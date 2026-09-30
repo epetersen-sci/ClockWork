@@ -6,7 +6,7 @@ the same checks in-process in a couple of seconds, which is the difference
 between "verified once" and "verified on every commit".
 """
 
-from ui.filters import DISPLAY_GROUPS_KEY
+from clockwork.app.ui.filters import DISPLAY_GROUPS_KEY
 
 
 def _captions(at):
@@ -113,7 +113,7 @@ class TestSplitStateDrivesThePhaseUI:
         export refuse to run."""
         import numpy as np
 
-        from dataset_meta import is_split_applied
+        from clockwork.core.dataset_meta import is_split_applied
 
         reloaded = master_ds.copy()
         reloaded.attrs["split_applied"] = np.int64(1)  # what comes back off disk
@@ -175,8 +175,8 @@ class TestSleepActivityEpoch:
         selection cannot touch it directly. Without scoping, the Bouts tab
         would cover the whole recording next to profiles covering one epoch.
         """
-        import sleep_analysis as sa
-        from dam_utilities import select_phase
+        from clockwork.core import sleep_analysis as sa
+        from clockwork.core.dam_utilities import select_phase
 
         whole = len(sa.raw_bout_dataframe(states_ds))
         ld, _ = select_phase(states_ds, phase="LD")

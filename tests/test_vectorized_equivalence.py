@@ -19,9 +19,7 @@ import pytest
 import pywt
 import xarray as xr
 
-import dam_utilities
-import periodograms
-import sleep_analysis
+from clockwork.core import dam_utilities, periodograms, sleep_analysis
 
 
 def _real_moving(example_ds, n_flies=8):

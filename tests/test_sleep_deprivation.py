@@ -17,9 +17,7 @@ night), and that the SD day itself enters neither side.
 import numpy as np
 import pytest
 
-import dam_utilities
-import sleep_analysis
-import sleep_deprivation
+from clockwork.core import dam_utilities, sleep_analysis, sleep_deprivation
 
 DAY = 1440
 BASELINE, SD_DAY, RECOVERY = 0, 1, 2

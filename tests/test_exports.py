@@ -8,8 +8,8 @@ reorders or re-cases is a silent data corruption, not a cosmetic change.
 import numpy as np
 import pytest
 
-import export_helpers
-from export_helpers import ZT_STAT_ORDER, phase_slice, zt_group_summary_table
+from clockwork.app import export_helpers
+from clockwork.app.export_helpers import ZT_STAT_ORDER, phase_slice, zt_group_summary_table
 
 
 class TestZTSummaryTable:
@@ -80,9 +80,9 @@ class TestBoutDataframeIsSingleSourceOfTruth:
     """Item 1: both sleep-bout exports come from raw_bout_dataframe."""
 
     def test_export_page_uses_the_shared_builder(self):
-        from conftest import REPO_ROOT
+        from conftest import PKG_ROOT
 
-        src = (REPO_ROOT / "app" / "app_pages" / "export_data.py").read_text(encoding="utf-8")
+        src = (PKG_ROOT / "app" / "app_pages" / "export_data.py").read_text(encoding="utf-8")
         assert "sleep_analysis.raw_bout_dataframe(ds)" in src
         assert "ds[bout_vars].to_dataframe()" not in src, (
             "the ad-hoc re-derivation was a strict subset of raw_bout_dataframe "
@@ -90,10 +90,10 @@ class TestBoutDataframeIsSingleSourceOfTruth:
         )
 
     def test_the_two_files_are_named_apart(self):
-        from conftest import REPO_ROOT
+        from conftest import PKG_ROOT
 
-        export = (REPO_ROOT / "app" / "app_pages" / "export_data.py").read_text(encoding="utf-8")
-        activity = (REPO_ROOT / "app" / "app_pages" / "sleep_activity.py").read_text(
+        export = (PKG_ROOT / "app" / "app_pages" / "export_data.py").read_text(encoding="utf-8")
+        activity = (PKG_ROOT / "app" / "app_pages" / "sleep_activity.py").read_text(
             encoding="utf-8"
         )
         assert '"sleep_bouts.csv"' in export
@@ -111,10 +111,10 @@ class TestBoutDataframeIsSingleSourceOfTruth:
 def test_phase_slice_is_the_only_slicer_the_export_pages_use():
     """Both export pages must go through the shared helper, or they can drift the
     way the two ZT tables did."""
-    from conftest import REPO_ROOT
+    from conftest import PKG_ROOT
 
     for page in ("export_data.py", "export_scamp.py"):
-        src = (REPO_ROOT / "app" / "app_pages" / page).read_text(encoding="utf-8")
+        src = (PKG_ROOT / "app" / "app_pages" / page).read_text(encoding="utf-8")
         assert "export_helpers.phase_slice(" in src, f"{page} should slice via the helper"
         assert "session_state.dataset_LD" not in src
         assert "session_state.dataset_DD" not in src

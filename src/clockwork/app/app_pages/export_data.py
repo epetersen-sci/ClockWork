@@ -1,0 +1,424 @@
+"""
+Export Page - Bulk CSV summaries, NetCDF save with compression, download buttons.
+"""
+
+import os
+
+import pandas as pd
+import streamlit as st
+
+from clockwork.app import export_helpers
+from clockwork.app.analysis_detection import detect_analyses
+from clockwork.app.ui import experiment
+from clockwork.app.ui.guards import require_dataset
+from clockwork.core import dam_utilities, sleep_analysis
+from clockwork.core.dataset_meta import is_split_applied
+from clockwork.core.load_and_save_datasets import save_dataset_to_netcdf
+
+ds = require_dataset()
+analyses = detect_analyses(ds)
+
+# Renaming the experiment here renames the folder every "save to working folder"
+# button on every page writes into, including the ones on Sleep & activity and
+# Periodograms. It is offered on this page as well as at import because a dataset
+# reloaded from .nc never passes through the import field, and because this is
+# where someone goes when they want to know where their files went.
+experiment.name_control()
+
+# Three kinds of output, three tabs: the dataset itself, the raw/binned
+# tables, and the per-analysis result exports.
+# Lazy tabs: only the open tab's tables are built on a rerun (the results tab
+# assembles per-fly tables, which is real work on a large dataset). Keyed so a
+# Generate button's rerun keeps the tab open.
+tab_dataset, tab_tables, tab_results = st.tabs(
+    ["Dataset (.nc)", "Activity & ZT tables", "Analysis results"],
+    key="export_tab",
+    on_change="rerun",
+)
+
+if tab_dataset.open:
+    with tab_dataset:
+        # ============================================================
+        # Save NetCDF
+        # ============================================================
+        st.subheader("Save Dataset (NetCDF)")
+
+        save_dir = st.text_input(
+            "Output directory",
+            value=dam_utilities.resolve_export_dir(ds, st.session_state.get("working_dir")),
+            key="export_dir",
+        )
+        save_filename = st.text_input(
+            "Filename (without .nc)",
+            value="analyzed_dataset",
+            key="export_filename",
+        )
+
+        # Offer the per-phase save whenever the master records an applied split —
+        # not when pre-sliced session copies happen to exist. The slices are made
+        # below, at save time, from the parameters on the master.
+        _has_phase_datasets = is_split_applied(ds) and (
+            "first_DD_day" in ds.coords or "split_minute" in ds.coords
+        )
+        if _has_phase_datasets:
+            save_phase_datasets = st.checkbox(
+                "Also save DD and LD phase datasets separately",
+                # Off by default: the master carries both phases and every analysis page
+                # derives the view it needs, so the split files are a convenience for
+                # taking a phase elsewhere rather than something the app itself reads.
+                # Writing three files when one was asked for is the surprising default.
+                value=False,
+                key="save_phase_datasets",
+                persist_state="session",
+                help="Saves each phase as its own NetCDF file (e.g. analyzed_dataset_DD.nc, analyzed_dataset_LD.nc) "
+                "alongside the master dataset.",
+            )
+        else:
+            save_phase_datasets = False
+
+        if st.button("Save NetCDF", key="save_nc"):
+            if not save_dir:
+                st.error("Please provide an output directory.")
+            else:
+                os.makedirs(save_dir, exist_ok=True)
+                full_path = os.path.join(save_dir, f"{save_filename}.nc")
+                with st.spinner(f"Saving to {full_path}..."):
+                    try:
+                        save_dataset_to_netcdf(ds, f"{save_filename}.nc", output_dir=save_dir)
+                        st.session_state.dataset_path = full_path
+                        st.success(f"Saved master dataset to {full_path}")
+
+                        if save_phase_datasets:
+                            # Sliced here, from the master, using the split
+                            # parameters it carries — rather than read from session
+                            # caches that a reload or a group filter could have
+                            # emptied while the master stayed split.
+                            for _phase in ("DD", "LD"):
+                                _phase_path = os.path.join(
+                                    save_dir, f"{save_filename}_{_phase}.nc"
+                                )
+                                with st.spinner(f"Slicing {_phase} phase…"):
+                                    _phase_ds = export_helpers.phase_slice(ds, _phase)
+                                save_dataset_to_netcdf(
+                                    _phase_ds,
+                                    f"{save_filename}_{_phase}.nc",
+                                    output_dir=save_dir,
+                                )
+                                st.success(f"Saved {_phase} dataset to {_phase_path}")
+                    except Exception as e:
+                        st.error(f"Error saving: {e}")
+
+
+if tab_tables.open:
+    with tab_tables:
+        # ============================================================
+        # Export Activity CSV
+        # ============================================================
+        st.subheader("Export Activity Data (CSV)")
+        st.markdown("Exports raw activity data: time column + one column per fly.")
+
+        if "activity" in ds.data_vars:
+            if st.button("Generate Activity CSV", key="gen_activity_csv"):
+                with st.spinner("Generating CSV..."):
+                    try:
+                        activity_df = ds["activity"].to_pandas().reset_index()
+                        if activity_df.columns[0] != "time":
+                            activity_df.rename(columns={activity_df.columns[0]: "time"}, inplace=True)
+
+                        csv_data = activity_df.to_csv(index=False)
+                        st.download_button(
+                            "Download Activity CSV",
+                            csv_data,
+                            "activity_data.csv",
+                            "text/csv",
+                            key="dl_activity_csv",
+                        )
+                        st.success(f"Ready: {activity_df.shape[0]} rows x {activity_df.shape[1]} columns")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        else:
+            st.info("No activity data in dataset.")
+
+        st.divider()
+
+        # ============================================================
+        # Export ZT-Binned Averaged Data
+        # ============================================================
+        st.subheader("Export ZT-Binned Averaged Data (CSV)")
+        st.markdown(
+            "Exports data binned by Zeitgeber Time in **two sets**: a group-averaged CSV "
+            "(zt_bin_minute, zt_hours, then per group alphabetically **Mean, SD, N** — "
+            "GraphPad grouped-table order) and a **per-fly** CSV (one row per fly per bin) "
+            "so you can compute other stats yourself."
+        )
+
+        export_var = st.selectbox(
+            "Variable to export",
+            [v for v in ["activity", "sleep"] if v in ds.data_vars],
+            key="export_var",
+        )
+
+        export_bin_size = st.slider(
+            "Bin size (minutes)", min_value=5, max_value=60, value=30, step=5, key="export_bin_size", persist_state="session"
+        )
+
+        export_bin_func = st.radio(
+            "Binning function", ["mean", "sum"], horizontal=True, key="export_bin_func", persist_state="session"
+        )
+
+        if st.button("Generate Averaged CSV", key="gen_avg_csv"):
+            with st.spinner("Generating averaged CSV..."):
+                try:
+                    binned_df = dam_utilities.get_zt_binned_dataframe(
+                        ds, export_var, export_bin_size, export_bin_func
+                    )
+
+                    if binned_df.empty:
+                        st.error("No binned data generated.")
+                    else:
+                        # Add group info
+                        id_to_group = {}
+                        for fly_id in binned_df["id"].unique():
+                            try:
+                                fly_ds = ds.sel(id=fly_id)
+                                if "group" in ds.coords:
+                                    id_to_group[fly_id] = str(fly_ds["group"].item())
+                                elif "genotype" in ds.coords and "temperature" in ds.coords:
+                                    id_to_group[fly_id] = (
+                                        f"{fly_ds['genotype'].item()}-{fly_ds['temperature'].item()}"
+                                    )
+                                else:
+                                    id_to_group[fly_id] = "All"
+                            except (KeyError, IndexError):
+                                id_to_group[fly_id] = "All"
+
+                        binned_df["group"] = binned_df["id"].map(id_to_group)
+
+                        # Wide (group, stat) MultiIndex: groups alphabetical, stats in
+                        # GraphPad's grouped-table order. Built by the shared helper so
+                        # the Sleep & activity ZT export cannot drift from this one.
+                        result_df = export_helpers.zt_group_summary_table(
+                            binned_df, export_var, export_bin_size
+                        )
+
+                        csv_data = result_df.to_csv()
+                        st.download_button(
+                            "Download Averaged CSV (group Mean/SD/N)",
+                            csv_data,
+                            f"{export_var}_averaged.csv",
+                            "text/csv",
+                            key="dl_avg_csv",
+                        )
+
+                        # Second set: PER-FLY binned values (long) so other stats can be
+                        # calculated. One row per fly per ZT bin — ID, Group, zt_bin_minute,
+                        # zt_hours, <variable> — sorted alphabetically by Group then ID.
+                        per_fly_df = binned_df.rename(columns={"id": "ID", "group": "Group"}).copy()
+                        per_fly_df["zt_hours"] = dam_utilities.zt_bin_to_hours(
+                            per_fly_df["zt_bin_minute"], export_bin_size
+                        )
+                        per_fly_df = (
+                            per_fly_df[["ID", "Group", "zt_bin_minute", "zt_hours", export_var]]
+                            .sort_values(["Group", "ID", "zt_bin_minute"])
+                            .reset_index(drop=True)
+                        )
+                        st.download_button(
+                            "Download Per-Fly CSV",
+                            per_fly_df.to_csv(index=False),
+                            f"{export_var}_per_fly.csv",
+                            "text/csv",
+                            key="dl_perfly_csv",
+                        )
+                        n_groups = binned_df["group"].nunique()
+                        st.success(
+                            f"Ready: {len(result_df)} bins x {n_groups} groups "
+                            f"(+ per-fly: {len(per_fly_df)} rows)"
+                        )
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+
+if tab_results.open:
+    with tab_results:
+        # ============================================================
+        # Export Period Analysis Summary
+        # ============================================================
+        if any(analyses[k] for k in ["cwt", "lomb_scargle", "autocorrelation"]):
+            st.subheader("Export Period Analysis Summary (CSV)")
+
+            # One column per quantity, each read off its (id,) array in one go. A .sel
+            # per fly per quantity (about fifteen of them) ran on every rerun of this
+            # page, whichever tab was open.
+            _float_cols = [
+                ("CWT_Period_h", "cwt_period", "cwt_period"),
+                ("CWT_Power", "cwt_power", "cwt_period"),
+                ("CWT_Period_Stability_h", "cwt_period_stability", "cwt_period_stability"),
+                ("CWT_Rhythmicity", "cwt_rhythmicity", "cwt_rhythmicity"),
+                ("LS_Period_h", "ls_period", "ls_period"),
+                ("LS_Power", "ls_power", "ls_period"),
+                ("LS_FAP", "ls_fap", "ls_fap"),
+                ("AC_Period_h", "ac_period", "ac_period"),
+                ("AC_Power_RI", "ac_power", "ac_period"),
+                ("AC_Rhythm_Strength", "ac_rhythm_strength", "ac_rhythm_strength"),
+            ]
+            # Per-algorithm rhythmic flags (written by rhythmicity_classification.classify_*)
+            _flag_cols = [
+                ("LS_Rhythmic", "ls_rhythmic"),
+                ("AC_Rhythmic", "ac_rhythmic"),
+                ("CWT_Rhythmic", "cwt_rhythmic"),
+            ]
+            summary_cols = {"ID": list(ds["id"].values)}
+            if "group" in ds.coords:
+                summary_cols["Group"] = [str(g) for g in ds["group"].values]
+            for col, var, present_if in _float_cols:
+                if present_if in ds.data_vars:
+                    summary_cols[col] = [float(v) for v in ds[var].values]
+            for col, coord in _flag_cols:
+                if coord in ds.coords:
+                    summary_cols[col] = [bool(v) for v in ds[coord].values]
+
+            summary_df = pd.DataFrame(summary_cols)
+            # Alphabetical order for a predictable, GraphPad-friendly layout: by Group
+            # then ID (or just ID when there is no group coord).
+            _sort_keys = [c for c in ("Group", "ID") if c in summary_df.columns]
+            if _sort_keys:
+                summary_df = summary_df.sort_values(_sort_keys).reset_index(drop=True)
+            st.dataframe(summary_df, width="stretch", height=250)
+
+            csv_summary = summary_df.to_csv(index=False)
+            st.download_button(
+                "Download Period Summary CSV",
+                csv_summary,
+                "period_analysis_summary.csv",
+                "text/csv",
+                key="dl_period_summary",
+            )
+
+            # Optional: rhythmic-only variant, gated on user-selected algorithm
+            _rhyth_cols = [
+                c for c in ("LS_Rhythmic", "AC_Rhythmic", "CWT_Rhythmic") if c in summary_df.columns
+            ]
+            if _rhyth_cols:
+                _gate = st.selectbox(
+                    "Filter rhythmic-only export by",
+                    options=_rhyth_cols,
+                    key="dl_period_summary_gate",
+                )
+                _filtered = summary_df[summary_df[_gate].astype(bool)]
+                st.caption(f"Rhythmic-only: {len(_filtered)} of {len(summary_df)} flies.")
+                st.download_button(
+                    "Download Period Summary (rhythmic only) CSV",
+                    _filtered.to_csv(index=False),
+                    "period_analysis_summary_rhythmic.csv",
+                    "text/csv",
+                    key="dl_period_summary_rhythmic",
+                )
+
+        st.divider()
+
+        # ============================================================
+        # Export Sleep Bout Data
+        # ============================================================
+        if analyses["sleep"] and "duration" in ds.data_vars:
+            st.subheader("Export Sleep Bout Data (CSV)")
+
+            # sleep_analysis.raw_bout_dataframe is the single source of truth its own
+            # docstring claims to be, so use it here rather than re-deriving the table
+            # from ds[bout_vars]. The hand-rolled version was a strict subset — same
+            # rows, but missing `group` and `sleep_state` — which meant the two pages
+            # wrote a differently-shaped sleep_bouts.csv. No group filter is passed:
+            # this export is deliberately every fly (Sleep & activity writes the
+            # filtered one, under its own name).
+            bout_df = sleep_analysis.raw_bout_dataframe(ds)
+
+            st.write(f"{len(bout_df)} sleep bouts across {bout_df['id'].nunique()} flies")
+
+            csv_bouts = bout_df.to_csv(index=False)
+            st.download_button(
+                "Download Sleep Bout CSV (all flies)",
+                csv_bouts,
+                "sleep_bouts.csv",
+                "text/csv",
+                key="dl_sleep_bouts",
+            )
+
+        st.divider()
+
+        # ============================================================
+        # Export HMM Results
+        # ============================================================
+        if analyses["hmm"] and "hmm_state" in ds.data_vars:
+            st.subheader("Export HMM State Assignments (CSV)")
+
+            try:
+                from clockwork.core.hmm_models import load_hmm_config_from_attrs
+            except ImportError:  # HMM module unavailable — degrade to no-op
+                load_hmm_config_from_attrs = None
+            _export_cfg = load_hmm_config_from_attrs(ds) if load_hmm_config_from_attrs else None
+            if _export_cfg is not None:
+                st.caption(
+                    f"HMM run parameters: **{_export_cfg.n_states}** states, "
+                    f"**{_export_cfg.emission_model}** emission, "
+                    f"**{_export_cfg.training_scope}** scope, "
+                    f"**{_export_cfg.transition_constraints}** transitions, "
+                    f"**{_export_cfg.decoding_method}** decoding"
+                )
+
+            hmm_state_df = ds["hmm_state"].to_pandas().reset_index()
+            if hmm_state_df.columns[0] != "time":
+                hmm_state_df.rename(columns={hmm_state_df.columns[0]: "time"}, inplace=True)
+
+            st.write(
+                f"State assignments: {hmm_state_df.shape[0]} timepoints x {hmm_state_df.shape[1] - 1} flies"
+            )
+
+            csv_hmm = hmm_state_df.to_csv(index=False)
+            st.download_button(
+                "Download HMM State Assignments CSV",
+                csv_hmm,
+                "hmm_state_assignments.csv",
+                "text/csv",
+                key="dl_hmm_states",
+            )
+
+            # HMM ZT-binned state fractions
+            st.subheader("Export HMM ZT-Binned State Fractions (CSV)")
+            hmm_export_bin = st.slider(
+                "Bin size (minutes)",
+                min_value=15,
+                max_value=60,
+                value=30,
+                step=15,
+                key="hmm_export_bin",
+                persist_state="session",
+            )
+
+            if st.button("Generate HMM ZT Fractions CSV", key="gen_hmm_zt"):
+                with st.spinner("Computing ZT fractions..."):
+                    try:
+                        from clockwork.core.hmm_models import get_hmm_zt_fractions
+
+                        zt_df = get_hmm_zt_fractions(ds, bin_size_minutes=hmm_export_bin)
+                        if not zt_df.empty:
+                            # Add group info, mapped in one pass rather than a
+                            # .sel and a table filter per fly.
+                            if "group" in ds.coords:
+                                _group_of = {
+                                    i: str(g) for i, g in zip(ds["id"].values, ds["group"].values)
+                                }
+                                zt_df["group"] = zt_df["id"].map(_group_of)
+                            csv_zt = zt_df.to_csv(index=False)
+                            st.download_button(
+                                "Download HMM ZT Fractions CSV",
+                                csv_zt,
+                                "hmm_zt_fractions.csv",
+                                "text/csv",
+                                key="dl_hmm_zt_export",
+                            )
+                            st.success(f"Ready: {len(zt_df)} rows")
+                        else:
+                            st.warning("No ZT fraction data generated.")
+                    except ImportError:  # HMM module unavailable — degrade to no-op
+                        st.info("HMM ZT-fraction export unavailable (HMM add-in not installed).")
+                    except Exception as e:
+                        st.error(f"Error: {e}")

@@ -10,7 +10,7 @@ places where a plausible-looking alternative gives a different answer.
 import numpy as np
 import pytest
 
-import sleep_state_metrics as ssm
+from clockwork.core import sleep_state_metrics as ssm
 
 STATES = ("standard", "short", "intermediate", "long")
 
@@ -237,7 +237,7 @@ class TestFigureContracts:
         fraction of bouts initiated per bin, which is a different quantity and
         a different figure (Fig 2), and is why the published rose plots could
         never be matched."""
-        import plotting
+        from clockwork.core import plotting
 
         stats = ssm.group_profiles(ssm.state_profiles(states_ds, bin_size_min=30))
         fig = plotting.rose_plot(stats, "long", bin_size_min=30, phase_label="DD")
@@ -258,7 +258,7 @@ class TestFigureContracts:
     def test_gating_plot_draws_concentric_rings(self, states_ds):
         """Every per-fly arc used to be drawn at r = 1, collapsing the paper's
         one-ring-per-fly figure into a single overlapping band."""
-        import plotting
+        from clockwork.core import plotting
 
         stats = ssm.circular_state_stats(states_ds)
         gates = ssm.group_gates(stats)
@@ -270,7 +270,7 @@ class TestFigureContracts:
     def test_gate_arcs_never_run_backwards_through_the_day(self):
         """A linspace from onset to offset traverses the long way round whenever
         offset < onset, which is precisely the gates that straddle midnight."""
-        import plotting
+        from clockwork.core import plotting
 
         arc = plotting._gate_arc(22.0, 2.0, 1.0, "#123456", width=2, alpha=1.0)
         hours = np.asarray(arc.theta) / 360.0 * 24.0
@@ -283,7 +283,7 @@ class TestFigureContracts:
         """"All scalograms have a z axis scale that ranges from 0 to 1.5." A
         data-dependent range rescales each panel differently, so nothing can be
         compared by colour."""
-        import plotting
+        from clockwork.core import plotting
 
         surfaces = {"long": np.random.default_rng(0).random((40, 100)) * 3}
         periods = np.geomspace(1, 32, 40)
@@ -297,7 +297,7 @@ class TestFigureContracts:
         """Shapes on a log axis take data units but their annotations take
         log10; letting add_vline label itself parked an annotation at x = 24,
         which autoranged the axis out to 10^24 and flattened every curve."""
-        import plotting
+        from clockwork.core import plotting
 
         spectra = {"long": np.random.default_rng(0).random((6, 60)) + 0.5}
         periods = np.geomspace(1, 32, 60)

@@ -15,10 +15,10 @@ a real measurement meaning "the fly was still".
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import EXAMPLE_DIR, requires_example_data
 
-import dam_integrity
-from dam_processor import _read_monitor_file
+from clockwork.core import dam_integrity
+from clockwork.core.dam_processor import _read_monitor_file
+from conftest import EXAMPLE_DIR, requires_example_data
 
 pytestmark = requires_example_data
 

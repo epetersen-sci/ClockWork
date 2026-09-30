@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import dam_utilities
-import phase_shift as ps
+from clockwork.core import dam_utilities
+from clockwork.core import phase_shift as ps
 
 
 @pytest.fixture
@@ -142,7 +142,10 @@ class TestAttrsSurviveNetCDF:
         exists to convert exactly those. Testing the raw call would have been
         testing a path the app never takes.
         """
-        from load_and_save_datasets import load_dataset_from_netcdf, save_dataset_to_netcdf
+        from clockwork.core.load_and_save_datasets import (
+            load_dataset_from_netcdf,
+            save_dataset_to_netcdf,
+        )
 
         path = tmp_path / "rt.nc"
         save_dataset_to_netcdf(pulse_ds_built, str(path))
@@ -160,14 +163,14 @@ class TestPagesDefaultToTheDatasetGrouping:
         """The chips say what you ticked on Import — `pulse_time`, not
         `pulse_zt_hour`. A picker that renames your columns back at you is its own
         small confusion."""
-        from ui import filters
+        from clockwork.app.ui import filters
 
         options, default = filters.group_by_options(pulse_ds_built)
         assert default == ["genotype", "pulse_time", "pulse_duration_min"]
         assert "pulse_time" in options and "pulse_zt_hour" not in options
 
     def test_the_selection_translates_back_to_coords(self, pulse_ds_built):
-        from ui import filters
+        from clockwork.app.ui import filters
 
         assert filters.group_by_coords(
             pulse_ds_built, ["genotype", "pulse_time", "pulse_duration_min"]
@@ -177,7 +180,7 @@ class TestPagesDefaultToTheDatasetGrouping:
         """When the selection IS the import grouping, a page labels from ds['group'],
         whose labels carry the metadata's own values (ZT21) rather than the parsed
         ones (21.0). Same flies, better names."""
-        from ui import filters
+        from clockwork.app.ui import filters
 
         assert filters.is_import_grouping(
             pulse_ds_built, ["genotype", "pulse_time", "pulse_duration_min"]
@@ -185,7 +188,7 @@ class TestPagesDefaultToTheDatasetGrouping:
         assert not filters.is_import_grouping(pulse_ds_built, ["genotype"])
 
     def test_a_dataset_with_no_group_coord_falls_back(self, pulse_ds_built):
-        from ui import filters
+        from clockwork.app.ui import filters
 
         bare = pulse_ds_built.drop_vars("group")
         options, default = filters.group_by_options(bare)

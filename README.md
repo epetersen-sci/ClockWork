@@ -71,13 +71,17 @@ conda create -n clockwork python=3.11
 conda activate clockwork
 ```
 
-### 2. Install the dependencies
+### 2. Install ClockWork
 
-From the repository root (the folder containing `requirements.txt`):
+From the repository root (the folder containing `pyproject.toml`):
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
+
+This installs ClockWork and its dependencies, and puts the `clockwork` command
+on your path. `-e` (editable) means edits to the source take effect without
+reinstalling; use `pip install -e ".[dev]"` to also get the test and lint tools.
 
 Four packages are **version-pinned on purpose** — `numpy`, `scipy`, `astropy`
 and `PyWavelets`. Their default behaviour is baked into the numbers ClockWork
@@ -89,12 +93,13 @@ Two things run much faster on an NVIDIA GPU: the continuous wavelet transform
 and the zero-inflated-Poisson HMM likelihood. Both fall back to CPU
 automatically, so this step is optional.
 
-```bash
-pip install torch ptwt
-```
+Install the torch build matching your CUDA version first, from
+<https://pytorch.org/get-started/locally/>, then:
 
-Pick the CUDA build matching your system at
-<https://pytorch.org/get-started/locally/>. On CPU the CWT is *slow* — if you
+```bash
+pip install -e ".[gpu]"
+```
+ On CPU the CWT is *slow* — if you
 plan to use it on a full cohort, the GPU is strongly recommended. Set
 `HMM_USE_GPU=0` in the environment to force the HMM back to CPU.
 
@@ -102,14 +107,15 @@ plan to use it on a full cohort, the GPU is strongly recommended. Set
 
 ## Running the app
 
-From the repository root:
+From any folder:
 
 ```bash
-streamlit run app/ClockWork.py
+clockwork gui
 ```
 
 The app opens in your browser at `http://localhost:8501`. If that port is
-taken, append `--server.port 8502`.
+taken, append `--server.port 8502` (any option after `gui` is passed on to
+`streamlit run`).
 
 ---
 
@@ -531,7 +537,7 @@ per-phase minimum-day thresholds, and which sampling intervals to write (1-min
 and/or 30-min). Reports a per-board manifest and lists any dropped flies.
 
 There is also a standalone CLI — see
-[`scamp_export/README.md`](scamp_export/README.md).
+[`scamp_export/README.md`](src/clockwork/scamp_export/README.md).
 
 ---
 
@@ -820,7 +826,7 @@ Lomb-Scargle never uses this path at all.
 ## Thresholds and defaults
 
 Every user-owned soft threshold is defined **once**, in
-[`core/calibrations.py`](core/calibrations.py), with its provenance. Both the
+[`core/calibrations.py`](src/clockwork/core/calibrations.py), with its provenance. Both the
 code defaults and the UI controls read from there, so there is no second copy to
 drift. These are *calibrations*, not invariants — they're meant to be adjusted.
 

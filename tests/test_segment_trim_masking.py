@@ -23,7 +23,7 @@ discards, it discards from ALL of a fly's series alike.
 import numpy as np
 import pytest
 
-import export_helpers
+from clockwork.app import export_helpers
 
 SLEEP_VARS = ("sleep", "sleep_short", "sleep_intermediate", "sleep_long")
 

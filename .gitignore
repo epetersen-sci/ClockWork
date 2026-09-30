@@ -44,3 +44,8 @@ outputs/
 # Scratch spreadsheets used while poking at a dataset by hand.
 scratch_test.xlsx
 scratch_*.xlsx
+
+# Packaging build output (pip install -e . / python -m build)
+*.egg-info/
+build/
+dist/

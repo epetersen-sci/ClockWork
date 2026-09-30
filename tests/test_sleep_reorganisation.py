@@ -21,9 +21,9 @@ the same one.
 
 import numpy as np
 import pytest
-from conftest import _build_with_sleep_structure
 
-import sleep_analysis
+from clockwork.core import sleep_analysis
+from conftest import _build_with_sleep_structure
 
 SLEEP_ACTIVITY_TAB = "sleep_activity_tab"
 
@@ -126,7 +126,7 @@ class TestDetectionRunsOnTheMaster:
         """The regression in one test. Narrow the sidebar to a single group, run
         detection, and every fly must still be on the master — the filter is a
         VIEW, and detection reaches past it."""
-        from ui.filters import DISPLAY_GROUPS_KEY
+        from clockwork.app.ui.filters import DISPLAY_GROUPS_KEY
 
         at = app(ds=master_ds, page="sleep_activity")
         groups = list(at.multiselect(key=DISPLAY_GROUPS_KEY).value)
@@ -192,14 +192,14 @@ class TestOnlyTheOpenTabRenders:
 
 class TestTheDefinitionIsPrinted:
     def test_it_says_what_asleep_means(self, states_ds):
-        from ui import sleep_run
+        from clockwork.app.ui import sleep_run
 
         line = sleep_run.sleep_definition(states_ds)
         assert "5 min" in line and "300 s" in line
         assert "immobility" in line
 
     def test_a_dataset_without_sleep_has_no_definition_to_print(self):
-        from ui import sleep_run
+        from clockwork.app.ui import sleep_run
 
         assert sleep_run.sleep_definition(_build_with_sleep_structure()) is None
 

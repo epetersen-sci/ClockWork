@@ -15,10 +15,8 @@ test_curation, test_sleep_deprivation). This file is about the pages.
 
 import pytest
 
-import dam_utilities
-import periodograms
-import sleep_analysis
-from preprocessing import ac_default_config, ls_default_config, preprocess_activity
+from clockwork.core import dam_utilities, periodograms, sleep_analysis
+from clockwork.core.preprocessing import ac_default_config, ls_default_config, preprocess_activity
 
 FLIES = ["20250115_17_1", "20250115_17_2", "20250115_18_1", "20250115_18_2"]
 

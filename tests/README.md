@@ -1,7 +1,7 @@
 # Tests
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
@@ -24,7 +24,7 @@ def test_something(app, master_ds):
 
 Two things matter about that fixture:
 
-- It always initialises from the **entrypoint** (`app/ClockWork.py`) and then
+- It always initialises from the **entrypoint** (`src/clockwork/app/ClockWork.py`) and then
   calls `switch_page`, because `st.navigation` resolves page paths relative to
   the entrypoint. Passing a child page to `AppTest.from_file` makes it the main
   script and changes how those paths resolve.

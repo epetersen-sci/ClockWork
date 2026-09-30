@@ -17,9 +17,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import dam_utilities
-import sleep_analysis
-from load_and_save_datasets import load_dataset_from_netcdf, save_dataset_to_netcdf
+from clockwork.core import dam_utilities, sleep_analysis
+from clockwork.core.load_and_save_datasets import load_dataset_from_netcdf, save_dataset_to_netcdf
 
 
 @pytest.fixture(scope="module")

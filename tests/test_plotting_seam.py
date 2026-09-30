@@ -17,9 +17,9 @@ import sys
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import REPO_ROOT
 
-import plotting
+from clockwork.core import plotting
+from conftest import PKG_ROOT, REPO_ROOT
 
 ANALYSIS_MODULES = {
     "sleep_analysis",
@@ -33,26 +33,70 @@ ANALYSIS_MODULES = {
 }
 
 
+def _core_modules(node):
+    """The clockwork.core module names an import statement pulls in.
+
+    Handles all three spellings, so none of them is a way round the check:
+    ``from clockwork.core import periodograms``, ``from clockwork.core.periodograms
+    import x`` and ``import clockwork.core.periodograms``. Keying on the first
+    dotted segment, as this did before the package move, would now read
+    "clockwork" for every one of them and pass whatever plotting imported.
+    """
+    prefix = "clockwork.core"
+    if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+        if node.module == prefix:
+            return [a.name for a in node.names]
+        if node.module.startswith(prefix + "."):
+            return [node.module.split(".")[2]]
+    elif isinstance(node, ast.ImportFrom) and node.level > 0:
+        # `from . import periodograms` / `from .periodograms import x`, core-relative
+        return [node.module.split(".")[0]] if node.module else [a.name for a in node.names]
+    elif isinstance(node, ast.Import):
+        return [a.name.split(".")[2] for a in node.names if a.name.startswith(prefix + ".")]
+    return []
+
+
 def _function_level_imports(path):
-    """Every import that sits inside a function body, as (function, module)."""
+    """Every clockwork.core import that sits inside a function body, as (function, module)."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for inner in ast.walk(node):
-            if isinstance(inner, ast.ImportFrom) and inner.module:
-                found.append((node.name, inner.module.split(".")[0]))
-            elif isinstance(inner, ast.Import):
-                found.extend((node.name, a.name.split(".")[0]) for a in inner.names)
+            found.extend((node.name, mod) for mod in _core_modules(inner))
     return found
+
+
+def _module_level_core_imports(src):
+    return {mod for node in ast.walk(ast.parse(src)) for mod in _core_modules(node)}
+
+
+class TestTheCheckerSeesEverySpelling:
+    """The checker is the load-bearing part, so it gets tested too."""
+
+    @pytest.mark.parametrize(
+        "stmt",
+        [
+            "from clockwork.core import sleep_analysis",
+            "from clockwork.core import sleep_analysis as sa",
+            "from clockwork.core.sleep_analysis import bouts_in_view",
+            "import clockwork.core.sleep_analysis",
+            "from . import sleep_analysis",
+            "from .sleep_analysis import bouts_in_view",
+        ],
+    )
+    def test_a_deferred_import_is_caught(self, stmt, tmp_path):
+        f = tmp_path / "m.py"
+        f.write_text(f"def render():\n    {stmt}\n", encoding="utf-8")
+        assert ("render", "sleep_analysis") in _function_level_imports(f)
 
 
 class TestNoDeferredAnalysisImports:
     def test_plotting_has_none(self):
         offenders = [
             (fn, mod)
-            for fn, mod in _function_level_imports(REPO_ROOT / "core" / "plotting.py")
+            for fn, mod in _function_level_imports(PKG_ROOT / "core" / "plotting.py")
             if mod in ANALYSIS_MODULES
         ]
         assert not offenders, (
@@ -62,20 +106,17 @@ class TestNoDeferredAnalysisImports:
         )
 
     def test_periodograms_does_not_import_plotting(self):
-        src = (REPO_ROOT / "core" / "periodograms.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("plotting"):
-                pytest.fail("periodograms.py imports plotting; the caller should render")
-            if isinstance(node, ast.Import):
-                assert not any(a.name.startswith("plotting") for a in node.names)
+        src = (PKG_ROOT / "core" / "periodograms.py").read_text(encoding="utf-8")
+        assert "plotting" not in _module_level_core_imports(src), (
+            "periodograms.py imports plotting; the caller should render"
+        )
 
     def test_plotting_imports_first_in_a_clean_interpreter(self):
         """The real test of the seam. If a circular dependency remained, importing
         plotting before anything else would fail at module scope."""
         code = (
-            "import sys; sys.path[:0]=['core','app']; "
-            "import plotting, sleep_analysis, rhythmicity_classification, periodograms; "
+            "from clockwork.core import plotting; "
+            "from clockwork.core import sleep_analysis, rhythmicity_classification, periodograms; "
             "print('ok')"
         )
         proc = subprocess.run(
@@ -145,7 +186,7 @@ class TestWaveletAnalysisReturnsAverages:
     def test_signature_no_longer_takes_an_output_dir(self):
         import inspect
 
-        import periodograms
+        from clockwork.core import periodograms
 
         params = inspect.signature(periodograms.wavelet_analysis).parameters
         assert "average_output_dir" not in params, (
@@ -156,7 +197,7 @@ class TestWaveletAnalysisReturnsAverages:
     def test_documents_the_two_part_return(self):
         import inspect
 
-        import periodograms
+        from clockwork.core import periodograms
 
         doc = inspect.getdoc(periodograms.wavelet_analysis)
         assert "group_averages" in doc
@@ -166,7 +207,7 @@ class TestWaveletAnalysisReturnsAverages:
         2-tuple, which is how the early-return bug below went unnoticed."""
         import inspect
 
-        import periodograms
+        from clockwork.core import periodograms
 
         ann = inspect.signature(periodograms.wavelet_analysis).return_annotation
         assert "tuple" in str(ann), f"annotation is {ann!r}, but the function returns a 2-tuple"
@@ -180,7 +221,7 @@ class TestWaveletAnalysisReturnsAverages:
         Triggered by demanding more days than the record holds, so every fly is
         filtered out and no result survives.
         """
-        import periodograms
+        from clockwork.core import periodograms
 
         ds = master_ds.drop_vars(
             [v for v in ("sleep", "sleep_short", "sleep_intermediate", "sleep_long")
@@ -204,7 +245,7 @@ class TestMonitorReportOrdering:
 
     @staticmethod
     def _processor(report):
-        from dam_processor import MetadataProcessor
+        from clockwork.core.dam_processor import MetadataProcessor
 
         obj = MetadataProcessor.__new__(MetadataProcessor)
         obj.integrity_report = report

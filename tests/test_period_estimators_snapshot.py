@@ -24,24 +24,23 @@ run on every fly. The whole file takes ~40 s on a laptop.
 
 import numpy as np
 import pytest
-from conftest import requires_example_data
-from snapshot_util import check_snapshot
 
-import dam_utilities
-import periodograms
-import rhythmicity_classification as rc
-from calibrations import (
+from clockwork.core import dam_utilities, periodograms
+from clockwork.core import rhythmicity_classification as rc
+from clockwork.core.calibrations import (
     DEFAULT_CWT_MAX_PERIOD,
     DEFAULT_CWT_MIN_PERIOD,
     DEFAULT_MAX_BRIDGE_GAP_MINUTES,
     DEFAULT_MIN_DD_DAYS_FLOOR,
 )
-from preprocessing import (
+from clockwork.core.preprocessing import (
     ac_default_config,
     cwt_default_config,
     ls_default_config,
     preprocess_activity,
 )
+from conftest import requires_example_data
+from snapshot_util import check_snapshot
 
 pytestmark = requires_example_data
 

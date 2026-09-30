@@ -16,7 +16,7 @@ then died on the duplicated time index.
 import numpy as np
 import pytest
 
-import sleep_analysis as sa
+from clockwork.core import sleep_analysis as sa
 
 BOUT_DIM = "sleep_bout_number"
 SLEEP_MASKS = ("sleep", "sleep_short", "sleep_intermediate", "sleep_long")

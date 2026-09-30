@@ -16,10 +16,10 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from conftest import MINUTES_PER_DAY, PULSE_DD_DAY
 
-import phase_shift as ps
-import plotting
+from clockwork.core import phase_shift as ps
+from clockwork.core import plotting
+from conftest import MINUTES_PER_DAY, PULSE_DD_DAY
 
 #: ``(pulse ZT, duration, intensity, hours the peak MOVES LATER after the pulse)``.
 #: A later peak is a delay, and the response is reported control-minus-fly, so the

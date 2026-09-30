@@ -1,21 +1,91 @@
-# Tooling configuration only.
+# Package metadata, dependencies, and tooling configuration: the one place all
+# of it lives. Install for development (from the repository root) with:
 #
-# There is deliberately no [build-system] or [project] section here, so this file
-# does NOT turn the repo into an installable package — dependencies live in
-# requirements.txt (and the conda environment). Its only job is to give every
-# contributor and editor ONE shared definition of "clean," so `ruff check`
-# reports the same issues for everyone.
+#   python -m pip install -e ".[dev]"
+#
+# and check with:
 #
 #   ruff check .          # report problems
 #   ruff check . --fix    # auto-fix the safe ones
-#   ruff format .         # apply consistent formatting
+#   python -m pytest
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clockwork-sci"
+version = "0.1.0"
+description = "Analysis of Drosophila Activity Monitor (DAM) data: circadian period, sleep, HMM sleep states, phase shifts and sleep deprivation."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nicholas Petersen" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    # --- Reproducibility-critical pins (==) --------------------------------
+    # These libraries' DEFAULT behaviour is baked into ClockWork's published
+    # numbers (astropy LombScargle defaults, PyWavelets cwt precision,
+    # scipy.signal find_peaks / correlate / butter, numpy std/median), and
+    # mismatched versions have failed SILENTLY before, especially around the
+    # CWT. Do NOT bump casually; relaxing these is a planned, tested step.
+    "numpy==2.2.5",
+    "scipy==1.17.0",
+    "astropy==7.2.0",
+    "PyWavelets==1.8.0",
+    # --- Data & I/O --------------------------------------------------------
+    "pandas>=2.0",
+    "xarray>=2024.7",
+    "netCDF4>=1.6",          # NetCDF backend for the single-source-of-truth dataset (.nc)
+    "openpyxl>=3.1",         # Excel metadata read + export
+    # --- Analysis ----------------------------------------------------------
+    "hmmlearn>=0.3.3",       # HMM sleep/wake state classification
+    "statsmodels>=0.14",     # MESA (Burg maximum-entropy) period analysis + multipletests
+    "joblib>=1.3",
+    # --- UI & plotting -----------------------------------------------------
+    # 1.63 is the floor on purpose: the app uses st.navigation/st.Page,
+    # width="stretch" and persist_state=, none of which exist in older
+    # releases, so an older streamlit fails at import rather than degrading.
+    "streamlit>=1.63",
+    "plotly>=5.18",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "kaleido>=0.2",          # static PNG export for Plotly figures
+    "tqdm>=4.67",
+]
+
+[project.optional-dependencies]
+# GPU acceleration for CWT (PyTorch Wavelet Toolbox). CWT falls back to CPU
+# PyWavelets automatically if these are absent. Install the torch build that
+# matches your CUDA first: https://pytorch.org/get-started/locally/
+gpu = ["torch>=2.0", "ptwt>=0.1"]
+# The test suite uses streamlit's own AppTest (streamlit.testing.v1), which
+# ships with streamlit: no browser, no server, no webdriver.
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+
+[project.scripts]
+clockwork = "clockwork.cli:main"
+
+[project.urls]
+Repository = "https://github.com/epetersen-sci/ClockWork"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# namespaces stays at its default (true) so app/app_pages, which is run by
+# path and deliberately has no __init__.py, still ships in the wheel.
+
+[tool.setuptools.package-data]
+"clockwork.scamp_export" = ["README.md"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# core/ and app/ are import roots at runtime (the pages add them to sys.path),
-# so tell the import sorter to treat their modules as first-party.
-src = [".", "core", "app"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 # E4/E7/E9 + F are the real-bug checks (bad imports, broken statements, syntax
@@ -29,7 +99,7 @@ select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "SIM"]
 # Patterns this scientific codebase uses ON PURPOSE, so a clean `ruff check`
 # means "no real issues," not "no stylistic opinions":
 ignore = [
-    "E402",   # import-not-at-top — pages run sys.path.insert(...) before importing core
+    "E402",   # import-not-at-top — a few deliberate mid-module re-exports (periodograms.py)
     "E712",   # `== True` / `== False` — intentional pandas/numpy element-wise masking
     "E741",   # ambiguous names (l/I/O) — a few short-lived loop indices
     "E702",   # statement;statement — a handful of deliberate one-liners
@@ -41,9 +111,9 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-# tests/ imports from core/ and app/ the same way the pages do at runtime;
-# conftest.py puts them on sys.path, and this makes conftest itself importable
-# from the test modules (they use it for REPO_ROOT).
+# tests/ imports the installed clockwork package (pip install -e .). This only
+# makes conftest itself importable from the test modules (they use it for
+# REPO_ROOT and PKG_ROOT).
 testpaths = ["tests"]
 pythonpath = ["tests"]
 markers = [
