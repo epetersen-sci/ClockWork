@@ -5,6 +5,7 @@ Preprocessing Page - Dead animal curation, LD/DD split and activity heatmap.
 
 import streamlit as st
 
+from clockwork import pipeline
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts
 from clockwork.app.ui.guards import require_dataset
@@ -69,39 +70,30 @@ if st.button("Run Curation", key="run_curation"):
                     completed / total, text=f"Curation: fly {completed}/{total}"
                 )
 
-            result = dam_utilities.curate_dead_animals(
+            result = pipeline.curate(
                 ds,
-                time_window=time_window,
-                prop_immobile=prop_immobile,
-                min_alive_days=min_alive_days,
-                progress_callback=_curate_cb,
+                pipeline.CurationConfig(
+                    min_alive_days=min_alive_days,
+                    rolling_window_hours=time_window,
+                    immobility_proportion=prop_immobile,
+                ),
+                progress=_curate_cb,
             )
-            (
-                live_data,
-                dead_data,
-                error_ids,
-                success_ids,
-                total_before,
-                total_after,
-                removed,
-                unchanged,
-                trimmed,
-            ) = result
 
-            st.session_state.dataset = live_data
-            st.session_state.curated_dead_data = dead_data
-            st.session_state.analyses = detect_analyses(live_data)
+            st.session_state.dataset = result.live
+            st.session_state.curated_dead_data = result.dead
+            st.session_state.analyses = detect_analyses(result.live)
 
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Before", total_before)
-            col2.metric("After", total_after)
-            col3.metric("Removed", removed)
-            col4.metric("Trimmed", trimmed)
+            col1.metric("Before", result.total_before)
+            col2.metric("After", result.total_after)
+            col3.metric("Removed", result.removed)
+            col4.metric("Trimmed", result.trimmed)
 
-            if removed > 0:
+            if result.removed > 0:
                 st.success(
-                    f"Curation complete. Kept {total_after}/{total_before} flies "
-                    f"({removed} removed, {trimmed} trimmed)."
+                    f"Curation complete. Kept {result.total_after}/{result.total_before} flies "
+                    f"({result.removed} removed, {result.trimmed} trimmed)."
                 )
             else:
                 st.success("All flies passed curation criteria.")
@@ -181,75 +173,41 @@ else:
     if st.button("Apply LD/DD Split", key="apply_split"):
         with st.spinner("Splitting dataset into LD and DD..."):
             try:
-                import ast
-
-                import numpy as np
-
-                # Create both DD and LD datasets
-                ds_dd = dam_utilities.split_xarray_dataset(
-                    ds,
-                    phase="DD",
+                config = pipeline.SplitConfig(
                     discard_first_dd_day=discard_first_dd_day,
                     gap_threshold_minutes=gap_threshold,
                 )
-                ds_ld = dam_utilities.split_xarray_dataset(
-                    ds,
-                    phase="LD",
-                    gap_threshold_minutes=gap_threshold,
-                )
-
-                # ds_dd / ds_ld stay LOCAL: they are reported on below, then
-                # dropped. They used to be cached in session_state, which meant
-                # four files had to keep that copy in sync with the master — and
-                # sleep detection had to regenerate both on every run to stop
-                # them going stale. The split PARAMETERS are recorded on the
-                # master instead, so any consumer reproduces the same slice.
-                # Mark master as split-applied (but keep all timepoints).
-                # Canonical phase stays 'full' since the master spans both
-                # epochs; split_applied=True records that LD/DD partitions
-                # are available via session_state. See core/dataset_meta.py.
-                from clockwork.core.dataset_meta import stamp_phase
-
-                stamp_phase(ds, PHASE_FULL, split_applied=True)
-                ds.attrs["split_discard_first_dd_day"] = int(discard_first_dd_day)
-                ds.attrs["gap_threshold_minutes"] = gap_threshold
+                # The LD and DD views are built only to report on, then dropped.
+                # They used to be cached in session_state, which meant four files
+                # had to keep that copy in sync with the master. The split
+                # PARAMETERS are recorded on the master instead (pipeline.split),
+                # so any consumer reproduces the same slice with select_phase.
+                report = pipeline.split_report(ds, config)
+                # The MASTER is marked split-applied and keeps every timepoint;
+                # its canonical phase stays 'full' since it spans both epochs.
+                ds = pipeline.split(ds, config)
                 st.session_state.dataset = ds
                 st.session_state.analyses = detect_analyses(ds)
 
-                # Show DD stats
-                _dd_seg_str = ds_dd.attrs.get("segment_info", None)
-                if _dd_seg_str:
-                    _dd_seg = ast.literal_eval(_dd_seg_str)
-                    _dd_durs = [s["segment_duration_days"] for s in _dd_seg]
-                    _dd_orig = [s["original_duration_days"] for s in _dd_seg]
-                    _dd_trimmed = sum(1 for d, o in zip(_dd_durs, _dd_orig) if d < o)
-                    st.info(
-                        f"**DD** — {len(ds_dd['id'])} flies, "
-                        f"min: **{min(_dd_durs):.1f}** days, "
-                        f"avg: **{np.mean(_dd_durs):.1f}** days, "
-                        f"max: **{max(_dd_durs):.1f}** days"
-                    )
-                    if _dd_trimmed > 0:
-                        st.warning(
-                            f"DD: **{_dd_trimmed}/{len(_dd_durs)}** flies had gaps "
-                            f"and were trimmed to their longest continuous segment."
+                for phase in ("DD", "LD"):
+                    entry = report[phase]
+                    if "days_min" in entry:
+                        st.info(
+                            f"**{phase}** — {entry['n_flies']} flies, "
+                            f"min: **{entry['days_min']:.1f}** days, "
+                            f"avg: **{entry['days_mean']:.1f}** days, "
+                            f"max: **{entry['days_max']:.1f}** days"
                         )
-                else:
-                    st.info(f"**DD** — {len(ds_dd['id'])} flies, {len(ds_dd['time'])} timepoints")
-
-                # Show LD stats
-                _ld_seg_str = ds_ld.attrs.get("segment_info", None)
-                if _ld_seg_str:
-                    _ld_seg = ast.literal_eval(_ld_seg_str)
-                    _ld_durs = [s["segment_duration_days"] for s in _ld_seg]
-                    st.info(
-                        f"**LD** — {len(ds_ld['id'])} flies, "
-                        f"min: **{min(_ld_durs):.1f}** days, "
-                        f"avg: **{np.mean(_ld_durs):.1f}** days, "
-                        f"max: **{max(_ld_durs):.1f}** days"
-                    )
-                else:
-                    st.info(f"**LD** — {len(ds_ld['id'])} flies, {len(ds_ld['time'])} timepoints")
+                        if phase == "DD" and entry["n_trimmed"] > 0:
+                            st.warning(
+                                f"DD: **{entry['n_trimmed']}/{entry['n_flies']}** flies had "
+                                f"gaps and were trimmed to their longest continuous segment."
+                            )
+                    else:
+                        st.info(
+                            f"**{phase}** — {entry['n_flies']} flies, "
+                            f"{entry['n_timepoints']} timepoints"
+                        )
 
                 st.success("Split complete. LD and DD datasets created separately.")
                 st.rerun()

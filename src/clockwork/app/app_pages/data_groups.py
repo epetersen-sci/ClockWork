@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from clockwork import pipeline
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import status
 from clockwork.app.ui.guards import require_dataset
@@ -32,7 +33,12 @@ from clockwork.core import dam_utilities
 def _apply_group_filter(selected_groups):
     """Subset ``dataset_full`` by group and replace ``dataset`` with the
     result. Clears every derived cache so downstream pages re-derive from
-    the filtered dataset."""
+    the filtered dataset.
+
+    The groups are ticked by LABEL, but the subset is recorded by the metadata
+    values behind those labels (``pipeline.keep_for_groups``), so it survives a
+    reload and a regroup, and the Export settings button can write it down.
+    """
     ds_full = st.session_state.dataset_full
     if ds_full is None or "group" not in ds_full.coords:
         return
@@ -40,9 +46,7 @@ def _apply_group_filter(selected_groups):
     # ArrowStringArray coords were coerced to numpy (breaks .sel/.isel).
     ds_full = dam_utilities.ensure_numpy_backed(ds_full)
     st.session_state.dataset_full = ds_full
-    selected = {str(g) for g in selected_groups}
-    mask = np.array([str(g) in selected for g in ds_full["group"].values])
-    filtered = ds_full.isel(id=np.flatnonzero(mask))
+    filtered = pipeline.subset(ds_full, pipeline.keep_for_groups(ds_full, selected_groups))
     invalidate_derived_caches()
     st.session_state.dataset = filtered
     st.session_state.analyses = detect_analyses(filtered)
@@ -64,7 +68,7 @@ def _apply_regroup(chosen):
     base = ds_full if ds_full is not None else st.session_state.dataset
     base = dam_utilities.ensure_numpy_backed(base)
 
-    regrouped_full = dam_utilities.regroup_dataset(base, chosen)
+    regrouped_full = pipeline.apply_groups(base, pipeline.GroupsConfig(by=list(chosen)))
     invalidate_derived_caches()
     st.session_state.dataset_full = regrouped_full
 
@@ -73,7 +77,12 @@ def _apply_regroup(chosen):
     current = st.session_state.get("dataset")
     if current is not None and len(current["id"]) < len(regrouped_full["id"]):
         keep = [str(i) for i in current["id"].values]
-        st.session_state.dataset = regrouped_full.sel(id=keep)
+        kept = regrouped_full.sel(id=keep)
+        # The ids are what is preserved; the record of WHY they are the ones kept
+        # travels with them, or the regrouped dataset would claim no subset.
+        if "subset_keep" in current.attrs:
+            kept.attrs["subset_keep"] = current.attrs["subset_keep"]
+        st.session_state.dataset = kept
     else:
         st.session_state.dataset = regrouped_full.copy()
     st.session_state.analyses = detect_analyses(st.session_state.dataset)

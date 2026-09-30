@@ -122,3 +122,43 @@ kind of number that ends up in a methods section.
 
 Either restore the test that produced it or remove the claim. Do not simply
 re-point the citation at a different file without re-deriving the numbers.
+
+---
+
+## 21. `group_columns` means two different things depending on who wrote it
+
+ARCHITECTURE rule 1 says `attrs['group_columns']` records the metadata COLUMN
+names that were ticked. `create_xarray_dataset` does that. `regroup_dataset`
+(`core/dam_utilities.py`) writes the COORD names instead, so after "Redefine
+groups" by `pulse_time` the attr says `pulse_zt_hour`, a name no metadata file
+contains. Only two columns are renamed (`METADATA_COORD_RENAMES`), which is why
+it has not bitten.
+
+It is not a one-line fix, because readers assume both meanings:
+`app_pages/data_groups.py` defaults its regroup picker by testing
+`group_columns` against coord names (so a freshly imported dataset grouped by
+`pulse_time` loses that column from the default), while `ui/facet_panels.py`
+maps names back and copes with either. `group_coord_names` already records the
+coord side, so the fix is for `regroup_dataset` to write column names, with the
+readers moved to `get_group_coord_names` where they need coords.
+
+`pipeline.GroupsConfig.from_attrs` reads either spelling and reports column
+names, so exported settings are right either way; this item is about the attr.
+
+---
+
+## 22. Changing groups after curation silently undoes curation and the split
+
+`dataset_full`, the Groups page's restore point, is set only at import. Apply
+selection, Redefine groups and Reset all rebuild the working dataset from it.
+Done after curation, they bring dead flies back (or keep them trimmed by id but
+with uncurated data) and drop the curation and split attrs, with no warning.
+The page's docstring acknowledges the ordering ("subsetting before curation
+... avoids silently invalidating curation afterwards") but the page does not
+enforce it or say so when it happens.
+
+The recorded settings stay honest — a reverted curation has no curation attrs,
+so Export settings will not claim it ran — but a user who curated, then
+narrowed the groups, has lost work they cannot see. Either warn (and name what
+will be undone) when the dataset has curation or split attrs, or apply the
+group change to the current dataset instead of to `dataset_full`.

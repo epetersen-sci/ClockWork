@@ -2,12 +2,14 @@
 Data Loading Page - Raw DAM import, NetCDF loading, dataset combining.
 """
 
+import dataclasses
 import os
 
 import pandas as pd
 import streamlit as st
 import xarray as xr
 
+from clockwork import pipeline
 from clockwork.app.analysis_detection import detect_analyses, format_status_summary
 from clockwork.app.ui import experiment, file_dialogs, status
 from clockwork.app.ui.state import clear_dataset_state
@@ -16,9 +18,7 @@ from clockwork.core.dataset_meta import (
     PHASE_DD,
     PHASE_FULL,
     PHASE_LD,
-    VALID_PHASES,
     dataset_phase,
-    has_split_evidence,
     stamp_phase,
 )
 from clockwork.core.load_and_save_datasets import load_dataset_from_netcdf
@@ -219,22 +219,28 @@ with tab_fresh:
                             completed / total, text=f"Validating: monitor combo {completed}/{total}"
                         )
 
-                    processor = dam_processor.MetadataProcessor(
-                        metadata_path, data_dir, gap_threshold_hours=gap_threshold
+                    inputs = pipeline.InputsConfig(
+                        metadata=metadata_path,
+                        monitors=data_dir,
+                        gap_threshold_hours=gap_threshold,
                     )
-                    metadata, all_data = processor.run(progress_callback=_load_cb)
-                    n_imported = len(all_data.columns)
+                    raw = pipeline.read_monitors(inputs, progress=_load_cb)
+                    processor = raw.processor
+                    all_data = raw.data
+                    n_imported = raw.n_flies
 
                     if n_imported:
-                        st.session_state._raw_metadata = metadata
-                        st.session_state._raw_data = all_data
+                        # Kept WITHOUT the processor: it holds the whole raw scan,
+                        # and Create Dataset needs only the integrity counters the
+                        # RawImport already carries.
+                        st.session_state._raw_import = dataclasses.replace(raw, processor=None)
+                        st.session_state._raw_inputs = inputs
                     else:
-                        # Nothing loaded. Do NOT stash the empty frames: with no
-                        # columns the Create Dataset step fails on an index error
-                        # deep in the xarray builder, which tells the user nothing.
-                        # The report below names the actual cause instead.
-                        st.session_state.pop("_raw_metadata", None)
-                        st.session_state.pop("_raw_data", None)
+                        # Nothing loaded. Do NOT stash the empty import: Create
+                        # Dataset would refuse it, and the report below names the
+                        # actual cause instead.
+                        st.session_state.pop("_raw_import", None)
+                        st.session_state.pop("_raw_inputs", None)
 
                     # Kept in session state and drawn by _show_import_report on
                     # every rerun, below this block. Drawn only here, it vanished
@@ -251,12 +257,6 @@ with tab_fresh:
                         "integrity": processor.integrity_summary_lines(per_monitor=False),
                         "monitors": processor.integrity_monitor_reports(),
                     }
-
-                    # Stash the aggregate counters for the Create Dataset step to
-                    # stamp onto attrs. The processor itself is not kept — it
-                    # holds the whole raw scan — and these few ints are all that
-                    # survives a NetCDF round-trip anyway.
-                    st.session_state["_integrity_scalars"] = processor.integrity_scalars()
                 except dam_processor.MetadataError as e:
                     # The metadata file itself is unusable — no monitor was even
                     # opened. The message already names the problem and the fix.
@@ -269,10 +269,10 @@ with tab_fresh:
     _show_import_report()
 
     # Create Dataset
-    if "_raw_metadata" in st.session_state and "_raw_data" in st.session_state:
+    if "_raw_import" in st.session_state and "_raw_inputs" in st.session_state:
         st.divider()
 
-        metadata = st.session_state._raw_metadata
+        metadata = st.session_state._raw_import.metadata
         has_dd_info = "first_DD_day" in metadata.columns
 
         if has_dd_info:
@@ -370,77 +370,56 @@ with tab_fresh:
         # Actual dataset creation (runs after confirmation or when no dataset existed)
         if st.session_state.get("_pending_create_dataset") == "confirmed":
             st.session_state.pop("_pending_create_dataset", None)
-            # Preserve raw data + the working folder across the clear since we need
-            # them immediately. clear_dataset_state() nulls working_dir, so without
-            # restoring it here source_data_dir below is stamped '' and every export
-            # falls back to the app's launch directory (the bug this fixes).
-            _raw_meta = st.session_state._raw_metadata
-            _raw_data = st.session_state._raw_data
+            # Preserve the raw import + the working folder across the clear since we
+            # need them immediately. clear_dataset_state() nulls working_dir; the
+            # dataset records its own (source_data_dir, the metadata file's folder),
+            # but the session copy is what the next Browse starts from.
+            _raw = st.session_state._raw_import
+            _inputs = st.session_state._raw_inputs
             _meta_dir = st.session_state.get("_metadata_dir")
             clear_dataset_state()
-            st.session_state._raw_metadata = _raw_meta
-            st.session_state._raw_data = _raw_data
+            st.session_state._raw_import = _raw
+            st.session_state._raw_inputs = _inputs
             st.session_state.working_dir = _meta_dir
 
+            ds = None
             with st.spinner("Creating xarray dataset..."):
                 try:
-                    full_data = dam_utilities.convert_to_relative_time(_raw_data, _raw_meta)
-                    # group_columns: chosen above (persisted via the multiselect key);
-                    # None/[] falls back to the historical genotype-temperature default.
-                    ds = dam_utilities.create_xarray_dataset(
-                        full_data,
-                        _raw_meta,
-                        group_columns=st.session_state.get("group_columns_select"),
+                    # The chosen group columns (persisted via the multiselect key);
+                    # none chosen falls back to the historical genotype-temperature
+                    # default. The experiment name is the field's, "" included: the
+                    # field was seeded from the metadata file's name, so a name the
+                    # user cleared stays cleared.
+                    ds = pipeline.build_dataset(
+                        _raw,
+                        _inputs,
+                        pipeline.GroupsConfig(by=st.session_state.get("group_columns_select") or None),
+                        experiment_name=st.session_state.get(experiment.KEY) or "",
                     )
-
-                    if ds is None:
-                        st.error("Failed to create dataset (empty time dimension).")
-                    else:
-                        # Raw CSV loads have no partitioning — full recording.
-                        stamp_phase(ds, PHASE_FULL, split_applied=False)
-                        # Record the working folder (the metadata file's directory)
-                        # so every export defaults next to the user's experiment
-                        # files. A plain string, so it survives the NetCDF round-trip
-                        # (a reloaded .nc still exports to that folder when it exists).
-                        ds.attrs["source_data_dir"] = st.session_state.get("working_dir") or ""
-                        # The experiment's name, read off the metadata file. It names
-                        # the export folder, so a paired run whose two metadata files
-                        # share a working folder keeps its figures apart. Plain string
-                        # for the same reason source_data_dir is one: a reloaded .nc
-                        # still exports into its own experiment's folder.
-                        ds.attrs["experiment_name"] = dam_utilities.sanitize_experiment_name(
-                            st.session_state.get(experiment.KEY)
-                        )
-                        # Carry the import-time integrity counters onto the
-                        # dataset so a reloaded .nc can still report its own
-                        # quality. Plain ints only — see
-                        # MetadataProcessor.integrity_scalars for why the
-                        # per-monitor structure deliberately does not come along.
-                        ds.attrs.update(st.session_state.get("_integrity_scalars") or {})
-                        _stash_full(ds)
-                        st.session_state.dataset = ds
-                        st.session_state.analyses = detect_analyses(ds)
-
-                        # Stored, then shown after the rerun below. Drawn here it
-                        # was on screen for a moment and then wiped by that rerun,
-                        # which left no sign that the dataset had been created.
-                        _groups = (
-                            sorted({str(g) for g in ds["group"].values})
-                            if "group" in ds.coords
-                            else []
-                        )
-                        st.session_state[CREATE_NOTE_KEY] = {
-                            "text": (
-                                f"Dataset created: {len(ds['id'])} flies, "
-                                f"{len(ds['time'])} timepoints, "
-                                f"{len(_groups) or 1} group(s)."
-                            ),
-                            "groups": _groups,
-                            "working_dir": ds.attrs["source_data_dir"],
-                        }
-                        st.rerun()
+                except pipeline.ImportFailed as e:
+                    st.error(f"Failed to create dataset ({e}).")
                 except Exception as e:
                     st.error(f"Error creating dataset: {e}")
+
+            if ds is not None:
+                _stash_full(ds)
+                st.session_state.dataset = ds
+                st.session_state.analyses = detect_analyses(ds)
+
+                # Stored, then shown after the rerun below. Drawn here it was on
+                # screen for a moment and then wiped by that rerun, which left no
+                # sign that the dataset had been created.
+                _groups = sorted({str(g) for g in ds["group"].values}) if "group" in ds.coords else []
+                st.session_state[CREATE_NOTE_KEY] = {
+                    "text": (
+                        f"Dataset created: {len(ds['id'])} flies, "
+                        f"{len(ds['time'])} timepoints, "
+                        f"{len(_groups) or 1} group(s)."
+                    ),
+                    "groups": _groups,
+                    "working_dir": ds.attrs["source_data_dir"],
+                }
+                st.rerun()
 
 # ============================================================
 # PATH B: Load NetCDF
@@ -501,49 +480,16 @@ with tab_netcdf:
         clear_dataset_state()
         with st.spinner("Loading NetCDF..."):
             try:
-                ds = load_dataset_from_netcdf(_nc_path)
-
-                # Resolve canonical phase metadata. Three cases:
-                #   1. File already carries 'phase' attr → use it.
-                #   2. File carries legacy 'split_phase' attr → migrate.
-                #   3. No phase metadata + no split evidence → default
-                #      silently to 'full' (plain unsplit recording).
-                #   4. Ambiguous evidence (rare) → defer the load and
-                #      prompt the user to declare via a dropdown.
-                #
-                # KEEP CASE 2. Nothing writes `split_phase` any more (backlog
-                # item 4 removed the two writers), but every `.nc` saved before
-                # that still carries it, and this is the only thing that reads
-                # those files correctly. It is a read-side migration for old
-                # files on disk, not a live alias — do not remove it as dead
-                # code just because no writer remains.
-                _existing_phase = ds.attrs.get("phase")
-                if isinstance(_existing_phase, str) and _existing_phase in VALID_PHASES:
-                    stamp_phase(
-                        ds,
-                        _existing_phase,
-                        split_applied=ds.attrs.get("split_applied", _existing_phase != PHASE_FULL),
-                    )
-                elif isinstance(ds.attrs.get("split_phase"), str):
-                    _legacy = ds.attrs["split_phase"]
-                    _resolved = (
-                        PHASE_LD
-                        if _legacy == PHASE_LD
-                        else PHASE_DD
-                        if _legacy == PHASE_DD
-                        else PHASE_FULL
-                    )
-                    stamp_phase(
-                        ds, _resolved, split_applied=(_resolved != PHASE_FULL or _legacy == "both")
-                    )
-                elif has_split_evidence(ds):
-                    # Ambiguous — defer load until the user declares.
-                    st.session_state["_nc_ambiguous_ds"] = ds
+                # Resolves the canonical phase metadata, including the read-side
+                # migration of legacy `split_phase` files (see load_netcdf).
+                try:
+                    ds = pipeline.load_netcdf(_nc_path)
+                except pipeline.AmbiguousPhase as amb:
+                    # The one case the file cannot settle: defer the load until the
+                    # user declares the phase in the dropdown below.
+                    st.session_state["_nc_ambiguous_ds"] = amb.dataset
                     st.session_state["_nc_ambiguous_path"] = _nc_path
                     st.rerun()
-                else:
-                    # No evidence anywhere → silently treat as full.
-                    stamp_phase(ds, PHASE_FULL, split_applied=False)
 
                 _stash_full(ds)
                 st.session_state.dataset = ds

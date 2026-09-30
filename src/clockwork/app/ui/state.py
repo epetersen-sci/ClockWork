@@ -79,8 +79,10 @@ _DATASET_KEYS = (
     "dataset_full",
     "dataset_path",
     "analyses",
-    "_raw_metadata",
-    "_raw_data",
+    # The Import page's pipeline.RawImport and the InputsConfig it came from,
+    # held between Load & Validate and Create Dataset.
+    "_raw_import",
+    "_raw_inputs",
 )
 
 

@@ -75,6 +75,9 @@ dependencies = [
     "matplotlib>=3.9",
     "seaborn>=0.13",         # barplot(errorbar=) needs 0.12; 0.13 for pandas >= 2.2
     "tqdm>=4.67",
+    # --- Config (the CLI's YAML; see docs/cli-config.md) --------------------
+    # v2 API throughout (ConfigDict, model_dump, model_json_schema).
+    "pydantic>=2.6",
 ]
 
 [project.optional-dependencies]
