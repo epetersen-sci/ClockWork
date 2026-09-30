@@ -78,9 +78,6 @@ period and the number of rhythmic flies per genotype. Read it, and the diff,
 before you commit. A missing snapshot fails the test; it is never written
 automatically.
 
-Tests marked `gpu` need CUDA with torch and ptwt, and skip everywhere else,
-including CI. On a GPU machine, run them with `python -m pytest -m gpu`.
-
 ## What is covered
 
 | Area | Files |

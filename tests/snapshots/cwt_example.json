@@ -1,34 +1,34 @@
 {
  "_summary": {
   "lines": [
-   "dsmcherry: 2/2 flies with a period, median 20.47 h, 1/2 rhythmic",
-   "dsmcherry+Ldhmut: 2/2 flies with a period, median 23.68 h, 2/2 rhythmic"
+   "dsmcherry: 2/2 flies with a period, median 20.23 h, 1/2 rhythmic",
+   "dsmcherry+Ldhmut: 2/2 flies with a period, median 23.95 h, 2/2 rhythmic"
   ]
  },
  "records": {
   "20250115_17_1": {
-   "cwt_period": 24.588394165039062,
-   "cwt_power": 17.21845817565918,
+   "cwt_period": 24.116132736206055,
+   "cwt_power": 9.813760757446289,
    "cwt_rhythmic": true,
-   "cwt_rhythmicity": 9.16150951385498
+   "cwt_rhythmicity": 5.221657752990723
   },
   "20250115_17_2": {
    "cwt_period": 16.343095779418945,
-   "cwt_power": 4.075406074523926,
+   "cwt_power": 3.970735549926758,
    "cwt_rhythmic": false,
-   "cwt_rhythmicity": 1.3264687061309814
+   "cwt_rhythmicity": 1.2924003601074219
   },
   "20250115_18_1": {
-   "cwt_period": 23.771888732910156,
-   "cwt_power": 77.72215270996094,
+   "cwt_period": 23.83298683166504,
+   "cwt_power": 39.333683013916016,
    "cwt_rhythmic": true,
-   "cwt_rhythmicity": 5.294975757598877
+   "cwt_rhythmicity": 2.679684638977051
   },
   "20250115_18_2": {
-   "cwt_period": 23.584177017211914,
-   "cwt_power": 33.93207931518555,
+   "cwt_period": 24.07494354248047,
+   "cwt_power": 15.694291114807129,
    "cwt_rhythmic": true,
-   "cwt_rhythmicity": 6.252336502075195
+   "cwt_rhythmicity": 2.891833543777466
   }
  }
 }

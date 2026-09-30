@@ -37,7 +37,9 @@ dependencies = [
     "numpy==2.2.5",
     "scipy==1.17.0",
     "astropy==7.2.0",
-    "PyWavelets==1.8.0",
+    # >=1.9 for pywt.cwt(precision=), which periodograms.CWT_WAVELET_PRECISION
+    # sets explicitly. NB: the 1.9.0 wheel self-reports __version__ "1.8.0".
+    "PyWavelets>=1.9",
     # --- Data & I/O --------------------------------------------------------
     "pandas>=2.0",
     "xarray>=2024.7",
@@ -60,10 +62,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# GPU acceleration for CWT (PyTorch Wavelet Toolbox). CWT falls back to CPU
-# PyWavelets automatically if these are absent. Install the torch build that
-# matches your CUDA first: https://pytorch.org/get-started/locally/
-gpu = ["torch>=2.0", "ptwt>=0.1"]
+# GPU acceleration for the ZIP-HMM likelihood only (the CWT is CPU-only by
+# design). Install the torch build that matches your CUDA first:
+# https://pytorch.org/get-started/locally/
+gpu = ["torch>=2.0"]
 # The test suite uses streamlit's own AppTest (streamlit.testing.v1), which
 # ships with streamlit: no browser, no server, no webdriver.
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
@@ -116,9 +118,6 @@ ignore = [
 # REPO_ROOT and PKG_ROOT).
 testpaths = ["tests"]
 pythonpath = ["tests"]
-markers = [
-    "gpu: needs a CUDA GPU with torch + ptwt; skipped automatically where there is none",
-]
 # Streamlit's ScriptRunContext warning is expected: AppTest drives the script
 # runner from the main thread, and the warning says it can be ignored in bare mode.
 filterwarnings = [

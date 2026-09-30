@@ -190,6 +190,25 @@ class TestChiSquaredPeriodogram:
 class TestFullPipeline:
     """The wiring, on a small real-shaped dataset."""
 
+    def test_uses_the_shared_transform_and_records_it(self, states_ds, monkeypatch):
+        """The sleep CWT is the circadian CWT's transform, settings and all."""
+        from clockwork.core import periodograms
+
+        seen = []
+        real = periodograms.compute_cwt
+
+        def spy(*args, **kwargs):
+            seen.append(np.asarray(args[0]).dtype)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(periodograms, "compute_cwt", spy)
+        out = periodograms.sleep_cwt_analysis(
+            states_ds, states=("long",), phase="DD", full_range=(1, 32)
+        )
+        assert seen, "sleep_cwt_analysis did not go through compute_cwt"
+        assert out.attrs["sleep_cwt_wavelet_precision"] == periodograms.CWT_WAVELET_PRECISION
+        assert out.attrs["sleep_cwt_convolution_method"] == periodograms.CWT_CONVOLUTION_METHOD
+
     def test_produces_one_full_range_surface_per_state(self, states_ds):
         from clockwork.core.periodograms import sleep_cwt_analysis
 

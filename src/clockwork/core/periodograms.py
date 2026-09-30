@@ -12,7 +12,7 @@ Implements three complementary methods:
   2. Continuous Wavelet Transform (CWT)
        wavelet_analysis() -- time-frequency analysis with
        auto-preprocessing (detrending, envelope normalization).
-       GPU-accelerated via PyTorch/ptwt when available; falls back to CPU PyWavelets.
+       CPU PyWavelets only; see compute_cwt for the transform settings.
        compute_single_fly_scalogram() -- recompute one fly's scalogram on demand.
 
   3. Autocorrelation (AC)
@@ -53,35 +53,6 @@ from tqdm import tqdm
 
 # Fix OpenMP duplicate library issue on Windows (must be set before importing torch/numpy/scipy)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
-# GPU Support - PyTorch/ptwt for GPU-accelerated CWT
-import sys as _sys
-
-# Only print GPU status messages in the main process, not worker processes
-_is_main_process = mp.current_process().name == "MainProcess"
-
-try:
-    import ptwt
-    import torch
-
-    PTWT_AVAILABLE = torch.cuda.is_available()
-    if _is_main_process:
-        if PTWT_AVAILABLE:
-            print(
-                "GPU-accelerated CWT enabled via PyTorch Wavelet Toolbox (ptwt)", file=_sys.stderr
-            )
-        else:
-            print("PyTorch/ptwt available but no CUDA GPU detected - using CPU", file=_sys.stderr)
-except ImportError:
-    torch = None
-    ptwt = None
-    PTWT_AVAILABLE = False
-    if _is_main_process:
-        print(
-            "GPU CWT not available - using CPU-only PyWavelets. Install pytorch and ptwt for GPU acceleration.",
-            file=_sys.stderr,
-        )
-
 
 # Recommended (NOT enforced) minimum DD days for period analysis — a soft,
 # user-editable FLAG (not a filter): flies below it are surfaced with their
@@ -155,7 +126,6 @@ DEFAULT_CWT_RESOLUTION = 1.0 / DEFAULT_CWT_VOICES_PER_OCTAVE
 # detect them; 'global_rednoise' stays range-robust when widened. Full provenance
 # (user decision, the search==classify coupling, the long-period tradeoff) lives in
 # calibrations.py.
-import contextlib
 
 from clockwork.core.calibrations import (  # noqa: E402 (re-export)
     DEFAULT_CWT_MAX_PERIOD,
@@ -242,201 +212,68 @@ def _select_phase(ds, phase="auto", caller="period analysis"):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
-def cwt_gpu(data, scales, wavelet="cmor1.5-1.0", sampling_period=1):
+#: Length of PyWavelets' tabulated mother wavelet, as ``2 ** precision``.
+#: pywt.cwt stretches that table to each scale by floor-indexing into it, so once
+#: the stretched wavelet has more samples than the table has entries it repeats
+#: entries; differentiating that staircase turns the wavelet into a comb of
+#: spikes (PyWavelets' "zipper" distortion). ClockWork's circadian scales on
+#: 1-minute data run ~980-2140, far past where 10 (the pre-1.9 hardcoded value,
+#: good to scale ~64) or 12 (the 1.9 default, ~256) stay clean. At 16 the power
+#: spectrum is converged to within 0.3% of a 2**18 table on those scales, and
+#: the cost is only the one-off table: the convolution length is set by the
+#: scale, not by the precision. Needs PyWavelets >= 1.9, which added the argument.
+CWT_WAVELET_PRECISION = 16
+
+#: pywt.cwt's convolution method. "fft" computes the same transform as the
+#: default "conv" (3e-13 relative in float64) about 13x faster at these scales.
+CWT_CONVOLUTION_METHOD = "fft"
+
+
+def compute_cwt(data, scales, wavelet="cmor1.5-1.0", sampling_period=1):
+    """The continuous wavelet transform of one signal, in float64, on the CPU.
+
+    There is deliberately one implementation. A float32 GPU path (ptwt) used to
+    sit beside this one and fall back to it silently on any CUDA error, so which
+    numbers a user got depended on their CUDA install and nothing recorded it.
+
+    Returns ``(coefficients, frequencies, power)``, with power ``|coef|**2`` for a
+    complex wavelet and ``coef**2`` otherwise.
     """
-    GPU-accelerated CWT using PyTorch Wavelet Toolbox (ptwt).
-    Falls back to CPU if GPU is not available.
-
-    This provides TRUE GPU acceleration by running the entire CWT computation
-    on the GPU, unlike the previous implementation which only did post-processing.
-
-    Parameters:
-    -----------
-    data : array-like
-        Input signal
-    scales : array-like
-        Scales for CWT
-    wavelet : str
-        Wavelet name (default: 'cmor1.5-1.0')
-    sampling_period : float
-        Sampling period
-
-    Returns:
-    --------
-    coefficients : ndarray
-        CWT coefficients
-    frequencies : ndarray
-        Corresponding frequencies
-    power : ndarray
-        Power spectrum (|coefficients|^2 for complex wavelets)
-    """
-    if PTWT_AVAILABLE and len(data) > 1000:  # Only use GPU for larger datasets
-        try:
-            # Convert to PyTorch tensors and move to GPU
-            data_torch = torch.from_numpy(data.astype(np.float32)).cuda()
-            scales_torch = torch.from_numpy(scales.astype(np.float32))
-
-            # Perform CWT on GPU - THIS ACTUALLY RUNS ON GPU!
-            coefficients_gpu, frequencies = ptwt.cwt(
-                data_torch, scales_torch, wavelet, sampling_period=sampling_period
-            )
-
-            # Compute power on GPU
-            if "cmor" in wavelet:
-                power_gpu = torch.abs(coefficients_gpu) ** 2
-            else:
-                power_gpu = coefficients_gpu**2
-
-            # Transfer back to CPU as numpy arrays
-            coefficients = coefficients_gpu.cpu().numpy()
-            power = power_gpu.cpu().numpy()
-
-            # Explicitly delete GPU tensors to free memory immediately
-            # This prevents memory accumulation across many flies
-            del data_torch, scales_torch, coefficients_gpu, power_gpu
-            torch.cuda.empty_cache()
-
-            return coefficients, frequencies, power
-
-        except Exception as e:
-            print(f"GPU CWT failed, falling back to CPU: {e}")
-            # Clean up any GPU memory that might have been allocated
-            with contextlib.suppress(Exception):
-                torch.cuda.empty_cache()
-            # Fall through to CPU version
-
-    # CPU version using PyWavelets
-    coefficients, frequencies = pywt.cwt(data, scales, wavelet, sampling_period=sampling_period)
+    coefficients, frequencies = pywt.cwt(
+        np.asarray(data, dtype=np.float64),
+        scales,
+        wavelet,
+        sampling_period=sampling_period,
+        method=CWT_CONVOLUTION_METHOD,
+        precision=CWT_WAVELET_PRECISION,
+    )
     if "cmor" in wavelet:
         power = np.abs(coefficients) ** 2
     else:
         power = coefficients**2
-
     return coefficients, frequencies, power
 
 
 def cwt_powers(signals, scales, wavelet="cmor1.5-1.0", n_workers=1):
     """Yield the CWT power ``(n_scales, n_time)`` of each signal, in order, as float32.
 
-    ``signals`` must all be the same length. On the GPU path (``cwt_gpu``'s own
-    rule: ptwt with CUDA, and more than 1000 samples) they are transformed in
-    BATCHES. ptwt loops over the scales in Python, so per-fly calls spend almost
-    all their time in that loop rather than on the GPU; one call for many flies
-    pays for the loop once. The batch size is set from the GPU's free memory at
-    call time, so it adapts to the card, and a batch that still runs out of
-    memory is halved and retried.
-
-    Batched results match per-fly ``cwt_gpu`` to float32 FFT rounding (~2e-7 of
-    peak power), not bit for bit: the batched FFTs round differently. Off the GPU
-    path each signal goes through ``cwt_gpu`` on its own, as before, on
-    ``n_workers`` threads.
+    Each signal goes through :func:`compute_cwt` (float64) on ``n_workers``
+    threads; the float32 is storage only, for the per-group surfaces it feeds.
     """
-    signals = [np.asarray(sig, dtype=np.float32) for sig in signals]
-    if not signals:
-        return
-    if not (PTWT_AVAILABLE and len(signals[0]) > 1000):
-        with ThreadPoolExecutor(max_workers=max(1, int(n_workers))) as pool:
-            for _c, _f, power in pool.map(
-                lambda sig: cwt_gpu(sig, scales, wavelet, sampling_period=1), signals
-            ):
-                yield power.astype(np.float32)
-        return
-
-    scales_t = torch.from_numpy(np.asarray(scales, dtype=np.float32))
-    n_scales, n_time = len(scales), len(signals[0])
-    # complex64 coefficients plus the power and ptwt's FFT workspace: allow four
-    # times the coefficient size per signal, and use half of what is free.
-    per_signal = n_scales * n_time * 8 * 4
-    try:
-        free_bytes = torch.cuda.mem_get_info()[0]
-    except Exception:
-        free_bytes = per_signal * 16
-    batch = max(1, min(len(signals), int(free_bytes * 0.5 // per_signal)))
-
-    i = 0
-    while i < len(signals):
-        block = np.stack(signals[i : i + batch])
-        try:
-            data_t = torch.from_numpy(block).cuda()
-            coef, _ = ptwt.cwt(data_t, scales_t, wavelet, sampling_period=1)
-            power_t = torch.abs(coef) ** 2 if "cmor" in wavelet else coef**2
-            # ptwt returns (n_scales, batch, n_time); hand back one (n_scales,
-            # n_time) surface per signal.
-            powers = power_t.permute(1, 0, 2).contiguous().cpu().numpy().astype(np.float32)
-            del data_t, coef, power_t
-            torch.cuda.empty_cache()
-        except Exception as e:  # noqa: BLE001 — any GPU failure degrades, never aborts
-            with contextlib.suppress(Exception):
-                torch.cuda.empty_cache()
-            if batch > 1 and "out of memory" in str(e).lower():
-                batch = max(1, batch // 2)
-                continue
-            # Not a memory problem, or already one at a time: this block goes
-            # through cwt_gpu, which falls back to the CPU on its own.
-            for sig in block:
-                yield cwt_gpu(sig, scales, wavelet, sampling_period=1)[2].astype(np.float32)
-            i += len(block)
-            continue
-        yield from powers
-        i += len(block)
+    signals = [np.asarray(sig) for sig in signals]
+    with ThreadPoolExecutor(max_workers=max(1, int(n_workers))) as pool:
+        for _c, _f, power in pool.map(
+            lambda sig: compute_cwt(sig, scales, wavelet, sampling_period=1), signals
+        ):
+            yield power.astype(np.float32)
 
 
-#: Below this much GPU memory, CWT runs two worker processes instead of four.
-#: Observed on a 4 GiB card: two workers used ~10% of it (~200 MB each), so four
-#: need under 1 GiB; 3 GiB keeps better than double that in hand.
-GPU_MEMORY_FOR_FOUR_WORKERS = 3 * 2**30
+def get_optimal_workers(n_tasks):
+    """Worker processes for a per-fly analysis: every core but one, never more than tasks."""
+    return max(1, min(mp.cpu_count() - 1, n_tasks))
 
 
-def get_optimal_workers(n_tasks, use_gpu=False, period_range=None):
-    """
-    Determine the optimal number of worker processes based on available resources.
-
-    Parameters:
-    -----------
-    n_tasks : int
-        Number of tasks to process
-    use_gpu : bool
-        Whether GPU acceleration is being used (for CWT via ptwt)
-    period_range : tuple (min_period, max_period) or None
-        Accepted for compatibility; the GPU worker count no longer depends on it
-        (it depends on the card's memory, see GPU_MEMORY_FOR_FOUR_WORKERS).
-
-    Returns:
-    --------
-    n_workers : int
-        Optimal number of worker processes
-    """
-    cpu_count = mp.cpu_count()
-
-    if use_gpu and PTWT_AVAILABLE:
-        # Worker processes share one GPU, each with its own CUDA context and a
-        # fly's CWT in flight (~100+ MB for a wide period range). Four is the
-        # default: two, which wide ranges used to get, left ~90% of a
-        # workstation card idle. Only a card too small to hold four of them
-        # comfortably drops back to two; ``period_range`` no longer changes it.
-        n_workers = min(4, max(1, cpu_count - 1))
-        try:
-            gpu_bytes = torch.cuda.get_device_properties(0).total_memory
-        except Exception:
-            gpu_bytes = None
-        if gpu_bytes is not None and gpu_bytes < GPU_MEMORY_FOR_FOUR_WORKERS:
-            n_workers = min(n_workers, 2)
-            if _is_main_process:
-                print(
-                    f"  GPU has {gpu_bytes / 2**30:.1f} GiB - using {n_workers} workers "
-                    "to avoid GPU memory pressure"
-                )
-    else:
-        # For CPU-only, use more workers but leave some headroom
-        n_workers = max(1, cpu_count - 1)
-
-    # Don't create more workers than tasks
-    n_workers = min(n_workers, n_tasks)
-
-    return n_workers
-
-
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 
 
 @contextmanager
@@ -444,9 +281,8 @@ def _worker_pool(pool, n_processes):
     """Yield a worker pool, transferring lifecycle ownership only when we own it.
 
     On Windows ``spawn``-mode multiprocessing each worker re-imports the
-    analysis stack (numpy/scipy/astropy/torch/ptwt) and initializes a CUDA
-    context — about 5 s per worker × 4 workers = ~20 s of cold start before
-    any compute happens. When called once per analysis (e.g. page 3) that
+    analysis stack (numpy/scipy/astropy) — seconds per worker of cold start
+    before any compute happens. When called once per analysis (e.g. page 3) that
     overhead amortizes over all flies. When called once per sweep value
     (e.g. page 11) it multiplies, which is the dominant cost in sweep mode.
 
@@ -898,7 +734,7 @@ def lomb_scargle_analysis(
 
     # Determine optimal number of workers
     if n_processes is None:
-        n_processes = get_optimal_workers(len(args_list), use_gpu=PTWT_AVAILABLE)
+        n_processes = get_optimal_workers(len(args_list))
         print(f"Using {n_processes} workers for Lomb-Scargle analysis")
 
     # Use multiprocessing to parallelize the computations with per-fly progress.
@@ -1300,7 +1136,7 @@ def _preprocess_and_compute_cwt(
             "DD days. Proceeding over the requested grid without clamping."
         )
 
-    _coefficients, _frequencies, power = cwt_gpu(activity, scales, wavelet, sampling_period=1)
+    _coefficients, _frequencies, power = compute_cwt(activity, scales, wavelet, sampling_period=1)
     power = power.astype(np.float32)
 
     avg_power = np.mean(power, axis=1)
@@ -2008,9 +1844,6 @@ def wavelet_analysis(
             else ""
         )
     )
-    print(
-        f"GPU acceleration: {'ENABLED (ptwt+CUDA)' if PTWT_AVAILABLE else 'DISABLED (CPU-only PyWavelets)'}"
-    )
     print(f"Period range: {min_period:.1f} - {max_period:.1f} hours")
     print(f"Resolution: {resolution}")
     print(f"Wavelet: {wavelet_name}")
@@ -2078,10 +1911,8 @@ def wavelet_analysis(
                     fly_to_ac_rhythmic[_id] = True
 
     if n_processes is None:
-        n_processes = get_optimal_workers(
-            len(args_list), use_gpu=PTWT_AVAILABLE, period_range=(min_period, max_period)
-        )
-    print(f"Using {n_processes} parallel workers" + (" (GPU)" if PTWT_AVAILABLE else " (CPU)"))
+        n_processes = get_optimal_workers(len(args_list))
+    print(f"Using {n_processes} parallel workers")
 
     with _worker_pool(pool, n_processes) as worker_pool:
         for raw_result in tqdm(
@@ -2128,9 +1959,6 @@ def wavelet_analysis(
             _cwt_completed += 1
             if progress_callback:
                 progress_callback(_cwt_completed, _cwt_total)
-            if PTWT_AVAILABLE and len(results) % 50 == 0:
-                with suppress(Exception):
-                    torch.cuda.empty_cache()
 
     if not results:
         print("Warning: CWT analysis failed for all individuals.")
@@ -2154,6 +1982,9 @@ def wavelet_analysis(
     merged_ds.attrs["cwt_max_period"] = max_period
     merged_ds.attrs["cwt_resolution"] = resolution
     merged_ds.attrs["cwt_wavelet"] = wavelet_name
+    # How the transform itself was computed (rule 6: parameters beside results).
+    merged_ds.attrs["cwt_wavelet_precision"] = CWT_WAVELET_PRECISION
+    merged_ds.attrs["cwt_convolution_method"] = CWT_CONVOLUTION_METHOD
     merged_ds.attrs["cwt_method"] = cwt_method
     merged_ds.attrs["cwt_min_num_days"] = min_num_days
     merged_ds.attrs["cwt_max_bridge_gap_minutes"] = max_bridge_gap_minutes
@@ -2703,7 +2534,7 @@ def autocorrelation_analysis(
 
     # Determine optimal number of workers
     if n_processes is None:
-        n_processes = get_optimal_workers(len(args_list), use_gpu=PTWT_AVAILABLE)
+        n_processes = get_optimal_workers(len(args_list))
         print(f"Using {n_processes} workers for autocorrelation analysis")
 
     results_dict = {}
@@ -3109,7 +2940,7 @@ def mesa_analysis(
     ]
 
     if n_processes is None:
-        n_processes = get_optimal_workers(len(args_list), use_gpu=PTWT_AVAILABLE)
+        n_processes = get_optimal_workers(len(args_list))
         print(f"Using {n_processes} workers for MESA analysis")
 
     results_dict = {}
@@ -3344,8 +3175,7 @@ def sleep_cwt_analysis(
         analysis). If None, all flies are used.
     n_processes : int, optional
         How many flies are transformed at once (threads). None = auto, from
-        :func:`get_optimal_workers` — every core but one on the CPU path, fewer
-        on the GPU path where wide period ranges crowd its memory.
+        :func:`get_optimal_workers` — every core but one.
     progress_callback : callable, optional
         Called with (completed, total) as each fly finishes.
 
@@ -3446,9 +3276,8 @@ def sleep_cwt_analysis(
 
             # Three passes. First every fly is PREPARED on the CPU (missing
             # minutes, longest clean run, 5-minute bins). Then flies with the
-            # same record length are transformed together: cwt_powers batches
-            # them on the GPU, where one call for many flies costs about what one
-            # fly used to. Finally each fly is reduced (rectified, normalised,
+            # same record length are transformed together on a thread pool
+            # (cwt_powers), sharing one scale grid. Finally each fly is reduced (rectified, normalised,
             # placed on the shared grid) exactly as before. The per-fly outputs
             # land at the fly's own index, so their order is unchanged.
             state_values = analysis_ds[var].transpose("time", "id").values
@@ -3514,9 +3343,7 @@ def sleep_cwt_analysis(
                 if prep is not None:
                     batches.setdefault((len(prep[0]), prep[1]), []).append(k)
 
-            n_workers = n_processes or get_optimal_workers(
-                n_flies, use_gpu=PTWT_AVAILABLE, period_range=(min_p, max_p)
-            )
+            n_workers = n_processes or get_optimal_workers(n_flies)
             fly_spectra = [None] * n_flies
             fly_ultradian_amps = [None] * n_flies
 
@@ -3688,7 +3515,13 @@ def sleep_cwt_analysis(
         print("sleep_cwt_analysis: no results produced.")
         return xr.Dataset()
 
-    return xr.Dataset(result_vars)
+    return xr.Dataset(
+        result_vars,
+        attrs={
+            "sleep_cwt_wavelet_precision": CWT_WAVELET_PRECISION,
+            "sleep_cwt_convolution_method": CWT_CONVOLUTION_METHOD,
+        },
+    )
 
 
 def ultradian_rhythmicity_ls(

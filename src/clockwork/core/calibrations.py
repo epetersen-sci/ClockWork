@@ -194,6 +194,9 @@ DEFAULT_CWT_AR1_THRESHOLD = 1.0
 #                2007), so a peak-finder on a non-oscillatory signal lands at the
 #                top scale. Strength + the default (16,32) h window therefore
 #                over-calls them (independently-measured AC concordance 92.5%).
+#                [2026-09-30: measured before the CWT precision fix; that band-edge
+#                peak was at least in large part the pywt precision-10 artifact —
+#                see the RE-MEASURED note under DEFAULT_CWT_REDNOISE_THRESHOLD.]
 #                The genuinely-rhythmic flies cluster tightly at ~24.7 +/- 0.45 h
 #                and 0/107 exceed 30 h, so a tighter period window (e.g. (16,30) h)
 #                lifts AC concordance to 96.9% (vs the 98.8% AC<->LS yardstick) —
@@ -251,6 +254,29 @@ DEFAULT_CWT_GLOBAL_THRESHOLD = 1.7
 #                few known-arrhythmic Opa1xLdh doubles (M20/M22) flip to
 #                rhythmic-CALLED, and it RECOVERS the 2 genuine M18 rhythmic flies
 #                that 3.0 clipped (~2.34/2.89). Was 3.0 (earlier provisional value).
+#   RE-MEASURED (2026-09-30), after the CWT transform change: every number in
+#                the provenance above was measured with pywt.cwt at its pre-1.9
+#                hardcoded wavelet precision (10) and direct convolution. At
+#                ClockWork's circadian scales on 1-minute data (~980-2140) that
+#                tabulated wavelet is far too coarse; stretching it produces a
+#                spike comb whose power floor RISES WITH PERIOD, so non-oscillatory
+#                flies grew a peak at the top of the search window. The transform
+#                is now precision 16, FFT convolution, float64
+#                (periodograms.CWT_WAVELET_PRECISION), and that floor is gone.
+#                Measured on all 192 example_data flies, DD, page defaults
+#                (16-36 h window, this 2.0 cutoff), against the flies on which
+#                Lomb-Scargle and autocorrelation AGREE (108 rhythmic, 69
+#                arrhythmic, of 192):
+#                  before: rhythmic min 3.88 / arrhythmic max 6.71 (overlapping);
+#                          agreement at 2.0 = 70.6% (the Opa1xLdh doubles were
+#                          called rhythmic at ~35 h: 29/32 and 28/32).
+#                  after:  rhythmic min 2.15 / arrhythmic max 1.84 (disjoint);
+#                          agreement at 2.0 = 100% (177/177); doubles 3/32, 1/32,
+#                          matching LS 4/32, 2/32 and AC 0/32, 0/32.
+#                2.0 therefore stands, now as a clean separation rather than a
+#                permissive one, but the margin is narrow (1.84 vs 2.15) and it is
+#                one experiment. The band-edge peaks attributed above to red-noise
+#                scale bias were, at least in large part, this transform artifact.
 DEFAULT_CWT_REDNOISE_THRESHOLD = 2.0
 
 # DEFAULT_CWT_RIDGE_THRESHOLD

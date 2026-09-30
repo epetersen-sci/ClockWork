@@ -83,15 +83,19 @@ This installs ClockWork and its dependencies, and puts the `clockwork` command
 on your path. `-e` (editable) means edits to the source take effect without
 reinstalling; use `pip install -e ".[dev]"` to also get the test and lint tools.
 
-Four packages are **version-pinned on purpose** — `numpy`, `scipy`, `astropy`
-and `PyWavelets`. Their default behaviour is baked into the numbers ClockWork
-reports, so upgrading them can silently shift results. Don't bump them casually.
+Three packages are **version-pinned on purpose** — `numpy`, `scipy` and
+`astropy`. Their default behaviour is baked into the numbers ClockWork reports,
+so upgrading them can silently shift results. Don't bump them casually.
+`PyWavelets` is not pinned: ClockWork passes the wavelet settings that matter
+explicitly (see [Continuous wavelet transform](#continuous-wavelet-transform-cwt)),
+so it needs only version 1.9 or later.
 
 ### 3. Optional — GPU acceleration
 
-Two things run much faster on an NVIDIA GPU: the continuous wavelet transform
-and the zero-inflated-Poisson HMM likelihood. Both fall back to CPU
-automatically, so this step is optional.
+The zero-inflated-Poisson HMM likelihood can run on an NVIDIA GPU; it falls
+back to CPU automatically, so this step is optional. (The wavelet transform is
+CPU-only by design: one implementation, so the same data gives the same numbers
+on every machine. It takes well under a second per fly.)
 
 Install the torch build matching your CUDA version first, from
 <https://pytorch.org/get-started/locally/>, then:
@@ -99,9 +103,8 @@ Install the torch build matching your CUDA version first, from
 ```bash
 pip install -e ".[gpu]"
 ```
- On CPU the CWT is *slow* — if you
-plan to use it on a full cohort, the GPU is strongly recommended. Set
-`HMM_USE_GPU=0` in the environment to force the HMM back to CPU.
+
+Set `HMM_USE_GPU=0` in the environment to force the HMM back to CPU.
 
 ---
 
@@ -629,8 +632,14 @@ rather than a fabricated low value. A warning prints when the requested maximum
 period exceeds what the record length can resolve — roughly 2√2 × period of
 data, which is why 32 h needs about 3.8 days and lines up with the 4-day floor.
 
-Built on `PyWavelets`, with a **CUDA path via PyTorch + `ptwt`** that is
-auto-detected. This is the analysis that most benefits from a GPU.
+Built on `PyWavelets` (≥ 1.9), CPU only, using its FFT convolution with the
+tabulated mother wavelet at `precision=16` (2¹⁶ points). The precision matters
+here: `pywt.cwt` stretches that table to each scale, and ClockWork's circadian
+scales on 1-minute data (~980–2140) are far past what the pre-1.9 hardcoded
+value of 10 or the 1.9 default of 12 can resolve — the effective wavelet turns
+into a comb of spikes and the power spectrum is distorted by several percent
+on average. At 16 it is converged. Both settings are recorded on the dataset
+(`cwt_wavelet_precision`, `cwt_convolution_method`).
 
 > Torrence & Compo 1998 (the wavelet framework, AR(1) significance, COI, global
 > spectrum); Leise & Harrington 2011 and Leise 2013 (CWT in circadian
@@ -913,6 +922,6 @@ downcast.
 **Software**
 
 - `astropy` — Lomb-Scargle · `scipy` / `numpy` — signal processing ·
-  `PyWavelets` and `ptwt` — wavelet transforms · `statsmodels` — Burg AR ·
+  `PyWavelets` — wavelet transforms · `statsmodels` — Burg AR ·
   `hmmlearn` — hidden Markov models · `xarray` / `netCDF4` — the data model ·
   `streamlit` and `plotly` — the interface.
