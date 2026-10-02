@@ -14,15 +14,15 @@ autocorrelation's, and classifying "MESA" sets the AC flag.
 import numpy as np
 import streamlit as st
 
+from clockwork import pipeline
 from clockwork.app import export_helpers as ex
 from clockwork.app.ui import charts
-from clockwork.app.ui.period_context import store_period_results
+from clockwork.app.ui.period_context import store_master
 from clockwork.core import plotting
 from clockwork.core.calibrations import AC_RI_SCAMP_REFERENCE, DEFAULT_CWT_METHOD
 from clockwork.core.rhythmicity_classification import (
     DEFAULT_AC_RI_THRESHOLD,
     DEFAULT_LS_POWER_THRESHOLD,
-    classify_all,
     cwt_threshold_for,
 )
 
@@ -163,17 +163,12 @@ def render(ctx):
     if st.button("Classify", type="primary", key="classify_rhythmicity"):
         target = "ac" if algo == "mesa" else algo
         try:
-            out = classify_all(
-                period_ds,
-                ls_power_threshold=thr if target == "ls" else DEFAULT_LS_POWER_THRESHOLD,
-                ac_ri_threshold=thr if target == "ac" else DEFAULT_AC_RI_THRESHOLD,
-                cwt_rhythmicity_threshold=thr if target == "cwt" else None,
-                period_window=(ctx.min_period, ctx.max_period),
-                run_ls=target == "ls",
-                run_ac=target == "ac",
-                run_cwt=target == "cwt",
+            # On the MASTER (ARCHITECTURE rule 11). MESA's call is autocorrelation's;
+            # classify_period routes it there, as this tab always has.
+            out = pipeline.classify_period(
+                st.session_state.dataset, algo, thr, (ctx.min_period, ctx.max_period)
             )
-            store_period_results(out, ctx.phase_selection)
+            store_master(out)
             n = int(np.asarray(out[_STORED[target][0]].values, dtype=bool).sum())
             st.session_state[_NOTE_KEY] = (
                 f"Classified by {labels[algo]} at {thr:g}: {n} of {out.sizes['id']} flies "

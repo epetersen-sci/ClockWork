@@ -201,7 +201,11 @@ it.
 - [ ] Phase 1: pipeline steps (`clockwork/pipeline/`).
   - [x] import → groups → curate → split (`pipeline/data.py`); the Data pages
         call them, and the subset is now recorded on the dataset (`subset_keep`).
-  - [ ] period, sleep, sleep states, HMM, exports.
+  - [x] period & rhythmicity (`pipeline/period.py`): the four estimators, their
+        rhythmic calls, and per-method overrides of the shared settings. Each
+        method's preprocessing is now recorded on the master (`<method>_prep_*`);
+        before, it never reached it.
+  - [ ] sleep, sleep states, HMM, exports.
 - [ ] Phase 2: YAML schema, `run` / `validate` / `init` / `schema`, QC report.
 - [ ] Phase 3: PyPI and conda-forge.
 - [ ] Phase 4: the Export settings button and config helpers.

@@ -168,3 +168,24 @@ buttons, naming exactly what would be undone (curation, the split, and which
 analyses' results), and says nothing when there is nothing to lose
 (`tests/test_data_pages_pipeline.py`). The rebuild itself is unchanged; whether
 a group change should instead apply to the current dataset is still open.
+
+---
+
+## 23. Running a period method reorders the master's flies and adds `split_minute`
+
+`pipeline.merge_period_outputs` (formerly `ui.period_context.merge_analysis_outputs`,
+moved unchanged) merges an estimator's per-fly outputs onto the master with an
+outer join. The estimator returns its flies in a different order, and an outer
+join of two differently ordered `id` indexes SORTS the union, so after any
+period run the master's flies are in lexical order (`17_1, 17_10, 17_11, ...`)
+rather than the order they were imported in. It also copies every per-fly
+coord of the result onto the master, which includes the `split_minute` coord
+`select_phase` adds, so an unsplit dataset gains a split boundary coord from
+running Lomb-Scargle.
+
+Nothing numerical changes — every value is still under its own fly id, which
+`tests/test_pipeline_period.py` checks fly by fly — but anything that relies on
+fly ORDER (a table exported "in import order", a figure whose rows follow the
+dataset) silently changes order after a period run. Either reindex the merge to
+the master's `id` order, or decide the sorted order is the canonical one and
+apply it at import.

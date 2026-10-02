@@ -9,12 +9,12 @@ import os
 
 import streamlit as st
 
+from clockwork import pipeline
 from clockwork.app import export_helpers
 from clockwork.app.preprocessing_widgets import render_preprocess_controls
-from clockwork.app.ui.period_context import store_period_results
+from clockwork.app.ui.period_context import store_master
 from clockwork.core import dam_utilities, periodograms
 from clockwork.core.calibrations import DEFAULT_CWT_METHOD
-from clockwork.core.preprocessing import preprocess_activity
 
 #: (key, label, the per-fly output that says it has been run)
 METHODS = [
@@ -78,7 +78,9 @@ def _status(period_ds, key):
     extra = {
         "cwt": f"method {a.get('cwt_method', '?')}, {a.get('cwt_wavelet', '?')} wavelet",
         "ls": f"oversampling {a.get('ls_oversampling', '?')}, FAP {a.get('ls_fap_method', '?')}",
-        "ac": f"low-pass {a.get('prep_lopass_hours', '?')} h, peak day {a.get('ac_peak', '?')}",
+        # ac_prep_*: the preprocessing is recorded per method now. The unprefixed
+        # prep_* this used to read was never on the master, so it always said "?".
+        "ac": f"low-pass {a.get('ac_prep_lopass_hours', '?')} h, peak day {a.get('ac_peak', '?')}",
         "mesa": f"{a.get('mesa_bin_minutes', '?')}-min bins, order {a.get('mesa_order', '?')}",
     }[key]
     return f"{phase}, {rng}, {extra}"
@@ -210,68 +212,81 @@ def _advanced_options():
     return opts
 
 
+def _config(key, ctx, opts):
+    """The page's controls for method ``key``, as the pipeline's PeriodConfig.
+
+    The same object a config file would produce, so what the page runs and what
+    the Export settings button later writes down cannot drift apart.
+    """
+    pre = opts["preprocess"]
+    if key == "cwt":
+        method = {
+            "voices_per_octave": opts["cwt_voices"],
+            "reduction": opts["cwt_method"],
+            "preprocessing": pipeline.Preprocessing.from_core(pre["CWT"]),
+        }
+    elif key == "ls":
+        method = {
+            "oversampling": opts["ls_oversampling"],
+            "fap": opts["ls_fap_method"],
+            "preprocessing": pipeline.Preprocessing.from_core(pre["LS"]),
+        }
+    elif key == "ac":
+        method = {
+            "peak_day": opts["ac_peak"],
+            "preprocessing": pipeline.Preprocessing.from_core(pre["AC"]),
+        }
+    else:  # mesa — reuses AC's detrend + low-pass preprocessing
+        method = {
+            "bin_minutes": opts["mesa_bin"],
+            "order": "n_over_3" if opts["mesa_order"] is None else opts["mesa_order"],
+            "preprocessing": pipeline.Preprocessing.from_core(pre["AC"]),
+        }
+    return pipeline.PeriodConfig(
+        phase=ctx.phase_selection,
+        period_range_hours=(ctx.min_period, ctx.max_period),
+        # The floor is a FILTER: sub-floor flies get no period.
+        min_dd_days=ctx.min_days_floor,
+        max_bridge_gap_minutes=ctx.max_bridge_gap,
+        methods={_METHOD_FOR_KEY[key]: method},
+    )
+
+
+#: The page's method keys -> the pipeline's.
+_METHOD_FOR_KEY = {"cwt": "cwt", "ls": "lomb_scargle", "ac": "autocorrelation", "mesa": "mesa"}
+
+
 def _run_one(key, ctx, opts, progress):
     """Run method ``key`` and store its results. Returns a success note."""
     def _cb(done, total):
         progress.progress(done / total, text=f"{LABELS[key]}: fly {done}/{total}")
 
-    pre = opts["preprocess"]
-    common = dict(
-        min_period=ctx.min_period,
-        max_period=ctx.max_period,
-        phase=ctx.phase_arg,
-        min_num_days=ctx.min_days_floor,  # the floor is a FILTER — sub-floor flies get no period
-        progress_callback=_cb,
+    out_dir = label = None
+    if key == "cwt" and opts["cwt_group_averages"]:
+        # Beside the source monitor data (survives a .nc reload), never the launch dir.
+        wd = dam_utilities.resolve_export_dir(ctx.ds, st.session_state.get("working_dir"))
+        out_dir = os.path.join(wd, "Averaged Scalograms")
+        # Encodes the slice, so DD and LD reruns don't overwrite each other.
+        label = ctx.phase_selection if ctx.phase_selection in ("DD", "LD") else "full"
+
+    # The MASTER, as every write must be (ARCHITECTURE rule 11).
+    master, averages = pipeline.run_period_method(
+        st.session_state.dataset,
+        _config(key, ctx, opts),
+        _METHOD_FOR_KEY[key],
+        progress=_cb,
+        group_averages=key == "cwt" and bool(opts["cwt_group_averages"]),
+        average_only_rhythmic=bool(opts["cwt_avg_filter"]),
+        phase_label=label,
     )
+    store_master(master)
     if key == "cwt":
-        out_dir = label = None
-        if opts["cwt_group_averages"]:
-            # Beside the source monitor data (survives a .nc reload), never the launch dir.
-            wd = dam_utilities.resolve_export_dir(ctx.ds, st.session_state.get("working_dir"))
-            out_dir = os.path.join(wd, "Averaged Scalograms")
-            # Encodes the slice, so DD and LD reruns don't overwrite each other.
-            label = ctx.phase_selection if ctx.phase_selection in ("DD", "LD") else "full"
-        result, averages = periodograms.wavelet_analysis(
-            preprocess_activity(ctx.analysis_src, pre["CWT"]),
-            cwt_method=opts["cwt_method"],
-            resolution=1 / opts["cwt_voices"],
-            max_bridge_gap_minutes=ctx.max_bridge_gap,
-            compute_group_averages=bool(opts["cwt_group_averages"]),
-            group_coord="group",
-            filter_nonrhythmic_for_average=bool(opts["cwt_avg_filter"]),
-            phase_label=label,
-            **common,
-        )
-        store_period_results(result, ctx.phase_selection)
         saved = []
         if averages and out_dir:
-            saved = export_helpers.save_group_average_scalograms(averages, out_dir, ds=result)
+            saved = export_helpers.save_group_average_scalograms(averages, out_dir, ds=master)
         if saved:
             return f"CWT done; {len(saved)} averaged scalogram(s) saved to `{out_dir}`."
         return "CWT done."
-    if key == "ls":
-        result = periodograms.lomb_scargle_analysis(
-            preprocess_activity(ctx.analysis_src, pre["LS"]),
-            oversampling=opts["ls_oversampling"],
-            fap_method=opts["ls_fap_method"],
-            **common,
-        )
-    elif key == "ac":
-        result = periodograms.autocorrelation_analysis(
-            preprocess_activity(ctx.analysis_src, pre["AC"]),
-            ac_peak=opts["ac_peak"],
-            max_bridge_gap_minutes=ctx.max_bridge_gap,
-            **common,
-        )
-    else:  # mesa — reuses AC's detrend + low-pass preprocessing
-        result = periodograms.mesa_analysis(
-            preprocess_activity(ctx.analysis_src, pre["AC"]),
-            bin_minutes=opts["mesa_bin"],
-            order=opts["mesa_order"],
-            max_bridge_gap_minutes=ctx.max_bridge_gap,
-            **common,
-        )
-    store_period_results(result, ctx.phase_selection)
     return f"{LABELS[key]} done."
 
 

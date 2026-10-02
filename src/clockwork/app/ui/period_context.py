@@ -210,71 +210,18 @@ def remember_min_days_floor(value):
 
 
 def merge_analysis_outputs(master, result_ds):
-    """Attach analysis outputs from ``result_ds`` onto ``master`` without
-    overwriting `master`'s `activity` / `time` / other shared variables.
+    """Attach analysis outputs from ``result_ds`` onto ``master`` without replacing
+    its raw ``activity``. The one implementation is
+    :func:`clockwork.pipeline.merge_period_outputs`, which the CLI uses too."""
+    from clockwork.pipeline import merge_period_outputs
 
-    The CWT/LS/AC pipelines run on a *preprocessed* copy of the input
-    (`preprocess_activity` may detrend/normalize/etc.) and return a
-    merged dataset whose `activity` is the preprocessed version. If we
-    blindly assigned `result_ds` back to the master we'd contaminate
-    downstream visualization (e.g. `summary_bars` would sum detrended
-    activity, producing negative totals for DD recordings — see issue
-    1D in the period-analysis cleanup audit). This helper merges only
-    the analysis-output variables and per-fly classification flags so
-    raw activity stays untouched on master.
-    """
-    # Per-fly scalar data_vars (period, amplitude, FAP, RI, etc.)
-    _scalar_vars = [v for v in result_ds.data_vars if result_ds[v].dims == ("id",)]
-    # Per-fly array data_vars (cwt_powerseries, cwt_ridge_periods, etc.)
-    # — anything keyed on id plus an analysis-specific axis.
-    _array_vars = [
-        v
-        for v in result_ds.data_vars
-        if v != "activity"
-        and "id" in result_ds[v].dims
-        and result_ds[v].dims != ("id",)
-        and v.startswith(("cwt_", "ls_", "ac_", "mesa_"))
-    ]
-    # Per-fly classification coords (ac_rhythmic, ls_rhythmic, etc.)
-    _scalar_coords = [
-        c
-        for c in result_ds.coords
-        if c not in ("id", "time") and c in result_ds and result_ds[c].dims == ("id",)
-    ]
-    _to_drop = [v for v in (_scalar_vars + _array_vars + _scalar_coords) if v in master]
-    if _to_drop:
-        master = master.drop_vars(_to_drop, errors="ignore")
-    if _scalar_vars or _array_vars:
-        master = master.merge(result_ds[_scalar_vars + _array_vars], compat="no_conflicts", join="outer")
-    if _scalar_coords:
-        master = master.assign_coords({c: result_ds[c] for c in _scalar_coords})
-    # Copy analysis attrs (CWT/LS/AC/MESA + classification thresholds + paths)
-    for k, v in result_ds.attrs.items():
-        if k.startswith(("cwt_", "ls_", "ac_", "mesa_")):
-            master.attrs[k] = v
-    return master
+    return merge_period_outputs(master, result_ds)
 
 
-def store_period_results(result_ds, phase_selection):
-    """Store analysis results on the phase-specific dataset and merge
-    per-fly outputs onto the master dataset.
-
-    Single-phase loads (e.g. DD-only NetCDFs) and split workflows take
-    the same merge path so master's `activity` is never replaced with
-    the preprocessed (detrended) version that the analysis pipelines
-    work on internally. See ``_merge_analysis_outputs`` docstring."""
+def store_master(master):
+    """Make ``master`` the session's dataset after a pipeline step returned it."""
     from clockwork.app.analysis_detection import detect_analyses
 
-    # result_ds is the WHOLE-dataset masked view plus per-fly outputs. Those
-    # outputs are phase-independent (id,)/(id, analysis-axis) vars, so they merge
-    # onto the master and that is the end of it.
-    #
-    # A block here used to ALSO merge them into session_state.dataset_DD/LD, to
-    # keep those sliced copies current for pages that had not yet migrated. It
-    # was labelled transitional, "retires with the dataset_LD/DD sweep" — this is
-    # that sweep, so it is gone along with the caches it was feeding.
-    master = st.session_state.dataset
-    master = merge_analysis_outputs(master, result_ds)
     st.session_state.dataset = master
     st.session_state.analyses = detect_analyses(master)
 
