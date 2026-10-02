@@ -47,12 +47,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from clockwork import pipeline
 from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts, facet_panels, sleep_run
 from clockwork.app.ui.filters import group_filter_sidebar
 from clockwork.app.ui.guards import require_dataset
-from clockwork.core import plotting, sleep_analysis
+from clockwork.core import plotting
 from clockwork.core import sleep_state_metrics as ssm
 from clockwork.core.dam_utilities import select_phase
 from clockwork.core.dataset_meta import dataset_fingerprint, dataset_phase
@@ -312,10 +313,18 @@ with _th_go:
         "minutes — no bout is detected again.",
     ):
         try:
-            _master = sleep_analysis.reclassify_sleep_states(
+            _recorded = (
+                pipeline.SleepConfig.from_attrs(st.session_state["dataset"].attrs)
+                or pipeline.SleepConfig()
+            )
+            _master = pipeline.reclassify_sleep(
                 st.session_state["dataset"],
-                short_max_min=float(_short_max),
-                inter_max_min=float(_inter_max),
+                _recorded.model_copy(
+                    update={
+                        "short_max_minutes": float(_short_max),
+                        "intermediate_max_minutes": float(_inter_max),
+                    }
+                ),
             )
         except ValueError as exc:
             st.error(str(exc))

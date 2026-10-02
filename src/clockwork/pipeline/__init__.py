@@ -41,6 +41,7 @@ from clockwork.pipeline.period import (
     run_period,
     run_period_method,
 )
+from clockwork.pipeline.sleep import SleepConfig, detect_sleep, detection_phase, reclassify_sleep
 
 __all__ = [
     "CWT",
@@ -56,6 +57,10 @@ __all__ = [
     "phase_source",
     "run_period",
     "run_period_method",
+    "SleepConfig",
+    "detect_sleep",
+    "detection_phase",
+    "reclassify_sleep",
     "CurationConfig",
     "CurationResult",
     "GroupsConfig",

@@ -205,7 +205,9 @@ it.
         rhythmic calls, and per-method overrides of the shared settings. Each
         method's preprocessing is now recorded on the master (`<method>_prep_*`);
         before, it never reached it.
-  - [ ] sleep, sleep states, HMM, exports.
+  - [x] sleep (`pipeline/sleep.py`): detection and the short / intermediate /
+        long boundaries, which the Sleep states page re-cuts on its own.
+  - [ ] sleep states, HMM, exports.
 - [ ] Phase 2: YAML schema, `run` / `validate` / `init` / `schema`, QC report.
 - [ ] Phase 3: PyPI and conda-forge.
 - [ ] Phase 4: the Export settings button and config helpers.

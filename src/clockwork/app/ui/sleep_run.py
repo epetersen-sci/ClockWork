@@ -30,13 +30,12 @@ classified. Changing the state thresholds invalidates only the second.
 
 import streamlit as st
 
+from clockwork import pipeline
 from clockwork.app.analysis_detection import detect_analyses
-from clockwork.core import sleep_analysis
-from clockwork.core.dataset_meta import PHASE_DD, PHASE_LD, dataset_phase
 
 #: The standard Drosophila sleep definition (Shaw et al. 2000): five minutes of
 #: immobility. Every page that offers the control offers this value first.
-DEFAULT_SLEEP_THRESHOLD_SEC = 300
+DEFAULT_SLEEP_THRESHOLD_SEC = pipeline.sleep.DEFAULT_THRESHOLD_SECONDS
 
 
 def sleep_definition(ds):
@@ -70,26 +69,10 @@ def sleep_definition(ds):
 
 
 def _phase_argument(ds):
-    """Which epoch to detect on, and the label to report it as.
-
-    Always the whole recording when there is one, so the epoch stays a VIEWING
-    choice in each page's own sidebar. Detecting a single epoch writes masks that
-    are missing everywhere else, and every downstream figure is then blank for
-    the other epoch until somebody works out why.
-
-    Detection has no phase-dependent parameter, so this is not a different
-    method: the only difference from two separate runs is that a bout straddling
-    the LD/DD boundary stays one bout instead of being cut at it, which is the
-    more faithful reading of the fly's behaviour.
-
-    A file that IS a single epoch is passed its own phase rather than "both" —
-    ``select_phase`` returns a matching request unchanged, and RAISES if asked
-    for the epoch the file is not, which is the failure worth having.
-    """
-    stamped = dataset_phase(ds)
-    if stamped in (PHASE_LD, PHASE_DD):
-        return stamped, stamped
-    return "both", "LD+DD"
+    """Which epoch to detect on, and the label to report it as. The rule (always
+    the whole recording when there is one) lives in
+    :func:`clockwork.pipeline.detection_phase`, which the CLI uses too."""
+    return pipeline.detection_phase(ds)
 
 
 def ensure_sleep(*, key_prefix, label="Detect sleep"):
@@ -161,13 +144,14 @@ def _run_controls(ds, *, key_prefix, label):
     try:
         # The MASTER, deliberately — see the module docstring. A page that has
         # filtered its own view must not be able to narrow what gets written back.
-        out = sleep_analysis.sleep_analysis(
+        # The state boundaries carry over from whatever the dataset already
+        # records (the Sleep states page may have re-cut them); only the
+        # threshold is this control's.
+        recorded = pipeline.SleepConfig.from_attrs(ds.attrs) or pipeline.SleepConfig()
+        out = pipeline.detect_sleep(
             ds,
-            sleep_threshold_sec=int(threshold),
-            short_max_min=float(ds.attrs.get("sleep_short_max_min") or 30),
-            inter_max_min=float(ds.attrs.get("sleep_inter_max_min") or 60),
-            phase=phase_arg,
-            progress_callback=lambda done, total: bar.progress(
+            recorded.model_copy(update={"threshold_seconds": int(threshold)}),
+            progress=lambda done, total: bar.progress(
                 min(1.0, done / max(total, 1)),
                 text=f"Detecting sleep bouts: fly {done}/{total}",
             ),
