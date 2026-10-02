@@ -28,6 +28,7 @@ from clockwork.app.ui import status
 from clockwork.app.ui.guards import require_dataset
 from clockwork.app.ui.state import invalidate_derived_caches
 from clockwork.core import dam_utilities
+from clockwork.core.dataset_meta import is_split_applied
 
 
 def _apply_group_filter(selected_groups):
@@ -98,6 +99,58 @@ def _reset_group_filter():
     st.session_state.analyses = detect_analyses(st.session_state.dataset)
 
 
+#: Display names for the analyses detect_analyses reports.
+_ANALYSIS_NAMES = {
+    "sleep": "sleep detection",
+    "sleep_states": "sleep states",
+    "lomb_scargle": "Lomb-Scargle",
+    "autocorrelation": "autocorrelation",
+    "cwt": "CWT",
+    "mesa": "MESA",
+    "hmm": "HMM",
+    "sleep_deprivation": "sleep deprivation",
+    "phase_shift": "phase shift",
+}
+
+
+def _undone_by_a_group_change(current, full):
+    """What changing groups here would silently throw away (BACKLOG 22).
+
+    Every change on this page rebuilds the working dataset from ``dataset_full``,
+    the copy made at import. Anything done to the working dataset since — curation,
+    the split, any analysis — is not on that copy, so it goes. This names it,
+    because the change itself says only that "cached results were cleared".
+    """
+    if full is None:
+        return []
+    undone = []
+    curation = pipeline.CurationConfig.from_attrs(current.attrs)
+    if curation is not None and pipeline.CurationConfig.from_attrs(full.attrs) is None:
+        undone.append(
+            "**curation** — flies removed as dead come back, and survivors lose the "
+            "trimming at their death"
+        )
+    if is_split_applied(current) and not is_split_applied(full):
+        undone.append("**the LD/DD split**")
+    ran_now = {k for k, v in detect_analyses(current).items() if v}
+    ran_then = {k for k, v in detect_analyses(full).items() if v}
+    lost = [_ANALYSIS_NAMES.get(k, k) for k in sorted(ran_now - ran_then) if k != "preprocessing"]
+    if lost:
+        undone.append("results of " + ", ".join(lost))
+    return undone
+
+
+def _warn_if_work_would_be_undone(current, full):
+    undone = _undone_by_a_group_change(current, full)
+    if undone:
+        st.warning(
+            "**This undoes work.** Changing groups rebuilds the dataset from the "
+            "copy made at import, which does not include:\n\n"
+            + "\n".join(f"- {item}" for item in undone)
+            + "\n\nChange groups before curating, or re-run those steps afterwards."
+        )
+
+
 ds = require_dataset()
 ds_full = st.session_state.get("dataset_full")
 
@@ -157,6 +210,7 @@ if _regroup_candidates:
             help="Only columns stored per fly at import are offered. Datetime, "
             "monitor, region and id columns are excluded automatically.",
         )
+        _warn_if_work_would_be_undone(ds, ds_full)
         if not _chosen:
             st.caption("Select at least one column.")
         else:
@@ -238,6 +292,7 @@ if ds_full is not None and "group" in ds_full.coords:
             f"({len(selected)} / {len(all_group_options)} groups)."
         )
 
+        _warn_if_work_would_be_undone(ds, ds_full)
         col_apply, col_reset = st.columns(2)
         with col_apply:
             apply_disabled = len(selected) == 0

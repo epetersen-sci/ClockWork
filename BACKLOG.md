@@ -162,3 +162,9 @@ so Export settings will not claim it ran — but a user who curated, then
 narrowed the groups, has lost work they cannot see. Either warn (and name what
 will be undone) when the dataset has curation or split attrs, or apply the
 group change to the current dataset instead of to `dataset_full`.
+
+**Partly addressed (2026-10-02):** the page now warns, beside both group-change
+buttons, naming exactly what would be undone (curation, the split, and which
+analyses' results), and says nothing when there is nothing to lose
+(`tests/test_data_pages_pipeline.py`). The rebuild itself is unchanged; whether
+a group change should instead apply to the current dataset is still open.
