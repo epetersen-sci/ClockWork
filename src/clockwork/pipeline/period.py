@@ -471,6 +471,9 @@ def merge_period_outputs(master: xr.Dataset, result: xr.Dataset) -> xr.Dataset:
     own attrs come across.
     """
     prefixes = ("cwt_", "ls_", "ac_", "mesa_")
+    # The master's fly order, restored at the end: the outer join below SORTS the
+    # union of two differently ordered id indexes (BACKLOG 23).
+    order = master["id"].values
     scalar_vars = [v for v in result.data_vars if result[v].dims == ("id",)]
     array_vars = [
         v
@@ -480,20 +483,36 @@ def merge_period_outputs(master: xr.Dataset, result: xr.Dataset) -> xr.Dataset:
         and result[v].dims != ("id",)
         and v.startswith(prefixes)
     ]
+    # The method's OWN per-fly coords — its rhythmic flags. Not every per-fly
+    # coord on the result: that also carries whatever the phase view added, and
+    # copying it gave an unsplit master a split_minute coord (BACKLOG 23).
     scalar_coords = [
-        c for c in result.coords if c not in ("id", "time") and c in result and result[c].dims == ("id",)
+        c
+        for c in result.coords
+        if str(c).startswith(prefixes) and c in result and result[c].dims == ("id",)
     ]
     to_drop = [v for v in (scalar_vars + array_vars + scalar_coords) if v in master]
     if to_drop:
         master = master.drop_vars(to_drop, errors="ignore")
     if scalar_vars or array_vars:
-        master = master.merge(result[scalar_vars + array_vars], compat="no_conflicts", join="outer")
+        outputs = result[scalar_vars + array_vars]
+        # The variables travel with every coord on their dims, phase-view
+        # artefacts included; keep only their own axes and the method's coords.
+        outputs = outputs.drop_vars(
+            [c for c in outputs.coords if c not in outputs.dims and not str(c).startswith(prefixes)]
+        )
+        master = master.merge(outputs, compat="no_conflicts", join="outer")
     if scalar_coords:
-        master = master.assign_coords({c: result[c] for c in scalar_coords})
+        # Aligned to the master's ids explicitly, rather than trusting
+        # assign_coords to line up two differently ordered indexes.
+        ids = master["id"].values
+        master = master.assign_coords(
+            {c: ("id", result[c].reindex(id=ids).values) for c in scalar_coords}
+        )
     for k, v in result.attrs.items():
         if k.startswith(prefixes):
             master.attrs[k] = v
-    return master
+    return master.reindex(id=order)
 
 
 def run_period_method(

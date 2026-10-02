@@ -35,10 +35,13 @@ CWT_FLIES = ["20250115_17_1", "20250115_17_2", "20250115_18_1", "20250115_18_2"]
 
 
 def _same(a: xr.Dataset, b: xr.Dataset, prefix):
+    """Every ``prefix`` output equal FLY BY FLY. The direct core call returns its
+    flies sorted (its own merge's outer join); the pipeline keeps import order."""
     names = [v for v in a.data_vars if v.startswith(prefix)]
     assert names, f"no {prefix} outputs"
+    b = b.sel(id=a["id"].values)
     for v in names:
-        x, y = a[v].values, b[v].values
+        x, y = a[v].values, b[v].transpose(*a[v].dims).values
         assert x.shape == y.shape, v
         if x.dtype.kind in "fc":
             np.testing.assert_array_equal(x, y, err_msg=v)
@@ -98,17 +101,47 @@ class TestEquivalence:
         _same(via, direct, "cwt_")
 
     def test_the_master_keeps_its_raw_activity(self, example_ds):
-        """The estimators run on detrended activity; it must not come back.
-
-        Compared fly by fly: the merge reorders the flies (an outer join of two
-        differently ordered id indexes sorts them) — which the Analysis tab's
-        merge always did, and which this step reproduces rather than changes.
-        """
+        """The estimators run on detrended activity; it must not come back."""
         cfg = PeriodConfig(methods={"autocorrelation": {}})
         via, _ = pipeline.run_period_method(example_ds, cfg, "autocorrelation")
-        np.testing.assert_array_equal(
-            via["activity"].sel(id=example_ds["id"].values).transpose(*example_ds["activity"].dims).values,
-            example_ds["activity"].values,
+        xr.testing.assert_identical(via["activity"], example_ds["activity"])
+
+
+class TestTheMergeLeavesTheMasterAsItWas:
+    """BACKLOG 23: a period run used to sort the master's flies (an outer join of
+    two differently ordered id indexes sorts the union) and hand an unsplit
+    master the split_minute coord its phase view carried."""
+
+    @pytest.fixture(scope="class")
+    def classified(self, example_ds):
+        cfg = PeriodConfig(methods={"lomb_scargle": {}, "autocorrelation": {}})
+        return pipeline.run_period(example_ds, cfg)
+
+    def test_the_flies_stay_in_import_order(self, example_ds, classified):
+        assert list(classified["id"].values) == list(example_ds["id"].values)
+        assert list(example_ds["id"].values) != sorted(example_ds["id"].values), (
+            "the example must not already be sorted, or this proves nothing"
+        )
+
+    def test_no_coord_arrives_that_is_not_the_method_s_own(self, example_ds, classified):
+        added = set(classified.coords) - set(example_ds.coords)
+        assert "split_minute" not in added
+        assert added <= {"ls_rhythmic", "ac_rhythmic"} | {
+            c for c in added if str(c).startswith(("ls_", "ac_"))
+        }
+
+    def test_the_rhythmic_flags_still_arrive_under_the_right_flies(self, example_ds, classified):
+        assert {"ls_rhythmic", "ac_rhythmic"} <= set(classified.coords)
+        direct = classify_all(classified, period_window=RANGE, run_cwt=False)
+        for flag in ("ls_rhythmic", "ac_rhythmic"):
+            np.testing.assert_array_equal(classified[flag].values, direct[flag].values)
+
+    def test_everything_already_on_the_master_is_untouched(self, example_ds, classified):
+        xr.testing.assert_identical(
+            classified[list(example_ds.data_vars)].drop_vars(
+                [c for c in classified.coords if c not in example_ds.coords], errors="ignore"
+            ).drop_attrs(),
+            example_ds.drop_attrs(),
         )
 
     def test_classification_is_classify_all(self, example_ds):

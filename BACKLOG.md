@@ -189,3 +189,9 @@ fly ORDER (a table exported "in import order", a figure whose rows follow the
 dataset) silently changes order after a period run. Either reindex the merge to
 the master's `id` order, or decide the sorted order is the canonical one and
 apply it at import.
+
+**Fixed (2026-10-02):** the merge restores the master's fly order and copies only
+the method's own coords (`ls_` / `ac_` / `cwt_` / `mesa_`), from the variables as
+well as from the result's coords. `tests/test_pipeline_period.py`
+(`TestTheMergeLeavesTheMasterAsItWas`) pins import order, no `split_minute`, the
+rhythmic flags under the right flies, and the master otherwise untouched.
