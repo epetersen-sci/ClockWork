@@ -27,6 +27,7 @@ from clockwork.pipeline.data import (
     split_report,
     subset,
 )
+from clockwork.pipeline.hmm import HmmConfig, HmmResult, hmm_source, merge_hmm_outputs, run_hmm
 from clockwork.pipeline.period import (
     CWT,
     MESA,
@@ -58,6 +59,11 @@ __all__ = [
     "run_period",
     "run_period_method",
     "SleepConfig",
+    "HmmConfig",
+    "HmmResult",
+    "hmm_source",
+    "merge_hmm_outputs",
+    "run_hmm",
     "detect_sleep",
     "detection_phase",
     "reclassify_sleep",

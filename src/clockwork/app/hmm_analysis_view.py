@@ -4,7 +4,6 @@ Rendered as the second tab of the HMM page; see :mod:`hmm_selection_view` for
 why the two are one page now, and for the one change made to the body.
 """
 
-import copy
 
 import matplotlib
 import streamlit as st
@@ -14,10 +13,10 @@ from clockwork.app.ui.guards import require_dataset
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from clockwork import pipeline
 from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import facet_panels
-from clockwork.core import dam_utilities
 from clockwork.core.hmm_models import (
     STATE_NAMES_4,
     HMMConfig,
@@ -27,8 +26,17 @@ from clockwork.core.hmm_models import (
     plot_hypnogram_heatmap,
     plot_state_occupancy_by_group,
     plot_zt_state_fractions,
-    run_genotype_workflow,
 )
+
+#: The preset radio's labels -> the pipeline's preset names.
+_PRESET_KEY = {
+    "Improved (Recommended)": "improved",
+    "Wiggin et al. 2020": "wiggin",
+    "Harbison 2026": "harbison",
+}
+#: The phase radio's labels -> the pipeline's phases ("full" = the whole
+#: recording, whether or not it has an LD/DD boundary).
+_PHASE_FOR = {"LD": "LD", "DD": "DD", "Both (together)": "full", "Full": "full"}
 
 
 def render():
@@ -46,20 +54,6 @@ def render():
         ds = _by_phase.get(_view, {}).get("ds", master)
     else:
         ds = master
-
-    def _merge_hmm(master_ds, res_ds):
-        """Merge ONLY the HMM result vars (+ hmm_ attrs) from ``res_ds`` onto the clean
-        master. ``res_ds`` is a select_phase() MASKED VIEW — its activity/moving/sleep are
-        NaN-masked / float-upcast, so it must NOT replace the master; we take only
-        hmm_state/hmm_sleep/hmm_confidence (full-axis, decoded in-phase, −1 out-of-phase)."""
-        hmm_vars = [v for v in ("hmm_state", "hmm_sleep", "hmm_confidence") if v in res_ds.data_vars]
-        out = master_ds.drop_vars([v for v in hmm_vars if v in master_ds.data_vars], errors="ignore")
-        if hmm_vars:
-            out = out.merge(res_ds[hmm_vars], compat="no_conflicts", join="outer")
-        for k, v in res_ds.attrs.items():
-            if str(k).startswith("hmm_"):
-                out.attrs[k] = v
-        return out
 
     analyses = detect_analyses(ds)
 
@@ -204,29 +198,27 @@ def render():
         hmm_progress = st.progress(0, text="Fitting HMM models...")
         with st.spinner("Running HMM analysis... This may take several minutes."):
             try:
-                # Build config from preset (preserves non-widget params like n_iter, tol),
-                # then apply the current widget values (which are synced to the preset unless
-                # the user manually overrode them).
-                if preset == "Wiggin et al. 2020":
-                    config = HMMConfig.wiggin()
-                elif preset == "Harbison 2026":
-                    config = HMMConfig.harbison()
-                else:
-                    config = HMMConfig.improved()
-
-                config.n_states = n_states
-                config.training_scope = training_scope
-                config.emission_model = emission_model
-                config.transition_constraints = transition_constraints
-                config.n_restarts = n_restarts
-                config.decoding_method = decoding_method
+                # The preset, with the advanced widgets as overrides of it (they are
+                # synced to the preset unless the user changed them, and the preset
+                # supplies the settings no widget shows, like n_iter and tol). The
+                # same object a config file produces, so what runs here and what
+                # Export settings writes down cannot drift apart.
+                settings = dict(
+                    preset=_PRESET_KEY[preset],
+                    n_states=n_states,
+                    training_scope=training_scope,
+                    emission_model=emission_model,
+                    transition_constraints=transition_constraints,
+                    n_restarts=n_restarts,
+                    decoding_method=decoding_method,
+                )
 
                 # Progress now advances during the long TRAINING phase (per fitted
                 # restart for per_genotype, per fly otherwise), not just the ~1 s
                 # decode. Unit differs by scope, so keep the label generic.
-                if config.training_scope == "per_genotype":
+                if training_scope == "per_genotype":
                     _unit = "restarts fitted"
-                elif config.training_scope in ("per_fly", "per_fly_per_day"):
+                elif training_scope in ("per_fly", "per_fly_per_day"):
                     _unit = "flies fitted"
                 else:
                     _unit = "step"
@@ -237,9 +229,9 @@ def render():
                         frac, text=f"HMM training: {completed}/{total} {_unit} ({frac:.0%})"
                     )
 
-                # Which phase(s) to fit. select_phase() masks out-of-phase minutes to
-                # NaN (the workflow drops them), so each fit is paradigm-pure.
-                _PHASE_MAP = {"LD": "LD", "DD": "DD", "Both (together)": "both", "Full": "auto"}
+                # Which phase(s) to fit. The pipeline fits on a select_phase() view
+                # (out-of-phase minutes NaN, which the workflow drops), so each fit is
+                # paradigm-pure. "Both (separate)" is two independent single-phase fits.
                 _run_phases = (
                     ["LD", "DD"] if hmm_phase_choice == "Both (separate)" else [hmm_phase_choice]
                 )
@@ -251,8 +243,6 @@ def render():
                 per_phase = {}
                 n_fitted_by_phase = {}
                 for _pi, _ph in enumerate(_run_phases):
-                    _src, _phase_used = dam_utilities.select_phase(master, _PHASE_MAP.get(_ph, "auto"))
-                    _cfg = copy.deepcopy(config)
 
                     def _cb(completed, total, _pi=_pi, _ph=_ph):
                         frac = (_pi + (completed / total if total else 0.0)) / _n_ph
@@ -260,14 +250,16 @@ def render():
                             frac, text=f"HMM training [{_ph}]: {completed}/{total} {_unit}"
                         )
 
-                    # verbose=True → convergence info (restarts, LL) in the terminal
-                    _res_ds, _res = run_genotype_workflow(
-                        _src, _cfg, verbose=True, progress_callback=_cb
+                    # verbose=True → convergence info (restarts, LL) in the terminal.
+                    # The clean master + this phase's decoded states (merge_hmm_outputs).
+                    _run = pipeline.run_hmm(
+                        master,
+                        pipeline.HmmConfig(phase=_PHASE_FOR[_ph], **settings),
+                        progress=_cb,
+                        verbose=True,
                     )
-                    _merged = _merge_hmm(master, _res_ds)  # clean master + this phase's hmm_state
-                    _merged.attrs["hmm_phase"] = _phase_used
-                    per_phase[_ph] = {"ds": _merged, "results": _res, "config": _cfg}
-                    n_fitted_by_phase[_ph] = len(_res) if _res else 0
+                    per_phase[_ph] = {"ds": _run.master, "results": _run.models, "config": _run.config}
+                    n_fitted_by_phase[_ph] = len(_run.models) if _run.models else 0
 
                 # Store: Both(separate) keeps both, tagged; else the single result on master.
                 _active_ph = _run_phases[0]

@@ -207,7 +207,14 @@ it.
         before, it never reached it.
   - [x] sleep (`pipeline/sleep.py`): detection and the short / intermediate /
         long boundaries, which the Sleep states page re-cuts on its own.
-  - [ ] sleep states, HMM, exports.
+  - [x] HMM (`pipeline/hmm.py`): a published preset plus overrides of it, fitted
+        on LD, DD or the whole recording. The GUI's "Both (separate)" is two
+        single-phase fits, of which only the viewed one is on the dataset; a
+        config describes what the dataset holds.
+  - [ ] Sleep states needs no step of its own: it re-cuts the sleep boundaries
+        (the sleep step) and otherwise computes for display, which the CLI's
+        tables and QC report cover in phase 2.
+  - [ ] exports.
 - [ ] Phase 2: YAML schema, `run` / `validate` / `init` / `schema`, QC report.
 - [ ] Phase 3: PyPI and conda-forge.
 - [ ] Phase 4: the Export settings button and config helpers.
