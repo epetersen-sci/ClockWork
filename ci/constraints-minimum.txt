@@ -8,7 +8,7 @@
 # tests/test_dependency_floors.py checks that it is.
 numpy==2.0.0
 scipy==1.13.0
-astropy==6.1.0
+astropy==7.2.0
 PyWavelets==1.9.0
 pandas==2.2.2
 xarray==2024.7.0
