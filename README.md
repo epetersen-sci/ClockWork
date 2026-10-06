@@ -200,6 +200,7 @@ file will do. `run` writes, into `results/<experiment>/`:
 | `<experiment>.nc` | the analysed dataset, as the GUI would save it |
 | `tables/*.csv` | per-fly result tables: period summary, sleep totals per LD/DD, sleep states, sleep bouts, HMM occupancy and states |
 | `qc_report.html` | the figures to check the run by eye: who curation removed, the rhythmicity cutoffs, sleep totals, HMM occupancy. Opens offline. |
+| `scalograms/` | each group's averaged CWT scalogram (PNG + CSV), when the config's `cwt` method sets `group_scalograms: true` |
 | `config.resolved.yaml` | every value the run used, defaults included, plus the package versions. Runnable as it stands. |
 | `run.log` | what the analyses printed along the way (per-fly exclusions and the like) |
 

@@ -224,6 +224,8 @@ def _config(key, ctx, opts):
             "voices_per_octave": opts["cwt_voices"],
             "reduction": opts["cwt_method"],
             "preprocessing": pipeline.Preprocessing.from_core(pre["CWT"]),
+            "group_scalograms": bool(opts["cwt_group_averages"]),
+            "scalogram_flies": "rhythmic" if opts["cwt_avg_filter"] else "all",
         }
     elif key == "ls":
         method = {
@@ -261,23 +263,19 @@ def _run_one(key, ctx, opts, progress):
     def _cb(done, total):
         progress.progress(done / total, text=f"{LABELS[key]}: fly {done}/{total}")
 
-    out_dir = label = None
+    out_dir = None
     if key == "cwt" and opts["cwt_group_averages"]:
         # Beside the source monitor data (survives a .nc reload), never the launch dir.
         wd = dam_utilities.resolve_export_dir(ctx.ds, st.session_state.get("working_dir"))
         out_dir = os.path.join(wd, "Averaged Scalograms")
-        # Encodes the slice, so DD and LD reruns don't overwrite each other.
-        label = ctx.phase_selection if ctx.phase_selection in ("DD", "LD") else "full"
 
-    # The MASTER, as every write must be (ARCHITECTURE rule 11).
+    # The MASTER, as every write must be (ARCHITECTURE rule 11). The averages'
+    # file names carry the phase run, so DD and LD reruns don't overwrite each other.
     master, averages = pipeline.run_period_method(
         st.session_state.dataset,
         _config(key, ctx, opts),
         _METHOD_FOR_KEY[key],
         progress=_cb,
-        group_averages=key == "cwt" and bool(opts["cwt_group_averages"]),
-        average_only_rhythmic=bool(opts["cwt_avg_filter"]),
-        phase_label=label,
     )
     store_master(master)
     if key == "cwt":

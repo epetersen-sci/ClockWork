@@ -10,6 +10,7 @@ Outputs, in ``<outputs.dir>/<experiment>/``:
 - ``<experiment>.nc`` — the analysed dataset, with the resolved config in its attrs
 - ``config.resolved.yaml`` — every value used, defaults included, plus versions
 - ``tables/<name>.csv`` — the result tables
+- ``scalograms/`` — the CWT's group-averaged scalograms, when asked for
 - ``qc_report.html`` — the figures to check the run by eye
 - ``run.log`` — everything the analyses printed (per-fly exclusions and the like)
 """
@@ -48,6 +49,7 @@ from clockwork.pipeline.experiment import (
 from clockwork.pipeline.hmm import run_hmm
 from clockwork.pipeline.period import run_period
 from clockwork.pipeline.report import RunRecord, build_report
+from clockwork.pipeline.scalograms import save_group_average_scalograms
 from clockwork.pipeline.sleep import detect_sleep
 
 #: The attr the resolved config is stored under on the saved dataset.
@@ -74,6 +76,8 @@ class RunOutputs:
     dataset: Path | None = None
     tables: dict[str, Path] = field(default_factory=dict)
     report: Path | None = None
+    #: The CWT group-averaged scalograms written (pipeline.scalograms' manifest).
+    scalograms: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -170,11 +174,14 @@ def _run(loaded, record, step, log, progress, core_log) -> RunOutputs:
             record.split_report = split_report(ds, cfg.split)
             ds = split(ds, cfg.split)
 
+    scalogram_arrays: list[dict] = []
     # -- the analyses ------------------------------------------------------------
     an = cfg.analyses
     if an.period is not None:
         with step("period"):
-            ds = run_period(ds, an.period, progress=progress("period"))
+            ds = run_period(
+                ds, an.period, progress=progress("period"), on_scalograms=scalogram_arrays.extend
+            )
     if an.sleep is not None:
         with step("sleep"):
             ds = detect_sleep(ds, an.sleep, progress=progress("sleep"))
@@ -187,6 +194,13 @@ def _run(loaded, record, step, log, progress, core_log) -> RunOutputs:
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs = RunOutputs(out_dir=out_dir, resolved=out_dir / "config.resolved.yaml")
     outputs.warnings = list(record.warnings)
+    if scalogram_arrays:
+        with step("scalograms"):
+            # Before the dataset is saved, so it records where they went.
+            outputs.scalograms = save_group_average_scalograms(
+                scalogram_arrays, str(out_dir / "scalograms"), ds=ds, timestamp=False
+            )
+            record.scalograms = outputs.scalograms
 
     resolved = resolved_config(cfg, group_columns=dam_utilities.get_group_columns(ds) or None)
     prov = provenance() | {

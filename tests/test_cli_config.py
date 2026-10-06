@@ -235,6 +235,18 @@ class TestChecks:
         assert any("split: the metadata has no first_DD_day" in e for e in r.errors)
         assert any("phase DD needs an LD/DD boundary" in e for e in r.errors)
 
+    def test_rhythmic_only_scalograms_need_autocorrelation_s_call(self, raw, tmp_path):
+        cwt = {"group_scalograms": True}
+        r = _check(tmp_path, _minimal(raw, curation={}, analyses={"period": {"methods": {"cwt": cwt}}}))
+        assert any("scalogram_flies: rhythmic" in e for e in r.errors)
+        # Averaging every fly needs no call; nor does a run that makes one.
+        for methods in (
+            {"cwt": {**cwt, "scalogram_flies": "all"}},
+            {"cwt": cwt, "autocorrelation": {}},
+        ):
+            r = _check(tmp_path, _minimal(raw, curation={}, analyses={"period": {"methods": methods}}))
+            assert r.ok, r.errors
+
     def test_a_table_from_an_analysis_that_does_not_run(self, raw, tmp_path):
         r = _check(tmp_path, _minimal(raw, outputs={"tables": ["hmm_states"]}))
         assert any("hmm_states needs analyses.hmm" in e for e in r.errors)
@@ -301,7 +313,7 @@ def ran(raw, tmp_path_factory):
                     "methods": {
                         "autocorrelation": {},
                         "lomb_scargle": {"rhythmic_threshold": 0.2},
-                        "cwt": {"voices_per_octave": 8},
+                        "cwt": {"voices_per_octave": 8, "group_scalograms": True},
                     },
                 },
                 "sleep": {"threshold_seconds": 360},
@@ -344,10 +356,33 @@ class TestRun:
         assert set(sleep["Phase"]) == {"LD", "DD"}
         assert len(sleep) == 2 * ds.sizes["id"]
 
+    def test_the_cwt_group_scalograms_are_written(self, ran):
+        _, out, _ = ran
+        ds = pipeline.load_netcdf(out.dataset)
+        groups = sorted({str(g) for g in ds["group"].values})
+        assert sorted(e["group"] for e in out.scalograms) == groups
+        for entry in out.scalograms:
+            assert Path(entry["png"]).parent == out.out_dir / "scalograms"
+            assert Path(entry["png"]).is_file() and Path(entry["csv"]).is_file()
+            assert entry["phase"] == "DD"
+            # Only autocorrelation's rhythmic flies are averaged (the default).
+            members = ds["ac_rhythmic"].values[ds["group"].values == entry["group"]]
+            assert entry["n"] <= int(members.sum())
+        # The dataset records where they went, and that they were asked for.
+        assert json.loads(ds.attrs["cwt_group_average_paths"]) == out.scalograms
+        assert int(ds.attrs["cwt_group_scalograms"]) == 1
+
     def test_the_qc_report_has_a_section_per_step(self, ran):
         _, out, _ = ran
         text = out.report.read_text(encoding="utf-8")
-        for title in ("Curation", "LD/DD split", "Period &amp; rhythmicity", "Sleep", "HMM sleep states"):
+        for title in (
+            "Curation",
+            "LD/DD split",
+            "Period &amp; rhythmicity",
+            "CWT group-averaged scalograms",
+            "Sleep",
+            "HMM sleep states",
+        ):
             assert f"<h2>{title}</h2>" in text, title
         assert "could not be drawn" not in text
 

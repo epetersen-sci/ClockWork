@@ -351,6 +351,7 @@ class _Source:
     split: bool = False
     slept: bool = False
     stamped_phase: str | None = None  # a saved LD- or DD-only partition
+    ac_classified: bool = False  # carries autocorrelation's rhythmic call
 
 
 def check_config(loaded: LoadedConfig) -> CheckReport:
@@ -430,6 +431,17 @@ def check_config(loaded: LoadedConfig) -> CheckReport:
 
     if an.period is not None:
         m = an.period.methods
+        cwt = m.cwt
+        if cwt is not None and cwt.group_scalograms and cwt.scalogram_flies == "rhythmic":
+            ac_called = (m.autocorrelation is not None and m.autocorrelation.classify) or (
+                source is not None and source.ac_classified
+            )
+            if not ac_called:
+                report.errors.append(
+                    "analyses.period.methods.cwt: scalogram_flies: rhythmic averages the "
+                    "flies autocorrelation calls rhythmic, and nothing makes that call; add "
+                    "autocorrelation under methods, or set scalogram_flies: all"
+                )
         if m.mesa is not None and m.autocorrelation is None:
             report.warnings.append(
                 "analyses.period: MESA has no significance test of its own and borrows "
@@ -519,6 +531,7 @@ def _inspect_netcdf(path: Path, report: CheckReport) -> _Source | None:
             per_fly = [str(c) for c in ds.coords if ds[c].dims == ("id",)]
             has_boundary = "first_DD_day" in ds.coords or "split_minute" in ds.coords
             slept = "sleep" in ds.data_vars
+            ac_classified = "ac_rhythmic" in ds.coords
     except Exception as e:
         report.errors.append(f"inputs.dataset: cannot be opened: {e}")
         return None
@@ -530,6 +543,7 @@ def _inspect_netcdf(path: Path, report: CheckReport) -> _Source | None:
         split=bool(int(attrs.get("split_applied", 0) or 0)) or "split_discard_first_dd_day" in attrs,
         slept=slept,
         stamped_phase=phase if phase in (PHASE_LD, PHASE_DD) else None,
+        ac_classified=ac_classified,
     )
 
 

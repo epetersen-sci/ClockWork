@@ -222,6 +222,12 @@ class CWT(_Classified):
 
     voices_per_octave: Literal[CWT_VOICES] = periodograms.DEFAULT_CWT_VOICES_PER_OCTAVE  # type: ignore[valid-type]
     reduction: Literal[CWT_REDUCTIONS] = DEFAULT_CWT_METHOD  # type: ignore[valid-type]
+    #: Also average each group's scalogram, written as one PNG + CSV per group.
+    group_scalograms: bool = False
+    #: The flies in each group's average: the ones autocorrelation calls
+    #: rhythmic (off-rhythm spectra are mostly noise and smear the mean), or
+    #: all of them (when loss of rhythmicity is the point).
+    scalogram_flies: Literal["rhythmic", "all"] = "rhythmic"
 
     def default_threshold(self):
         return float(cwt_threshold_for(self.reduction))
@@ -388,6 +394,9 @@ def _method_fields_from_attrs(key, attrs, coords):
     elif key == "cwt":
         out["voices_per_octave"] = int(round(1 / float(attrs["cwt_resolution"])))
         out["reduction"] = str(attrs.get("cwt_method", DEFAULT_CWT_METHOD))
+        # Absent on datasets from before these were recorded: no averages then.
+        out["group_scalograms"] = bool(int(attrs.get("cwt_group_scalograms", 0)))
+        out["scalogram_flies"] = str(attrs.get("cwt_scalogram_flies", "rhythmic"))
     elif key == "mesa":
         out["bin_minutes"] = int(round(float(attrs.get("mesa_bin_minutes", 30))))
         order = _plain(attrs.get("mesa_order", periodograms.DEFAULT_MESA_ORDER_RULE))
@@ -521,15 +530,15 @@ def run_period_method(
     key: str,
     progress=None,
     *,
-    group_averages: bool = False,
-    average_only_rhythmic: bool = True,
     phase_label: str | None = None,
 ):
     """Run one estimator and merge its outputs onto ``master``.
 
     Returns ``(master, averages)``: ``averages`` is the CWT's per-group scalogram
-    averages when ``group_averages`` is set (writing them to disk is the
-    caller's business), else ``[]``. Does not classify; see :func:`classify_period`.
+    averages when its config asks for ``group_scalograms`` (writing them to disk
+    is the caller's business; see ``pipeline.scalograms``), else ``[]``.
+    ``phase_label`` names the averages' epoch; it defaults to the phase run.
+    Does not classify; see :func:`classify_period`.
     """
     key = _FROM_GUI_KEY.get(key, key)
     method = config.method(key)
@@ -551,12 +560,15 @@ def run_period_method(
             cwt_method=method.reduction,
             resolution=1 / method.voices_per_octave,
             max_bridge_gap_minutes=eff["max_bridge_gap_minutes"],
-            compute_group_averages=bool(group_averages),
+            compute_group_averages=method.group_scalograms,
             group_coord="group",
-            filter_nonrhythmic_for_average=bool(average_only_rhythmic),
-            phase_label=phase_label,
+            filter_nonrhythmic_for_average=method.scalogram_flies == "rhythmic",
+            phase_label=phase_label or eff["phase"],
             **common,
         )
+        # Recorded even when off, so a later run without them replaces the record.
+        result.attrs["cwt_group_scalograms"] = int(method.group_scalograms)
+        result.attrs["cwt_scalogram_flies"] = method.scalogram_flies
     elif key == "lomb_scargle":
         result = periodograms.lomb_scargle_analysis(
             data, oversampling=method.oversampling, fap_method=method.fap, **common
@@ -603,13 +615,21 @@ def classify_period(master: xr.Dataset, key: str, threshold: float, window) -> x
     return merge_period_outputs(master, out)
 
 
-def run_period(master: xr.Dataset, config: PeriodConfig, progress=None) -> xr.Dataset:
-    """Every configured method, then its rhythmic call: the whole analysis."""
+def run_period(
+    master: xr.Dataset, config: PeriodConfig, progress=None, on_scalograms=None
+) -> xr.Dataset:
+    """Every configured method, then its rhythmic call: the whole analysis.
+
+    ``on_scalograms`` receives the CWT's group-averaged scalograms, when the
+    config asks for them; they are arrays to write, not results on the dataset.
+    """
     for key in METHOD_KEYS:
         method = getattr(config.methods, key)
         if method is None:
             continue
-        master, _ = run_period_method(master, config, key, progress)
+        master, averages = run_period_method(master, config, key, progress)
+        if averages and on_scalograms is not None:
+            on_scalograms(averages)
         if isinstance(method, _Classified) and method.classify:
             window = getattr(method, "rhythmic_window_hours", None) or config.effective(key)["period_range_hours"]
             master = classify_period(master, key, method.threshold(), window)

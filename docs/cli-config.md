@@ -179,6 +179,12 @@ file's name.
   `sleep_bouts`, `hmm_occupancy`, `hmm_states`, `hmm_zt_fractions`. Time-of-day
   tables have one block of rows per LD/DD epoch. The Export page builds the
   period summary from the same function (`pipeline/tables.py`).
+- `scalograms/` — each group's averaged CWT scalogram (PNG + CSV), when the
+  `cwt` method sets `group_scalograms: true`; `scalogram_flies: rhythmic`
+  (the default) averages only the flies autocorrelation calls rhythmic, so it
+  needs autocorrelation's call (`validate` says so), and `all` averages every
+  fly. Both settings are recorded on the dataset (`cwt_group_scalograms`,
+  `cwt_scalogram_flies`), so Export settings carries the Period page's choice.
 - `qc_report.html` — so an unattended run can be checked by eye afterwards: the
   curation heatmaps (kept and removed flies), the split's per-epoch record
   lengths, and for each analysis that ran the plot a person would have looked at
@@ -251,4 +257,6 @@ it.
       whole chain on example_data: config → run → settings read off the saved
       `.nc` → YAML → the same config (`tests/test_cli_config.py`).
 - [ ] Phase 3: PyPI and conda-forge.
-- [ ] Later: CWT group-average scalograms from the CLI; configurable figures.
+- [x] CWT group-averaged scalograms from the CLI (`pipeline/scalograms.py`,
+      shared with the Period page).
+- [ ] Later: configurable figures.

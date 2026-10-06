@@ -75,3 +75,31 @@ class TestCutoffTab:
         back = PeriodConfig.from_attrs(ds.attrs, ds.coords).methods.autocorrelation
         assert back.classify is True
         assert back.rhythmic_threshold == pytest.approx(0.4)
+
+
+class TestGroupScalograms:
+    def test_the_checkbox_is_recorded_and_the_files_are_written(self, app, page_ds, tmp_path):
+        """The page's "group-averaged scalograms" choice is part of the CWT's
+        config, so Export settings carries it to `clockwork run`."""
+        ticks = {f"run_method_{m}": m == "cwt" for m in METHODS}
+        at = app(
+            ds=page_ds,
+            page=PAGE,
+            **{TAB: "Analysis"},
+            **ticks,
+            **SETTINGS,
+            working_dir=str(tmp_path),
+            cwt_compute_group_averages=True,
+            # Every fly: no autocorrelation call exists to filter by.
+            cwt_avg_filter_nonrhythmic=False,
+        )
+        at.button(key="run_period_analysis").click()
+        at.session_state[TAB] = "Analysis"
+        at.run()
+        assert not at.exception, at.exception
+        ds = at.session_state["dataset"]
+        cwt = PeriodConfig.from_attrs(ds.attrs, ds.coords).methods.cwt
+        assert cwt.group_scalograms is True
+        assert cwt.scalogram_flies == "all"
+        pngs = list((tmp_path / "Averaged Scalograms").glob("averaged_scalogram_*_DD_*.png"))
+        assert len(pngs) == len({str(g) for g in page_ds["group"].values})

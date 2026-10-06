@@ -51,6 +51,8 @@ class RunRecord:
     n_imported: int | None = None
     curation: Any = None  # pipeline.CurationResult
     split_report: dict | None = None
+    #: The CWT group-averaged scalograms written (pipeline.scalograms' manifest).
+    scalograms: list = field(default_factory=list)
 
 
 def build_report(ds: xr.Dataset, record: RunRecord, config) -> str:
@@ -63,6 +65,7 @@ def build_report(ds: xr.Dataset, record: RunRecord, config) -> str:
         ("Curation", lambda: _curation_section(record)),
         ("LD/DD split", lambda: _split_section(record)),
         ("Period & rhythmicity", lambda: _period_section(ds, config)),
+        ("CWT group-averaged scalograms", lambda: _scalogram_section(record)),
         ("Sleep", lambda: _sleep_section(ds)),
         ("HMM sleep states", lambda: _hmm_section(ds)),
     ):
@@ -193,6 +196,26 @@ def _period_section(ds, config) -> str:
             )
         counts.append(row)
     return _table(pd.DataFrame(counts)) + "".join(parts)
+
+
+def _scalogram_section(record) -> str:
+    if not record.scalograms:
+        return ""
+    import base64
+
+    out = [
+        "<p>Each group's mean scalogram; the PNG and CSV files are in "
+        "<code>scalograms/</code> beside this report.</p>"
+    ]
+    for entry in record.scalograms:
+        with open(entry["png"], "rb") as fh:
+            data = base64.b64encode(fh.read()).decode("ascii")
+        caption = f"{entry['group']} ({entry['phase']}, {entry['n']} flies)"
+        out.append(
+            f"<figure><img src='data:image/png;base64,{data}' alt='{html.escape(caption)}' "
+            f"style='max-width:100%'><figcaption>{html.escape(caption)}</figcaption></figure>"
+        )
+    return "".join(out)
 
 
 def _sleep_section(ds) -> str:

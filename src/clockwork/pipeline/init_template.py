@@ -111,6 +111,8 @@ def init_text(out: Path, metadata=None, monitors=None) -> str:
         "      lomb_scargle:",
         "      autocorrelation:",
         "      cwt:",
+        "        # group_scalograms: false   # also average each group's scalogram (PNG + CSV)",
+        "        # scalogram_flies: rhythmic  # rhythmic (autocorrelation's call) | all",
         "      # mesa:",
         "  sleep:",
         f"    # threshold_seconds: {sleep['threshold_seconds'].default}",
