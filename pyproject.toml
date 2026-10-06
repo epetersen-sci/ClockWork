@@ -78,6 +78,8 @@ dependencies = [
     # --- Config (the CLI's YAML; see docs/cli-config.md) --------------------
     # v2 API throughout (ConfigDict, model_dump, model_json_schema).
     "pydantic>=2.6",
+    # 6.0.1: the first with wheels for Python 3.12 (6.0 fails to build there).
+    "PyYAML>=6.0.1",
 ]
 
 [project.optional-dependencies]

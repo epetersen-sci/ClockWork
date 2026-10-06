@@ -100,3 +100,17 @@ jobs:
           wheel-env/bin/clockwork scamp --help > /dev/null
           wheel-env/bin/python -c "import clockwork.core.periodograms, clockwork.scamp_export"
           wheel-env/bin/python -c "import clockwork.app, pathlib; p = pathlib.Path(clockwork.app.__file__).parent; assert (p / 'ClockWork.py').is_file() and (p / 'app_pages' / 'home.py').is_file(), 'app files missing from the wheel'"
+
+      - name: Run the example data from a config, as a new user would
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p cli-run && cd cli-run
+          ../wheel-env/bin/clockwork init exp.yaml --metadata "$GITHUB_WORKSPACE"/example_data/metadata.xlsx
+          ../wheel-env/bin/clockwork validate exp.yaml
+          ../wheel-env/bin/clockwork run exp.yaml
+          ../wheel-env/bin/clockwork run exp.yaml && exit 1 || echo "refused to overwrite, as it should"
+          test -s results/example_data/example_data.nc
+          test -s results/example_data/qc_report.html
+          test -s results/example_data/tables/period_summary.csv
+          test -s results/example_data/tables/sleep_summary.csv
+          ../wheel-env/bin/clockwork run results/example_data/config.resolved.yaml --force > /dev/null

@@ -20,6 +20,7 @@ any point and reload without recomputing.
 - [Running the app](#running-the-app)
 - [Quick start](#quick-start)
   - [Try it on the example data](#try-it-on-the-example-data)
+- [Running from a config file](#running-from-a-config-file)
 - [The metadata file](#the-metadata-file)
   - [Column reference](#column-reference)
   - [Which columns each analysis needs](#which-columns-each-analysis-needs)
@@ -172,6 +173,49 @@ carry about a week of extra recording before the window the metadata asks for,
 and everything the monitor kept recording after it. ClockWork reads whatever
 range `start_datetime` and `stop_datetime` describe and ignores the rest, so you
 can point it straight at the raw file your monitor wrote.
+
+---
+
+## Running from a config file
+
+Everything the GUI does for the core analyses — import, groups, curation, the
+LD/DD split, period & rhythmicity, sleep, and the HMM — can also run unattended
+from a YAML file. Phase shift and sleep deprivation are GUI-only for now.
+
+```bash
+clockwork init my_experiment.yaml --metadata path/to/metadata.xlsx
+clockwork validate my_experiment.yaml
+clockwork run my_experiment.yaml
+```
+
+`init` writes a commented file to start from, filled in from your metadata's
+columns: every setting you are likely to change is there, commented out at its
+default. `validate` checks it without running anything — misspelt settings,
+missing files, metadata columns the analyses need, and analyses whose upstream
+step is missing (the HMM needs sleep, sleep needs curation) — and prints what the
+file will do. `run` writes, into `results/<experiment>/`:
+
+| file | what it is |
+|---|---|
+| `<experiment>.nc` | the analysed dataset, as the GUI would save it |
+| `tables/*.csv` | per-fly result tables: period summary, sleep totals per LD/DD, sleep states, sleep bouts, HMM occupancy and states |
+| `qc_report.html` | the figures to check the run by eye: who curation removed, the rhythmicity cutoffs, sleep totals, HMM occupancy. Opens offline. |
+| `config.resolved.yaml` | every value the run used, defaults included, plus the package versions. Runnable as it stands. |
+| `run.log` | what the analyses printed along the way (per-fly exclusions and the like) |
+
+`run` never overwrites an earlier run's outputs unless you pass `--force`.
+Several files run one after another with `clockwork run a.yaml b.yaml c.yaml`.
+
+**The easiest way to get a config is from the GUI.** Explore an experiment in
+the app, then open **Export → Save & export → Settings (.yaml)**: it writes the
+settings of every analysis that has actually run on the dataset — read off the
+dataset itself, so it works on a `.nc` you saved months ago too. Point that file
+at the next experiment's data and run it.
+
+A config lists only what differs from the defaults. Settings a lab shares can
+live in one file that each experiment's file `extends:`. Paths are relative to
+the file that names them. `clockwork schema` prints a JSON Schema for editor
+autocompletion. The full design is in [docs/cli-config.md](docs/cli-config.md).
 
 ---
 
@@ -536,12 +580,14 @@ selected will not describe the data you fit.
 
 ### Save & export
 
-Three tabs. **Dataset (.nc)** saves the dataset to NetCDF, optionally the LD and
+Four tabs. **Dataset (.nc)** saves the dataset to NetCDF, optionally the LD and
 DD partitions as separate files too. **Activity & ZT tables** exports raw
 activity and ZT-binned group averages in GraphPad-friendly Mean/SD/N layout plus
 a matching per-fly long-format file. **Analysis results** exports the period
 summary (optionally filtered to rhythmic flies only), sleep bouts, and — if
 you've run it — HMM state assignments and ZT-binned state fractions.
+**Settings (.yaml)** writes a config file of every analysis that has run, for
+`clockwork run` (see [Running from a config file](#running-from-a-config-file)).
 
 ### SCAMP export
 

@@ -4,7 +4,6 @@ Export Page - Bulk CSV summaries, NetCDF save with compression, download buttons
 
 import os
 
-import pandas as pd
 import streamlit as st
 
 from clockwork.app import export_helpers
@@ -14,6 +13,8 @@ from clockwork.app.ui.guards import require_dataset
 from clockwork.core import dam_utilities, sleep_analysis
 from clockwork.core.dataset_meta import is_split_applied
 from clockwork.core.load_and_save_datasets import save_dataset_to_netcdf
+from clockwork.pipeline import tables as pipeline_tables
+from clockwork.pipeline.export import settings_yaml
 
 ds = require_dataset()
 analyses = detect_analyses(ds)
@@ -30,8 +31,8 @@ experiment.name_control()
 # Lazy tabs: only the open tab's tables are built on a rerun (the results tab
 # assembles per-fly tables, which is real work on a large dataset). Keyed so a
 # Generate button's rerun keeps the tab open.
-tab_dataset, tab_tables, tab_results = st.tabs(
-    ["Dataset (.nc)", "Activity & ZT tables", "Analysis results"],
+tab_dataset, tab_tables, tab_results, tab_settings = st.tabs(
+    ["Dataset (.nc)", "Activity & ZT tables", "Analysis results", "Settings (.yaml)"],
     key="export_tab",
     on_change="rerun",
 )
@@ -246,43 +247,9 @@ if tab_results.open:
         if any(analyses[k] for k in ["cwt", "lomb_scargle", "autocorrelation"]):
             st.subheader("Export Period Analysis Summary (CSV)")
 
-            # One column per quantity, each read off its (id,) array in one go. A .sel
-            # per fly per quantity (about fifteen of them) ran on every rerun of this
-            # page, whichever tab was open.
-            _float_cols = [
-                ("CWT_Period_h", "cwt_period", "cwt_period"),
-                ("CWT_Power", "cwt_power", "cwt_period"),
-                ("CWT_Period_Stability_h", "cwt_period_stability", "cwt_period_stability"),
-                ("CWT_Rhythmicity", "cwt_rhythmicity", "cwt_rhythmicity"),
-                ("LS_Period_h", "ls_period", "ls_period"),
-                ("LS_Power", "ls_power", "ls_period"),
-                ("LS_FAP", "ls_fap", "ls_fap"),
-                ("AC_Period_h", "ac_period", "ac_period"),
-                ("AC_Power_RI", "ac_power", "ac_period"),
-                ("AC_Rhythm_Strength", "ac_rhythm_strength", "ac_rhythm_strength"),
-            ]
-            # Per-algorithm rhythmic flags (written by rhythmicity_classification.classify_*)
-            _flag_cols = [
-                ("LS_Rhythmic", "ls_rhythmic"),
-                ("AC_Rhythmic", "ac_rhythmic"),
-                ("CWT_Rhythmic", "cwt_rhythmic"),
-            ]
-            summary_cols = {"ID": list(ds["id"].values)}
-            if "group" in ds.coords:
-                summary_cols["Group"] = [str(g) for g in ds["group"].values]
-            for col, var, present_if in _float_cols:
-                if present_if in ds.data_vars:
-                    summary_cols[col] = [float(v) for v in ds[var].values]
-            for col, coord in _flag_cols:
-                if coord in ds.coords:
-                    summary_cols[col] = [bool(v) for v in ds[coord].values]
-
-            summary_df = pd.DataFrame(summary_cols)
-            # Alphabetical order for a predictable, GraphPad-friendly layout: by Group
-            # then ID (or just ID when there is no group coord).
-            _sort_keys = [c for c in ("Group", "ID") if c in summary_df.columns]
-            if _sort_keys:
-                summary_df = summary_df.sort_values(_sort_keys).reset_index(drop=True)
+            # The same table `clockwork run` writes (pipeline.tables), so the two
+            # cannot differ in shape.
+            summary_df = pipeline_tables.period_summary(ds)
             st.dataframe(summary_df, width="stretch", height=250)
 
             csv_summary = summary_df.to_csv(index=False)
@@ -422,3 +389,48 @@ if tab_results.open:
                         st.info("HMM ZT-fraction export unavailable (HMM add-in not installed).")
                     except Exception as e:
                         st.error(f"Error: {e}")
+
+
+if tab_settings.open:
+    with tab_settings:
+        # ============================================================
+        # Export settings (docs/cli-config.md)
+        # ============================================================
+        st.subheader("Export settings (YAML)")
+        st.caption(
+            "A config file for the analyses this dataset records, with the settings "
+            "they actually ran with. Run it with `clockwork run <file>` to repeat this "
+            "analysis exactly, or point it at the next experiment's files. Only "
+            "analyses that have run are included, and only settings that differ "
+            "from the defaults are listed."
+        )
+        # Saved beside the metadata (the working folder), so the file's input
+        # paths are short and the folder can be moved as a whole.
+        _settings_dir = dam_utilities.resolve_export_dir(ds, st.session_state.get("working_dir"))
+        _settings_name = f"clockwork_settings{dam_utilities.experiment_suffix(ds)}.yaml"
+        try:
+            _settings_text = settings_yaml(ds, relative_to=_settings_dir)
+        except Exception as e:
+            st.error(f"These settings could not be read off the dataset: {e}")
+            _settings_text = None
+        if _settings_text:
+            st.code(_settings_text, language="yaml")
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                if st.button("Save to working folder", key="save_settings_yaml"):
+                    _path = os.path.join(_settings_dir, _settings_name)
+                    try:
+                        with open(_path, "w", encoding="utf-8", newline="\n") as fh:
+                            fh.write(_settings_text)
+                        st.success(f"Saved to `{_path}`")
+                    except OSError as e:
+                        st.error(f"Could not save: {e}")
+            with _c2:
+                # A download lands somewhere unknown, so its paths are absolute.
+                st.download_button(
+                    "Download",
+                    settings_yaml(ds),
+                    _settings_name,
+                    "text/yaml",
+                    key="dl_settings_yaml",
+                )

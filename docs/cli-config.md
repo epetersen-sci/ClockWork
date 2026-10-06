@@ -89,9 +89,9 @@ analyses:                           # an analysis that is absent does not run
   hmm: { ... }
 
 outputs:
-  dir: results/
+  dir: results/                     # the run writes into results/<experiment>/
   dataset: true
-  tables: [period_summary, sleep_summary]
+  tables: [period_summary, sleep_summary]   # default: every table there is
   qc_report: true
 ```
 
@@ -129,7 +129,17 @@ outputs:
 7. **Outputs are never overwritten** unless the command is given `--force`.
 8. **YAML only** for writing. A JSON Schema is published for editors, which
    gives autocompletion and inline errors for YAML and JSON alike.
-9. **Key names are the contract.** Once released, a key's meaning never
+9. **Naming a section runs it.** `curation:` with nothing under it (or only
+   comments) runs curation with its defaults; leaving the key out does not run
+   it. YAML reads an empty entry as null, and without this rule a step the file
+   names would silently not run. The same goes for each analysis and each
+   period method. For the same reason the resolved config leaves out a step
+   that did not run, rather than writing it as null.
+10. **`extends:` adds and overrides; it cannot remove.** Mappings merge key by
+   key and this file wins. Two exceptions, where merging would change the
+   meaning: `groups.keep` is replaced whole, and naming any input source
+   (`metadata`, `monitors` or `dataset`) replaces the base's source entirely.
+11. **Key names are the contract.** Once released, a key's meaning never
    changes (ARCHITECTURE rule 3); a new meaning is a new key, and a renamed key
    is handled by the `clockwork_config` migration, not by breaking old files.
 
@@ -155,12 +165,31 @@ validation with a message saying so, rather than an unknown-key error.
 
 ## Outputs
 
-- the dataset (`.nc`), with the resolved config in its attrs
-- the tables the file asks for (CSV)
-- a **QC report**, so an unattended run can be checked by eye afterwards: the
-  curation heatmap (who was removed and why), and for each analysis that ran,
-  the plot a person would have looked at before accepting it — the rhythmicity
-  cutoff distributions, the sleep summary, HMM state occupancy.
+All in `<outputs.dir>/<experiment>/`; `experiment` defaults to the config
+file's name.
+
+- `<experiment>.nc` — the dataset, with the resolved config in its attrs
+  (`clockwork_run_config`, JSON)
+- `config.resolved.yaml` — every value used, defaults included, plus a
+  `provenance` block (Python, platform, the versions of every package that can
+  change a number). Loadable and runnable as it stands; `provenance` is ignored
+  on reading.
+- `tables/<name>.csv` — the tables the file asks for, or every one the analyses
+  that ran can make: `period_summary`, `sleep_summary`, `sleep_states`,
+  `sleep_bouts`, `hmm_occupancy`, `hmm_states`, `hmm_zt_fractions`. Time-of-day
+  tables have one block of rows per LD/DD epoch. The Export page builds the
+  period summary from the same function (`pipeline/tables.py`).
+- `qc_report.html` — so an unattended run can be checked by eye afterwards: the
+  curation heatmaps (kept and removed flies), the split's per-epoch record
+  lengths, and for each analysis that ran the plot a person would have looked at
+  before accepting it — the rhythmicity cutoff distributions, the sleep totals,
+  HMM state occupancy. Self-contained (plotly.js embedded), so it opens offline.
+- `run.log` — everything the analyses printed; the terminal shows one line per
+  step instead (`--verbose` shows it all).
+
+`clockwork run` checks the file first (as `validate` does) and refuses to start
+on an error, and refuses an output folder that already has files in it before
+doing any work.
 
 Configurable figures are later work, not v1.
 
@@ -215,6 +244,11 @@ it.
         (the sleep step) and otherwise computes for display, which the CLI's
         tables and QC report cover in phase 2.
   - [ ] exports.
-- [ ] Phase 2: YAML schema, `run` / `validate` / `init` / `schema`, QC report.
+- [x] Phase 2: the config file (`pipeline/experiment.py`), `run` / `validate` /
+      `init` / `schema` (`cli.py`), the tables and QC report
+      (`pipeline/tables.py`, `pipeline/report.py`), and the **Export settings**
+      tab on Save & export (`pipeline/export.py`). The round-trip test runs the
+      whole chain on example_data: config → run → settings read off the saved
+      `.nc` → YAML → the same config (`tests/test_cli_config.py`).
 - [ ] Phase 3: PyPI and conda-forge.
-- [ ] Phase 4: the Export settings button and config helpers.
+- [ ] Later: CWT group-average scalograms from the CLI; configurable figures.

@@ -27,6 +27,15 @@ from clockwork.pipeline.data import (
     split_report,
     subset,
 )
+from clockwork.pipeline.experiment import (
+    ConfigError,
+    ExperimentConfig,
+    LoadedConfig,
+    check_config,
+    load_config,
+    resolved_config,
+)
+from clockwork.pipeline.export import config_from_dataset, settings_yaml
 from clockwork.pipeline.hmm import HmmConfig, HmmResult, hmm_source, merge_hmm_outputs, run_hmm
 from clockwork.pipeline.period import (
     CWT,
@@ -42,9 +51,21 @@ from clockwork.pipeline.period import (
     run_period,
     run_period_method,
 )
+from clockwork.pipeline.run import OutputsExist, RunOutputs, run_experiment
 from clockwork.pipeline.sleep import SleepConfig, detect_sleep, detection_phase, reclassify_sleep
 
 __all__ = [
+    "ConfigError",
+    "ExperimentConfig",
+    "LoadedConfig",
+    "OutputsExist",
+    "RunOutputs",
+    "check_config",
+    "config_from_dataset",
+    "load_config",
+    "resolved_config",
+    "run_experiment",
+    "settings_yaml",
     "CWT",
     "MESA",
     "AmbiguousPhase",
