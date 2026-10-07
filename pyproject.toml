@@ -56,7 +56,10 @@ dependencies = [
     "pandas>=2.2.2",         # first release built against numpy 2
     # merge/concat pass join=/compat= explicitly everywhere (pytest errors on
     # xarray's "default value will change" warning), so no cap is needed.
-    "xarray>=2024.7",
+    # >=2025.8: earlier xarray cannot write pandas 3's text columns to netCDF
+    # ("unsupported dtype for netCDF4 variable: object"), so every save fails
+    # beside pandas 3. Bisected: 2025.7.1 fails, 2025.8.0 passes.
+    "xarray>=2025.8",
     "netCDF4>=1.7.1",        # .nc backend; first release built against numpy 2
     "openpyxl>=3.1.5",       # pandas 3 refuses anything older for read_excel
     # --- Analysis ----------------------------------------------------------
@@ -64,7 +67,10 @@ dependencies = [
     # (_accumulate_sufficient_statistics, _do_mstep, ...), which any minor
     # release may change. Lift the cap only after the HMM tests pass on it.
     "hmmlearn>=0.3.3,<0.4",
-    "statsmodels>=0.14.2",   # MESA (Burg) + multipletests; numpy-2 builds from 0.14.2
+    # MESA (Burg) + multipletests. >=0.14.6: earlier releases break beside
+    # pandas 3 (a changed pandas helper), and MESA's per-fly error handling
+    # turned that into every fly silently having no MESA period.
+    "statsmodels>=0.14.6",
     "joblib>=1.4",           # Parallel(return_as="generator_unordered") is new in 1.4
     # --- UI & plotting -----------------------------------------------------
     # 1.63: st.title(icon=) (router), persist_state= (1.59), st.tabs(key=,
