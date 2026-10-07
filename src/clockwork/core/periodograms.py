@@ -2208,6 +2208,39 @@ _SKIP_MESSAGES = {
 _SKIP_IS_WARNING = {"numerical"}
 
 
+class MesaFitError(RuntimeError):
+    """MESA's Burg fit raised for every fly that reached it."""
+
+
+def _raise_if_burg_failed_for_all(fail_dict, n_succeeded):
+    """Stop MESA when the Burg fit raised for every fly that reached it.
+
+    One fly's fit failing is that fly's problem, and it is skipped like any
+    other. The fit failing for ALL of them is almost never the data: it is the
+    fit itself broken, typically a dependency incompatibility (statsmodels
+    before 0.14.6 beside pandas 3 raised a TypeError on every call). Skipping
+    every fly then reported a run with no MESA periods and no error at all, so
+    this raises instead. Flies skipped before the fit (too little data) count
+    neither way.
+    """
+    raised = [
+        info["detail"]["raised"]
+        for info in fail_dict.values()
+        if isinstance(info.get("detail"), dict) and "raised" in info["detail"]
+    ]
+    if n_succeeded == 0 and raised:
+        from collections import Counter
+
+        message, count = Counter(raised).most_common(1)[0]
+        raise MesaFitError(
+            f"MESA's Burg fit failed for every fly that reached it ({len(raised)} flies), so "
+            f"no MESA period was computed. The error ({count} of {len(raised)}): {message}. "
+            "A fit that fails on every fly is usually a package incompatibility (statsmodels "
+            "with pandas or numpy) rather than the data; check `pip check` and that "
+            "statsmodels is at least the version ClockWork requires."
+        )
+
+
 def _skip_result(fly_id, reason, **detail):
     """Marker a per-fly worker returns (in place of a bare None) to record WHY it
     could not analyse the fly. Picklable across the process pool; the main process
@@ -2796,7 +2829,14 @@ def _mesa_single_fly_worker(args):
     try:
         psd, _, _ = _burg_ar_psd(xb, periods, dt_hours, use_order)
     except Exception as e:
-        return _skip_result(fly_id, "numerical", detail=f"Burg fit raised {type(e).__name__}")
+        # ``raised`` keeps the exception itself: when EVERY fly raises, it is the
+        # message mesa_analysis stops with (see _raise_if_burg_failed_for_all).
+        return _skip_result(
+            fly_id,
+            "numerical",
+            detail=f"Burg fit raised {type(e).__name__}",
+            raised=f"{type(e).__name__}: {e}",
+        )
     if not np.all(np.isfinite(psd)):
         return _skip_result(fly_id, "numerical", detail="non-finite AR PSD")
 
@@ -2961,6 +3001,8 @@ def mesa_analysis(
             _completed += 1
             if progress_callback:
                 progress_callback(_completed, _total)
+
+    _raise_if_burg_failed_for_all(fail_dict, n_succeeded=len(results_dict))
 
     period_grid = _mesa_common_period_grid(min_period, max_period)
 

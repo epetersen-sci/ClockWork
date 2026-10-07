@@ -147,6 +147,7 @@ class _ProgressLine:
 
 def _run(args) -> int:
     from clockwork.core.dam_processor import MetadataError
+    from clockwork.core.periodograms import MesaFitError
     from clockwork.pipeline.data import ImportFailed
     from clockwork.pipeline.experiment import ConfigError
     from clockwork.pipeline.run import OutputsExist, run_experiment
@@ -174,7 +175,7 @@ def _run(args) -> int:
                 progress=_ProgressLine(sys.stdout),
                 verbose=args.verbose,
             )
-        except (ConfigError, OutputsExist, ImportFailed, MetadataError) as e:
+        except (ConfigError, OutputsExist, ImportFailed, MetadataError, MesaFitError) as e:
             _err(f"  error: {e}")
             failed.append(path)
             continue
