@@ -183,13 +183,21 @@ def test_the_transform_is_float64_whatever_the_input(example_ds):
 
 def test_fft_equals_direct_convolution(example_ds):
     """method="fft" is a faster way to compute the same transform, not a new one."""
+    from threadpoolctl import threadpool_limits
+
     sig = _real_signals(example_ds, n=1, n_time=9 * 1440)[0]
     scales = _circadian_scales()
     _c, _f, fast = periodograms.compute_cwt(sig, scales)
-    direct, _ = pywt.cwt(
-        sig, scales, "cmor1.5-1.0", method="conv",
-        precision=periodograms.CWT_WAVELET_PRECISION,
-    )
+    # The direct transform is millions of short dot products, each handed to
+    # OpenBLAS. With its default thread pool (one thread per core, spinning while
+    # idle), two test runs at once on a 32-core Linux box took over three hours
+    # here instead of six seconds; one thread is faster even alone. The setting
+    # changes how the sums are scheduled, not what they are.
+    with threadpool_limits(limits=1):
+        direct, _ = pywt.cwt(
+            sig, scales, "cmor1.5-1.0", method="conv",
+            precision=periodograms.CWT_WAVELET_PRECISION,
+        )
     direct = np.abs(direct) ** 2
     np.testing.assert_allclose(fast, direct, rtol=0, atol=1e-9 * direct.max())
 
