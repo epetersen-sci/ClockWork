@@ -21,6 +21,7 @@ import contextlib
 import datetime as _dt
 import io
 import json
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -192,6 +193,8 @@ def _run(loaded, record, step, log, progress, core_log) -> RunOutputs:
     # -- outputs ---------------------------------------------------------------------
     record.finished = _dt.datetime.now()
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Only now, with the analyses done: a run that fails leaves the last outputs.
+    _clear_previous_outputs(out_dir, loaded.experiment)
     outputs = RunOutputs(out_dir=out_dir, resolved=out_dir / "config.resolved.yaml")
     outputs.warnings = list(record.warnings)
     if scalogram_arrays:
@@ -243,3 +246,23 @@ def _run(loaded, record, step, log, progress, core_log) -> RunOutputs:
     (out_dir / "run.log").write_text(core_log.getvalue(), encoding="utf-8")
     log(f"done: {out_dir}")
     return outputs
+
+
+#: What a run writes into its folder, by name. --force replaces exactly these.
+_OUTPUT_FILES = ("config.resolved.yaml", "qc_report.html", "run.log")
+_OUTPUT_DIRS = ("tables", "scalograms")
+
+
+def _clear_previous_outputs(out_dir: Path, experiment: str) -> None:
+    """Remove an earlier run's outputs before this run writes its own.
+
+    Without this, --force overwrote the files this run writes and left the rest:
+    drop the HMM from a config and rerun, and the old hmm_*.csv sat beside the
+    new tables looking like part of the new run. Only ClockWork's own outputs go;
+    anything else someone put in the folder stays.
+    """
+    for name in (*_OUTPUT_FILES, f"{experiment}.nc"):
+        (out_dir / name).unlink(missing_ok=True)
+    for name in _OUTPUT_DIRS:
+        if (out_dir / name).is_dir():
+            shutil.rmtree(out_dir / name)

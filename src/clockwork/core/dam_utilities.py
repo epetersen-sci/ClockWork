@@ -674,6 +674,14 @@ def group_defining_coords(ds):
     return out
 
 
+def group_label_text(values):
+    """One column's values as they read in a group label: text, with a blank
+    cell ("", None, NaN) written "nan". Shared by every label builder, so a blank
+    pulse_time reads the same on every page."""
+    text = _as_numpy_array(values).astype(str)
+    return np.where(np.isin(text, ["", "None"]), "nan", text)
+
+
 def join_group_labels(columns):
     """Per-fly group labels: each column's values as text, joined with '-'.
 
@@ -683,10 +691,7 @@ def join_group_labels(columns):
     A blank cell ("", None, NaN) reads "nan", kept explicit so a partially
     annotated fly stays visibly distinct.
     """
-    parts = []
-    for values in columns:
-        text = _as_numpy_array(values).astype(str)
-        parts.append(np.where(np.isin(text, ["", "None"]), "nan", text))
+    parts = [group_label_text(values) for values in columns]
     label = parts[0]
     for p in parts[1:]:
         label = np.char.add(np.char.add(label, "-"), p)

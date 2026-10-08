@@ -93,6 +93,17 @@ class TestEachColumnHasOneName:
         # pulse_time as written; the duration is a number, so it reads as one.
         assert "Mito-ZT21-20.0" in {str(g) for g in pulse_ds_built["group"].values}
 
+    def test_a_blank_reads_nan_in_every_label(self, pulse_ds_built):
+        """The phase-shift page builds its own labels; an unpulsed control's
+        pulse_time is "" and must read "nan" there too, not vanish ("Mito_")."""
+        labels, _ = ps.group_labels(pulse_ds_built, ("genotype", "pulse_duration_min"))
+        assert set(labels) >= {"Mito_20.0", "Mito_0.0"}
+        blank = pulse_ds_built.assign_coords(
+            pulse_time=("id", ["" if "noLP" in str(i) else "ZT21" for i in pulse_ds_built["id"].values])
+        )
+        labels, _ = ps.group_labels(blank, ("genotype", "pulse_time"))
+        assert set(labels) == {"Mito_ZT21", "Mito_nan", "per_ZT21", "per_nan"}
+
     def test_spellings_are_the_owners_to_choose(self, pulse_metadata):
         """"ZT21" and "zt21" are the same hour but kept apart: a lab may write them
         differently on purpose, and it is not ClockWork's call to merge them."""

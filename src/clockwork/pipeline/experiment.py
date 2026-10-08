@@ -68,7 +68,12 @@ TABLE_NEEDS: dict[str, str] = {
 }
 
 #: Keys whose value is a path, relative to the file that names it.
-_PATH_KEYS = (("inputs", "metadata"), ("inputs", "monitors"), ("inputs", "dataset"), ("outputs", "dir"))
+_PATH_KEYS = (
+    ("inputs", "metadata"),
+    ("inputs", "monitors"),
+    ("inputs", "dataset"),
+    ("outputs", "dir"),
+)
 _SOURCE_KEYS = ("metadata", "monitors", "dataset")
 #: Sections where an empty entry (``curation:`` with nothing under it) means
 #: "run this with its defaults". YAML reads an empty entry as null, and null
@@ -216,7 +221,9 @@ def load_config(path) -> LoadedConfig:
     # The default output folder is relative to the file too; pin it now, so the
     # config means the same wherever it is written out again.
     out_dir = _relative_to(config.outputs.dir, path.parent)
-    config = config.model_copy(update={"outputs": config.outputs.model_copy(update={"dir": str(out_dir)})})
+    config = config.model_copy(
+        update={"outputs": config.outputs.model_copy(update={"dir": str(out_dir)})}
+    )
     return LoadedConfig(config, path, chain)
 
 
@@ -298,7 +305,8 @@ def _migrate(data: dict, path: Path) -> dict:
     translated (docs rule 11)."""
     if "clockwork_config" not in data:
         raise ConfigError(
-            path, [f"clockwork_config: missing; put `clockwork_config: {CONFIG_VERSION}` at the top"]
+            path,
+            [f"clockwork_config: missing; put `clockwork_config: {CONFIG_VERSION}` at the top"],
         )
     return data
 
@@ -311,7 +319,7 @@ def format_validation_error(e: ValidationError) -> list[str]:
         msg = err["msg"]
         for prefix in ("Value error, ", "Assertion failed, "):
             if msg.startswith(prefix):
-                msg = msg[len(prefix):]
+                msg = msg[len(prefix) :]
         if err["type"] == "extra_forbidden":
             msg = "not a setting here (misspelt?)"
         where = ".".join(loc) or "file"
@@ -323,7 +331,9 @@ def format_validation_error(e: ValidationError) -> list[str]:
 
 def _is_union_tag(part) -> bool:
     # pydantic names the union member it tried ('list[...]', 'function-after[...]').
-    return isinstance(part, str) and ("[" in part or part in {"str", "int", "float", "bool", "none"})
+    return isinstance(part, str) and (
+        "[" in part or part in {"str", "int", "float", "bool", "none"}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +362,8 @@ class _Source:
     slept: bool = False
     stamped_phase: str | None = None  # a saved LD- or DD-only partition
     ac_classified: bool = False  # carries autocorrelation's rhythmic call
+    #: analyses whose results the saved dataset already holds ("period", "hmm")
+    results: frozenset = frozenset()
 
 
 def check_config(loaded: LoadedConfig) -> CheckReport:
@@ -424,7 +436,10 @@ def check_config(loaded: LoadedConfig) -> CheckReport:
             for key in METHOD_KEYS:
                 if getattr(an.period.methods, key) is not None:
                     _check_phase(
-                        report, f"analyses.period ({key})", an.period.effective(key)["phase"], source
+                        report,
+                        f"analyses.period ({key})",
+                        an.period.effective(key)["phase"],
+                        source,
                     )
         if an.hmm is not None:
             _check_phase(report, "analyses.hmm", an.hmm.phase, source)
@@ -452,7 +467,8 @@ def check_config(loaded: LoadedConfig) -> CheckReport:
     # -- outputs -------------------------------------------------------------------
     ran = {k for k in ("period", "sleep", "hmm") if getattr(an, k) is not None}
     if source is not None:
-        ran |= {"sleep"} if source.slept else set()
+        # A table can also come from results the input dataset already holds.
+        ran |= ({"sleep"} if source.slept else set()) | source.results
     for table in cfg.outputs.tables or []:
         if TABLE_NEEDS[table] not in ran:
             report.errors.append(
@@ -460,7 +476,9 @@ def check_config(loaded: LoadedConfig) -> CheckReport:
             )
     out_dir = loaded.output_dir
     if out_dir.is_dir() and any(out_dir.iterdir()):
-        report.warnings.append(f"{out_dir} already has files in it; `clockwork run` will need --force")
+        report.warnings.append(
+            f"{out_dir} already has files in it; `clockwork run` will need --force"
+        )
     return report
 
 
@@ -532,6 +550,14 @@ def _inspect_netcdf(path: Path, report: CheckReport) -> _Source | None:
             has_boundary = "first_DD_day" in ds.coords or "split_minute" in ds.coords
             slept = "sleep" in ds.data_vars
             ac_classified = "ac_rhythmic" in ds.coords
+            results = frozenset(
+                name
+                for name, var in (
+                    ("period", ("ls_period", "ac_period", "cwt_period", "mesa_period")),
+                    ("hmm", ("hmm_state",)),
+                )
+                if any(v in ds.data_vars for v in var)
+            )
     except Exception as e:
         report.errors.append(f"inputs.dataset: cannot be opened: {e}")
         return None
@@ -540,10 +566,12 @@ def _inspect_netcdf(path: Path, report: CheckReport) -> _Source | None:
         columns=[_COLUMN_FOR.get(c, c) for c in per_fly],
         has_boundary=has_boundary,
         curated="curation_min_alive_days" in attrs,
-        split=bool(int(attrs.get("split_applied", 0) or 0)) or "split_discard_first_dd_day" in attrs,
+        split=bool(int(attrs.get("split_applied", 0) or 0))
+        or "split_discard_first_dd_day" in attrs,
         slept=slept,
         stamped_phase=phase if phase in (PHASE_LD, PHASE_DD) else None,
         ac_classified=ac_classified,
+        results=results,
     )
 
 
@@ -583,7 +611,9 @@ def resolved_config(config: ExperimentConfig, group_columns=None) -> dict[str, A
             d["preprocessing"] = Preprocessing.from_core(m.preprocess()).model_dump(mode="json")
             if isinstance(m, _Classified):
                 d["rhythmic_threshold"] = m.threshold()
-                d["rhythmic_window_hours"] = list(m.rhythmic_window_hours or eff["period_range_hours"])
+                d["rhythmic_window_hours"] = list(
+                    m.rhythmic_window_hours or eff["period_range_hours"]
+                )
             methods[key] = d
         out["analyses"]["period"]["methods"] = methods
     hmm = config.analyses.hmm
@@ -626,7 +656,9 @@ def provenance() -> dict[str, Any]:
 
 def dump_yaml(data: dict, header: str = "") -> str:
     """YAML in the file's order (not sorted), with an optional comment header."""
-    body = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=None, width=88)
+    body = yaml.safe_dump(
+        data, sort_keys=False, allow_unicode=True, default_flow_style=None, width=88
+    )
     if header:
         header = "".join(f"# {line}".rstrip() + "\n" for line in header.splitlines())
     return header + body

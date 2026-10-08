@@ -455,6 +455,42 @@ class TestRunFromASavedDataset:
         assert any("already split" in e for e in r.errors)
 
 
+    def test_tables_can_come_from_results_already_on_it(self, ran, tmp_path):
+        """No analyses section: the period and HMM tables come from the results
+        the saved dataset already holds, and validate must allow asking for them."""
+        _, out, _ = ran
+        r = _check(
+            tmp_path,
+            "clockwork_config: 1\n"
+            f"inputs: {{dataset: {out.dataset.as_posix()}}}\n"
+            "outputs: {tables: [period_summary, hmm_states]}\n",
+        )
+        assert r.ok, r.errors
+
+
+@requires_example_data
+class TestForce:
+    def test_force_replaces_the_last_run_and_nothing_else(self, raw, tmp_path):
+        cfg = _write(
+            tmp_path / "f.yaml",
+            _minimal(raw, curation={}, analyses={"period": {"methods": {"lomb_scargle": {}}}}),
+        )
+        loaded = load_config(cfg)
+        first = run_experiment(loaded)
+        # What an earlier, different run would have left behind, and a file of
+        # the user's own.
+        (first.out_dir / "tables" / "hmm_states.csv").write_text("stale")
+        (first.out_dir / "scalograms").mkdir()
+        (first.out_dir / "scalograms" / "averaged_scalogram_old.png").write_bytes(b"stale")
+        (first.out_dir / "my_notes.txt").write_text("keep me")
+
+        second = run_experiment(loaded, force=True)
+        assert set(second.tables) == {"period_summary"}
+        assert not (second.out_dir / "tables" / "hmm_states.csv").exists()
+        assert not (second.out_dir / "scalograms").exists()
+        assert (second.out_dir / "my_notes.txt").read_text() == "keep me"
+        assert second.dataset.is_file() and second.report.is_file()
+
 # ---------------------------------------------------------------------------
 # The commands
 # ---------------------------------------------------------------------------

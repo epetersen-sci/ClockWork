@@ -92,7 +92,7 @@ from clockwork.core.calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
-from clockwork.core.dam_utilities import _parse_zt_hour
+from clockwork.core.dam_utilities import _parse_zt_hour, group_label_text
 
 MINUTES_PER_DAY = 1440
 
@@ -745,7 +745,9 @@ def group_labels(ds, group_by):
         raise ValueError(
             f"None of {list(group_by)} are coordinates on this dataset; cannot form groups."
         )
-    parts = [np.asarray(ds[c].values).astype(str) for c in cols]
+    # A blank cell reads "nan", as in ds['group'] (dam_utilities.group_label_text):
+    # an unpulsed control's pulse_time is "", and "A_" said nothing about it.
+    parts = [group_label_text(ds[c].values) for c in cols]
     return np.array(["_".join(vals) for vals in zip(*parts)]), cols
 
 

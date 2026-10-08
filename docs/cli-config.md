@@ -126,7 +126,11 @@ outputs:
    sleep threshold changes every downstream number, so it must be a choice.
 6. **One experiment per file.** Batches are `clockwork run a.yaml b.yaml ...`;
    settings shared across a lab go in a file named by `extends:`.
-7. **Outputs are never overwritten** unless the command is given `--force`.
+7. **Outputs are never overwritten** unless the command is given `--force`. With
+   it, the earlier run's outputs are removed (the `.nc`, `tables/`, `scalograms/`,
+   the report, the resolved config and the log) once the new run's analyses have
+   succeeded, so no table from a previous configuration survives beside the new
+   ones; anything else in the folder is left alone.
 8. **YAML only** for writing. A JSON Schema is published for editors, which
    gives autocompletion and inline errors for YAML and JSON alike.
 9. **Naming a section runs it.** `curation:` with nothing under it (or only

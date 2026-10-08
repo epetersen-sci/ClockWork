@@ -204,7 +204,9 @@ file will do. `run` writes, into `results/<experiment>/`:
 | `config.resolved.yaml` | every value the run used, defaults included, plus the package versions. Runnable as it stands. |
 | `run.log` | what the analyses printed along the way (per-fly exclusions and the like) |
 
-`run` never overwrites an earlier run's outputs unless you pass `--force`.
+`run` never overwrites an earlier run's outputs unless you pass `--force`, which
+replaces them, all of them, once the new run's analyses have finished; files of
+your own in that folder are left alone.
 Several files run one after another with `clockwork run a.yaml b.yaml c.yaml`.
 
 **The easiest way to get a config is from the GUI.** Explore an experiment in
