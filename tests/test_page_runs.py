@@ -15,10 +15,8 @@ test_curation, test_sleep_deprivation). This file is about the pages.
 
 import pytest
 
-import dam_utilities
-import periodograms
-import sleep_analysis
-from preprocessing import ac_default_config, ls_default_config, preprocess_activity
+from clockwork.core import dam_utilities, periodograms, sleep_analysis
+from clockwork.core.preprocessing import ac_default_config, ls_default_config, preprocess_activity
 
 FLIES = ["20250115_17_1", "20250115_17_2", "20250115_18_1", "20250115_18_2"]
 
@@ -73,7 +71,8 @@ def period_results_ds(page_ds):
     )
     ls_vars = [v for v in ls.data_vars if v.startswith("ls_")]
     ac_vars = [v for v in ac.data_vars if v.startswith("ac_")]
-    return page_ds.merge(ls[ls_vars]).merge(ac[ac_vars])
+    merge_kw = {"compat": "no_conflicts", "join": "outer"}
+    return page_ds.merge(ls[ls_vars], **merge_kw).merge(ac[ac_vars], **merge_kw)
 
 
 def test_rhythmicity_classification_runs(app, period_results_ds):

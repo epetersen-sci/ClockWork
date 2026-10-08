@@ -71,7 +71,7 @@ def test_analysis_tab_offers_one_checkbox_per_method_and_one_button(app, master_
 
 
 def test_run_analysis_runs_only_the_ticked_methods(app, master_ds, monkeypatch):
-    import periodograms
+    from clockwork.core import periodograms
 
     called = []
 

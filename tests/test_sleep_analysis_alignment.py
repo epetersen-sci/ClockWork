@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-import sleep_analysis as sa
+from clockwork.core import sleep_analysis as sa
 
 
 def _run(ds):

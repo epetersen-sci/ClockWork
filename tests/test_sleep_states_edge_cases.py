@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import plotting
-import sleep_state_metrics as ssm
+from clockwork.core import plotting
+from clockwork.core import sleep_state_metrics as ssm
 
 STATES = ("standard", "short", "intermediate", "long")
 
@@ -147,7 +147,7 @@ class TestShortRecordings:
     def test_an_epoch_too_short_to_transform_returns_empty(self, states_ds):
         """Fewer bins than the CWT needs must yield an empty Dataset, not a
         crash — the page checks `len(data_vars)` and says so."""
-        from periodograms import sleep_cwt_analysis
+        from clockwork.core.periodograms import sleep_cwt_analysis
 
         tiny = states_ds.isel(time=slice(0, 30))
         out = sleep_cwt_analysis(tiny, states=("long",), phase="DD", full_range=(1, 32))
@@ -156,7 +156,7 @@ class TestShortRecordings:
     def test_chi_squared_on_a_series_shorter_than_the_period(self):
         """Trial periods longer than the series have no complete cycle. They
         must come back NaN rather than as a spuriously huge Qp."""
-        from periodograms import _chi_sq_periodogram
+        from clockwork.core.periodograms import _chi_sq_periodogram
 
         short = np.sin(np.linspace(0, 4 * np.pi, 40))
         periods = np.array([16.0, 24.0, 32.0])
@@ -165,7 +165,7 @@ class TestShortRecordings:
         assert np.all(np.isnan(res["power"]))
 
     def test_chi_squared_on_an_empty_series(self):
-        from periodograms import _chi_sq_periodogram
+        from clockwork.core.periodograms import _chi_sq_periodogram
 
         res = _chi_sq_periodogram(np.array([]), np.array([24.0]), sampling_min=5)
         assert np.isnan(res["power"]).all()
@@ -173,7 +173,7 @@ class TestShortRecordings:
     def test_chi_squared_on_a_flat_series(self):
         """Zero variance means the denominator is zero. No division warning,
         no inf."""
-        from periodograms import _chi_sq_periodogram
+        from clockwork.core.periodograms import _chi_sq_periodogram
 
         flat = np.ones(2000)
         res = _chi_sq_periodogram(flat, np.array([24.0]), sampling_min=5)
@@ -243,16 +243,15 @@ class TestEpochWithoutMasks:
     @pytest.fixture(scope="class")
     def ld_only_ds(self):
         """Sleep computed on LD only, over a dataset that also spans DD."""
+        from clockwork.core import sleep_analysis
         from conftest import _build_with_sleep_structure
-
-        import sleep_analysis
 
         return sleep_analysis.sleep_analysis(
             _build_with_sleep_structure(), phase="LD", sleep_threshold_sec=300
         )
 
     def test_masks_are_present_but_unmeasured(self, ld_only_ds):
-        from dam_utilities import select_phase
+        from clockwork.core.dam_utilities import select_phase
 
         dd, _ = select_phase(ld_only_ds, phase="DD")
         # Present: every figure's input variable is there to be found.
@@ -317,7 +316,7 @@ def test_initiation_bouts_are_scoped_to_the_epoch(states_ds):
     epoch. The two epochs must PARTITION the bouts — no bout counted twice, and
     none dropped.
     """
-    from dam_utilities import select_phase
+    from clockwork.core.dam_utilities import select_phase
 
     def counted(phase):
         view, _ = select_phase(states_ds, phase=phase)

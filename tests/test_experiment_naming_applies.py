@@ -11,8 +11,8 @@ the loaded dataset cannot disagree.
 
 import xarray as xr
 
-import export_helpers
-from ui import charts, experiment
+from clockwork.app import export_helpers
+from clockwork.app.ui import charts, experiment
 
 
 class TestApplyingToTheLoadedDataset:

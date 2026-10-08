@@ -13,9 +13,9 @@ which is a silent wrong answer rather than a visible failure.
 
 import xarray as xr
 
-import dam_utilities
-import export_helpers
-from dam_utilities import (
+from clockwork.app import export_helpers
+from clockwork.core import dam_utilities
+from clockwork.core.dam_utilities import (
     experiment_name_from_path,
     experiment_suffix,
     sanitize_experiment_name,

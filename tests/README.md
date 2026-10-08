@@ -1,7 +1,7 @@
 # Tests
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
@@ -24,7 +24,7 @@ def test_something(app, master_ds):
 
 Two things matter about that fixture:
 
-- It always initialises from the **entrypoint** (`app/ClockWork.py`) and then
+- It always initialises from the **entrypoint** (`src/clockwork/app/ClockWork.py`) and then
   calls `switch_page`, because `st.navigation` resolves page paths relative to
   the entrypoint. Passing a child page to `AppTest.from_file` makes it the main
   script and changes how those paths resolve.
@@ -77,9 +77,6 @@ Each regenerated file begins with a `_summary` block, for example the median
 period and the number of rhythmic flies per genotype. Read it, and the diff,
 before you commit. A missing snapshot fails the test; it is never written
 automatically.
-
-Tests marked `gpu` need CUDA with torch and ptwt, and skip everywhere else,
-including CI. On a GPU machine, run them with `python -m pytest -m gpu`.
 
 ## What is covered
 

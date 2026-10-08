@@ -19,13 +19,13 @@ compared at the same free-running age.
 
 import numpy as np
 import pytest
+
+from clockwork.core import phase_shift as ps
 from conftest import (
     PULSE_BASELINE_GAP_H,
     PULSE_DD_DAY,
     PULSE_SHIFT_H,
 )
-
-import phase_shift as ps
 
 GROUP_BY = ("genotype", "condition")
 TOL = 0.2  # hours; the peak is read off a 1-minute trace after a 12 h filter

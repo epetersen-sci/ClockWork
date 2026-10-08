@@ -30,7 +30,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-import sleep_analysis
+from clockwork.core import sleep_analysis
 
 N_TIME = 300
 ONSET = 100

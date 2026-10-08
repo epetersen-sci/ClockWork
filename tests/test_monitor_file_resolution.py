@@ -22,11 +22,14 @@ import shutil
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import REPO_ROOT
 
-import dam_processor
-import dam_utilities
-from dam_processor import _find_monitor_file, _monitor_file_candidates, _parse_region_ids
+from clockwork.core import dam_processor, dam_utilities
+from clockwork.core.dam_processor import (
+    _find_monitor_file,
+    _monitor_file_candidates,
+    _parse_region_ids,
+)
+from conftest import REPO_ROOT
 
 EXAMPLE = REPO_ROOT / "example_data"
 

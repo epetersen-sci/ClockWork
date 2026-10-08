@@ -33,9 +33,9 @@ def _source_of(module_path, func_name):
     Pages are top-level scripts that call st.* at import time, so they cannot be
     imported here — parse the text instead.
     """
-    from conftest import REPO_ROOT
+    from conftest import PKG_ROOT
 
-    path = REPO_ROOT / "app" / (module_path.replace(".", "/") + ".py")
+    path = PKG_ROOT / "app" / (module_path.replace(".", "/") + ".py")
     src = path.read_text(encoding="utf-8")
     marker = f"def {func_name}("
     idx = src.index(marker)
@@ -95,7 +95,7 @@ def test_streamlit_underscore_rule_still_holds():
 def test_fingerprint_distinguishes_fly_subsets(master_ds):
     """dataset_fingerprint must change when the fly set changes — that is the whole
     reason it is passed to the cached helpers."""
-    from dataset_meta import dataset_fingerprint
+    from clockwork.core.dataset_meta import dataset_fingerprint
 
     full = dataset_fingerprint(master_ds)
     subset = dataset_fingerprint(master_ds.isel(id=slice(0, 2)))
@@ -106,8 +106,8 @@ def test_fingerprint_notices_a_regroup(master_ds):
     """Regrouping rewrites ONLY the `group` coord — same flies, same time axis,
     same phase. Without the group labels in the key, every cached group-level
     figure keeps being served against labels that no longer exist."""
-    import dam_utilities
-    from dataset_meta import dataset_fingerprint
+    from clockwork.core import dam_utilities
+    from clockwork.core.dataset_meta import dataset_fingerprint
 
     before = dataset_fingerprint(master_ds)
     after = dataset_fingerprint(dam_utilities.regroup_dataset(master_ds, ["genotype"]))
@@ -117,7 +117,7 @@ def test_fingerprint_notices_a_regroup(master_ds):
 def test_fingerprint_notices_new_sleep_parameters(master_ds):
     """Re-running sleep detection with a different threshold changes every
     sleep-derived figure and moves nothing else in the key."""
-    from dataset_meta import dataset_fingerprint
+    from clockwork.core.dataset_meta import dataset_fingerprint
 
     changed = master_ds.copy()
     changed.attrs["sleep_threshold_seconds"] = 600
@@ -130,7 +130,7 @@ def test_invalidate_clears_the_streamlit_memo_too(monkeypatch):
     other is how a stale figure survives a regroup."""
     import streamlit as st
 
-    from ui import state
+    from clockwork.app.ui import state
 
     called = []
     monkeypatch.setattr(st.cache_data, "clear", lambda: called.append(True))

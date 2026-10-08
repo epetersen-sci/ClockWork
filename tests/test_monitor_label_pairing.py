@@ -30,10 +30,9 @@ import shutil
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import REPO_ROOT
 
-import dam_processor
-import dam_utilities
+from clockwork.core import dam_processor, dam_utilities
+from conftest import REPO_ROOT
 
 EXAMPLE = REPO_ROOT / "example_data"
 

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from dataset_meta import (
+from clockwork.core.dataset_meta import (
     PHASE_DD,
     PHASE_FULL,
     PHASE_LD,
@@ -67,7 +67,7 @@ class TestLegacyAliasStillRead:
 
 class TestAliasNoLongerWritten:
     def test_split_xarray_dataset_writes_canonical_only(self, master_ds):
-        import dam_utilities
+        from clockwork.core import dam_utilities
 
         out = dam_utilities.split_xarray_dataset(
             master_ds, phase="LD", gap_threshold_minutes=60

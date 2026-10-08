@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import export_helpers as ex
+from clockwork.app import export_helpers as ex
 
 
 @pytest.fixture
@@ -168,7 +168,7 @@ class TestLoadingANetCDFCanRenameTheField:
     """Bug 3: the field is created in the first tab, the loader runs in another."""
 
     def test_the_name_waits_for_the_widget_instead_of_raising(self, app, master_ds, tmp_path):
-        from load_and_save_datasets import save_dataset_to_netcdf
+        from clockwork.core.load_and_save_datasets import save_dataset_to_netcdf
 
         nc = tmp_path / "exp9_run.nc"
         named = master_ds.copy()
@@ -197,7 +197,7 @@ class TestLoadingANetCDFCanRenameTheField:
     def test_the_parked_name_is_consumed_once(self, app, master_ds, tmp_path):
         """Popped rather than read, so an edit made after the load is not undone on
         the next rerun."""
-        from load_and_save_datasets import save_dataset_to_netcdf
+        from clockwork.core.load_and_save_datasets import save_dataset_to_netcdf
 
         nc = tmp_path / "exp9_run.nc"
         named = master_ds.copy()
@@ -210,7 +210,7 @@ class TestLoadingANetCDFCanRenameTheField:
         at = at.text_input(key="experiment_name_input").set_value("my own name").run()
         at = at.run()
         assert at.session_state["experiment_name_input"] == "my own name"
-        from ui.experiment import PENDING
+        from clockwork.app.ui.experiment import PENDING
 
         assert PENDING not in at.session_state
 

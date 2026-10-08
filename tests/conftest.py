@@ -20,7 +20,6 @@ committed ``example_data``, imported through the real loader rather than stored 
 a ``.nc``, for the tests that ask what an estimator says about real flies.
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -28,14 +27,14 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-ENTRYPOINT = REPO_ROOT / "app" / "ClockWork.py"
+import clockwork
 
-# core/ and app/ are import roots at runtime; the router sets sys.path once, but
-# tests import from them directly (and before any page runs), so do it here too.
-for _p in (REPO_ROOT / "core", REPO_ROOT / "app", REPO_ROOT):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# The package as it is actually imported. With `pip install -e .` that is the
+# checkout's src/clockwork; resolving it from the module rather than from
+# REPO_ROOT means a test reading source by path reads the code that runs.
+PKG_ROOT = Path(clockwork.__file__).resolve().parent
+ENTRYPOINT = PKG_ROOT / "app" / "ClockWork.py"
 
 
 N_DAYS = 6
@@ -254,7 +253,7 @@ def states_ds():
     the bout table, the state labels and the masks are guaranteed consistent
     with each other the way the pages require.
     """
-    import sleep_analysis
+    from clockwork.core import sleep_analysis
 
     return sleep_analysis.sleep_analysis(
         _build_with_sleep_structure(), phase="both", sleep_threshold_sec=300
@@ -318,7 +317,11 @@ def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
             "genotype": ("id", np.array(genotypes)),
             "condition": ("id", np.array(conditions)),
             "flybox": ("id", np.array(boxes)),
-            "pulse_zt_hour": ("id", np.array(zt, dtype=float)),
+            # As the metadata writes it (BACKLOG 21); "" is an unpulsed cohort.
+            "pulse_time": (
+                "id",
+                np.array([f"ZT{h:g}" if np.isfinite(h) else "" for h in zt], dtype=object),
+            ),
             "start_datetime": ("id", np.array([start] * n_id)),
             "first_DD_day": (
                 "id",
@@ -339,14 +342,14 @@ def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
             "condition": ["LP", "noLP"],
             "flybox": ["bun", "pie"],
             # What create_xarray_dataset records so group_defining_coords can find
-            # the coords whose columns were renamed on the way in. Without it this
-            # fixture silently offers fewer grouping factors than a real import.
+            # the metadata coords that have no attr of their own (the pulse columns).
+            # Without it this fixture offers fewer grouping factors than a real import.
             "metadata_coords": [
                 "condition",
                 "flybox",
                 "genotype",
-                "pulse_duration_minutes",
-                "pulse_zt_hour",
+                "pulse_duration_min",
+                "pulse_time",
             ],
             "group_coord_names": ["genotype", "condition"],
         },
@@ -388,8 +391,7 @@ def load_example_monitors(out_dir, monitors=EXAMPLE_MONITORS):
     """
     import shutil
 
-    import dam_processor
-    import dam_utilities
+    from clockwork.core import dam_processor, dam_utilities
 
     out_dir = Path(out_dir)
     for m in monitors:

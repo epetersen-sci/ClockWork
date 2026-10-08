@@ -1,21 +1,123 @@
-# Tooling configuration only.
+# Package metadata, dependencies, and tooling configuration: the one place all
+# of it lives. Install for development (from the repository root) with:
 #
-# There is deliberately no [build-system] or [project] section here, so this file
-# does NOT turn the repo into an installable package — dependencies live in
-# requirements.txt (and the conda environment). Its only job is to give every
-# contributor and editor ONE shared definition of "clean," so `ruff check`
-# reports the same issues for everyone.
+#   python -m pip install -e ".[dev]"
+#
+# and check with:
 #
 #   ruff check .          # report problems
 #   ruff check . --fix    # auto-fix the safe ones
-#   ruff format .         # apply consistent formatting
+#   python -m pytest
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clockwork-sci"
+version = "0.1.0"
+description = "Analysis of Drosophila Activity Monitor (DAM) data: circadian period, sleep, HMM sleep states, phase shifts and sleep deprivation."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nicholas Petersen" }]
+# 3.11: scipy >= 1.17 and astropy >= 7.2 both require it, and the numbers
+# below were verified on 3.11. (The code itself parses as 3.10.)
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# Every floor and cap below was measured, not guessed: tools/numeric_fingerprint.py
+# runs each estimator on example_data and diffs the unrounded output between
+# environments. Before moving a bound, run it against the current one; a bound
+# that moves a number is a scientific decision, not a maintenance chore.
+dependencies = [
+    # --- Numerics: the libraries whose behaviour IS the result -------------
+    # numpy 2.0-2.2 are bit-identical to each other; 2.3/2.4 move AC and CWT
+    # summaries by <= 4e-7 relative (float rounding; every call unchanged).
+    "numpy>=2.0,<3",
+    # scipy 1.15-1.17 bit-identical; 1.13/1.14 move only HMM confidence, 1e-7.
+    "scipy>=1.13,<2",
+    # astropy 6.1-7.2 bit-identical. 8.0 changes Lomb-Scargle power (0.06%),
+    # periodogram (up to 8%) and FAP (up to 27%): capped until that is
+    # reviewed as a change to the LS numbers.
+    # >=7.2: astropy before 7.2 calls np.in1d, which numpy 2.4 removed, so it
+    # fails on import beside a current numpy (found installing on CentOS 7,
+    # where conda-forge paired astropy 6.1.7 with numpy 2.4).
+    "astropy>=7.2,<8",
+    # >=1.9 for pywt.cwt(precision=), which periodograms.CWT_WAVELET_PRECISION
+    # sets explicitly. NB: the 1.9.0 wheel self-reports __version__ "1.8.0".
+    "PyWavelets>=1.9,<2",
+    # --- Data & I/O --------------------------------------------------------
+    "pandas>=2.2.2",         # first release built against numpy 2
+    # merge/concat pass join=/compat= explicitly everywhere (pytest errors on
+    # xarray's "default value will change" warning), so no cap is needed.
+    # >=2025.8: earlier xarray cannot write pandas 3's text columns to netCDF
+    # ("unsupported dtype for netCDF4 variable: object"), so every save fails
+    # beside pandas 3. Bisected: 2025.7.1 fails, 2025.8.0 passes.
+    "xarray>=2025.8",
+    "netCDF4>=1.7.1",        # .nc backend; first release built against numpy 2
+    "openpyxl>=3.1.5",       # pandas 3 refuses anything older for read_excel
+    # --- Analysis ----------------------------------------------------------
+    # <0.4: hmm_models subclasses BaseHMM and overrides private hooks
+    # (_accumulate_sufficient_statistics, _do_mstep, ...), which any minor
+    # release may change. Lift the cap only after the HMM tests pass on it.
+    "hmmlearn>=0.3.3,<0.4",
+    # MESA (Burg) + multipletests. >=0.14.6: earlier releases break beside
+    # pandas 3 (a changed pandas helper), and MESA's per-fly error handling
+    # turned that into every fly silently having no MESA period.
+    "statsmodels>=0.14.6",
+    "joblib>=1.4",           # Parallel(return_as="generator_unordered") is new in 1.4
+    # --- UI & plotting -----------------------------------------------------
+    # 1.63: st.title(icon=) (router), persist_state= (1.59), st.tabs(key=,
+    # on_change=) and st.navigation(expanded=) (1.56).
+    "streamlit>=1.63",
+    # PNG export is fig.to_image(). plotly >= 6.1 drives kaleido >= 1, which
+    # needs a Chrome/Chromium install (see README); older plotly only drives
+    # kaleido 0.2, and kaleido 1 no longer has the API it used.
+    "plotly>=6.1",
+    "kaleido>=1.0",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",         # barplot(errorbar=) needs 0.12; 0.13 for pandas >= 2.2
+    "tqdm>=4.67",
+    # --- Config (the CLI's YAML; see docs/cli-config.md) --------------------
+    # v2 API throughout (ConfigDict, model_dump, model_json_schema).
+    "pydantic>=2.6",
+    # 6.0.1: the first with wheels for Python 3.12 (6.0 fails to build there).
+    "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+# GPU acceleration for the ZIP-HMM likelihood only (the CWT is CPU-only by
+# design). Install the torch build that matches your CUDA first:
+# https://pytorch.org/get-started/locally/
+gpu = ["torch>=2.0"]
+# The test suite uses streamlit's own AppTest (streamlit.testing.v1), which
+# ships with streamlit: no browser, no server, no webdriver.
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "packaging>=23", "threadpoolctl>=3"]
+
+[project.scripts]
+clockwork = "clockwork.cli:main"
+
+[project.urls]
+Repository = "https://github.com/epetersen-sci/ClockWork"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# namespaces stays at its default (true) so app/app_pages, which is run by
+# path and deliberately has no __init__.py, still ships in the wheel.
+
+[tool.setuptools.package-data]
+"clockwork.scamp_export" = ["README.md"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# core/ and app/ are import roots at runtime (the pages add them to sys.path),
-# so tell the import sorter to treat their modules as first-party.
-src = [".", "core", "app"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 # E4/E7/E9 + F are the real-bug checks (bad imports, broken statements, syntax
@@ -29,7 +131,7 @@ select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "SIM"]
 # Patterns this scientific codebase uses ON PURPOSE, so a clean `ruff check`
 # means "no real issues," not "no stylistic opinions":
 ignore = [
-    "E402",   # import-not-at-top — pages run sys.path.insert(...) before importing core
+    "E402",   # import-not-at-top — a few deliberate mid-module re-exports (periodograms.py)
     "E712",   # `== True` / `== False` — intentional pandas/numpy element-wise masking
     "E741",   # ambiguous names (l/I/O) — a few short-lived loop indices
     "E702",   # statement;statement — a handful of deliberate one-liners
@@ -41,16 +143,19 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-# tests/ imports from core/ and app/ the same way the pages do at runtime;
-# conftest.py puts them on sys.path, and this makes conftest itself importable
-# from the test modules (they use it for REPO_ROOT).
+# tests/ imports the installed clockwork package (pip install -e .). This only
+# makes conftest itself importable from the test modules (they use it for
+# REPO_ROOT and PKG_ROOT).
 testpaths = ["tests"]
 pythonpath = ["tests"]
-markers = [
-    "gpu: needs a CUDA GPU with torch + ptwt; skipped automatically where there is none",
-]
 # Streamlit's ScriptRunContext warning is expected: AppTest drives the script
 # runner from the main thread, and the warning says it can be ignored in bare mode.
 filterwarnings = [
     "ignore::DeprecationWarning",
+    # xarray is changing the defaults of merge/concat (join "outer" -> "exact",
+    # compat -> "override", ...). "override" would silently keep the first copy
+    # of a conflicting variable instead of raising, so every call in clockwork
+    # passes these arguments explicitly, and a call that relies on the default
+    # fails the suite rather than changing meaning on an xarray upgrade.
+    "error:In a future version of xarray the default value:FutureWarning",
 ]

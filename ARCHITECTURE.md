@@ -43,6 +43,16 @@ new, and that is not a loophole — it is the pressure valve that stops rules 2 
 > byte-identical. Had "no changes to import" been absolute, the alternative was a
 > rename table copied into every page — worse, and unreviewable.
 
+> **The one sanctioned rename (2026-10-08, BACKLOG 21):** those two columns now
+> keep their own names. `pulse_time` holds the metadata's own text ("ZT21", "zt21"
+> stay distinct: spelling is the data owner's call) and `pulse_duration_min` the
+> number; the hour is parsed on demand by `dam_utilities.pulse_zt_hours`. One
+> column under two names had meant two spellings of its values, so one grouping
+> got two sets of labels. It meets the test below only because
+> `migrate_legacy_pulse_coords` runs on every `.nc` load: an older file comes back
+> under the new names, so every page still means the same thing by every name.
+> A rename without a read-side migration is still not allowed.
+
 **Test for whether a change is append-only:** an older `.nc` still loads and every
 page still means the same thing by every name it already used.
 
@@ -61,16 +71,17 @@ copies the logic, and pages are the least stable layer in the app.
 
 `add_phase_metadata` and `add_pulse_metadata` are the pattern. Copy them.
 
-> **The one that got away:** `pulse_zt_hour` is derived at Import, while
-> `pulse_minute` — same feature, one step further on — is derived on demand. Two
-> policies for one feature is how a reader ends up unsure which layer owns a
-> number. New work follows `add_pulse_metadata`.
+> **The one that got away, since brought back:** `pulse_zt_hour` used to be
+> derived at Import, while `pulse_minute` — same feature, one step further on —
+> was derived on demand. Two policies for one feature is how a reader ends up
+> unsure which layer owns a number. Since BACKLOG 21 the hour is parsed on demand
+> too (`pulse_zt_hours`), and Import records only what the metadata says.
 
 ---
 
 ## 3. A derived variable has exactly one meaning
 
-Once `pulse_zt_hour` is "the ZT hour parsed from `pulse_time`, as a float, NaN
+Once `pulse_minute` is "the pulse onset in the dataset's relative minutes, NaN
 when unpulsed", that is what it is for every page, forever. A page that wants a
 different interpretation computes a **differently named** variable.
 
@@ -79,7 +90,7 @@ nothing errors. Every downstream number silently becomes a different quantity,
 and the figures still render.
 
 **If you need a variant:** name it for the variant, not for the concept —
-`pulse_zt_hour_from_actual_lights_on`, not "a better `pulse_zt_hour`".
+`pulse_minute_from_actual_lights_on`, not "a better `pulse_minute`".
 
 ---
 

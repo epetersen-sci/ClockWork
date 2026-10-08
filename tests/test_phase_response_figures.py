@@ -16,10 +16,10 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from conftest import MINUTES_PER_DAY, PULSE_DD_DAY
 
-import phase_shift as ps
-import plotting
+from clockwork.core import phase_shift as ps
+from clockwork.core import plotting
+from conftest import MINUTES_PER_DAY, PULSE_DD_DAY
 
 #: ``(pulse ZT, duration, intensity, hours the peak MOVES LATER after the pulse)``.
 #: A later peak is a delay, and the response is reported control-minus-fly, so the
@@ -32,7 +32,7 @@ ARMS = (
     (np.nan, 0.0, np.nan, 0.0),  # unpulsed control
 )
 BASE_PHASE = {"A": 12.0, "B": 13.0}
-GROUP_BY = ("genotype", "pulse_zt_hour", "pulse_duration_minutes", "pulse_intensity")
+GROUP_BY = ("genotype", "pulse_time", "pulse_duration_min", "pulse_intensity")
 TOL = 0.5
 
 
@@ -75,8 +75,11 @@ def _build_prc_cohort(n_per_arm=6, n_days=8, seed=1):
             "id": ids,
             "time": time.astype(np.int64),
             "genotype": ("id", np.array(gene_of)),
-            "pulse_zt_hour": ("id", np.array(zt_of, dtype="float32")),
-            "pulse_duration_minutes": ("id", np.array(dur_of, dtype="float32")),
+            "pulse_time": (
+                "id",
+                np.array([f"ZT{z:g}" if np.isfinite(z) else "" for z in zt_of], dtype=object),
+            ),
+            "pulse_duration_min": ("id", np.array(dur_of, dtype="float32")),
             "pulse_intensity": ("id", np.array(int_of, dtype="float32")),
             "start_datetime": ("id", np.array([start] * n_id)),
             "first_DD_day": (
@@ -92,14 +95,14 @@ def _build_prc_cohort(n_per_arm=6, n_days=8, seed=1):
             "genotype": ["A", "B"],
             "metadata_coords": [
                 "genotype",
-                "pulse_duration_minutes",
+                "pulse_duration_min",
                 "pulse_intensity",
-                "pulse_zt_hour",
+                "pulse_time",
             ],
             "group_coord_names": [
                 "genotype",
-                "pulse_zt_hour",
-                "pulse_duration_minutes",
+                "pulse_time",
+                "pulse_duration_min",
                 "pulse_intensity",
             ],
         },
@@ -127,7 +130,7 @@ def treated(response):
     return pf[~pf["group"].isin(set(response["controls"]))].copy()
 
 
-SERIES = ("genotype", "pulse_duration_minutes", "pulse_intensity")
+SERIES = ("genotype", "pulse_duration_min", "pulse_intensity")
 
 
 def fig_traces(summary):
@@ -241,7 +244,7 @@ class TestTheViolins:
     def test_one_column_per_genotype_time_and_dose(self, treated):
         fig, drawn = plotting.phase_response_violins(
             treated,
-            major_cols=("genotype", "zt", "pulse_duration_minutes"),
+            major_cols=("genotype", "zt", "pulse_duration_min"),
             split_col="pulse_intensity",
         )
         cats = list(fig.layout.xaxis.categoryarray)
@@ -254,7 +257,7 @@ class TestTheViolins:
         """The ZT21 column carries both intensities; they must not overlay."""
         fig, _ = plotting.phase_response_violins(
             treated,
-            major_cols=("genotype", "zt", "pulse_duration_minutes"),
+            major_cols=("genotype", "zt", "pulse_duration_min"),
             split_col="pulse_intensity",
         )
         assert fig.layout.violinmode == "group"
@@ -275,7 +278,7 @@ class TestTheViolins:
         summ = ps.summarize_phase_response(treated, by=("zt", *SERIES))
         _, drawn = plotting.phase_response_violins(
             treated,
-            major_cols=("genotype", "zt", "pulse_duration_minutes"),
+            major_cols=("genotype", "zt", "pulse_duration_min"),
             split_col="pulse_intensity",
         )
         for _, row in summ.iterrows():

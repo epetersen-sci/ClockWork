@@ -13,9 +13,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-import dam_utilities
-import facets
-import plotting
+from clockwork.core import dam_utilities, facets, plotting
 
 
 def _table():
@@ -395,7 +393,7 @@ class TestSleepStatesPage:
 class TestSleepDeprivationPage:
     @pytest.fixture
     def sd_results(self, unsplit_ds):
-        import sleep_deprivation as sd_module
+        from clockwork.core import sleep_deprivation as sd_module
 
         return sd_module.compute_sd_analysis(unsplit_ds, 720, 360, 1, bin_size_minutes=30, phase="LD")
 
@@ -427,7 +425,7 @@ class TestSleepDeprivationPage:
 
 class TestHmmArrangement:
     def test_zt_fractions_one_row_per_panel(self, master_ds):
-        import hmm_models
+        from clockwork.core import hmm_models
 
         rng = np.random.default_rng(0)
         ds = master_ds.assign(

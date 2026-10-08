@@ -16,9 +16,9 @@ Two kinds of check, both on example_data's Monitors 17 and 18:
 
 import numpy as np
 import pytest
-from snapshot_util import check_snapshot
 
-import dam_utilities
+from clockwork.core import dam_utilities
+from snapshot_util import check_snapshot
 
 # The Curate page's defaults.
 PAGE_KW = {"time_window": 24, "prop_immobile": 0.01, "min_alive_days": 2.0}

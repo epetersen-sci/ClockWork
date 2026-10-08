@@ -1,29 +1,25 @@
-"""A page's grouping must be the dataset's grouping.
+"""A page's grouping must be the dataset's grouping; a column has one name.
 
-Reported: a dataset grouped on Import by genotype + pulse_time + pulse_duration_min
-opened on the Actograms and Phase shift pages grouped by **genotype alone** — a
-different partition, presented as the default, with no way to rebuild the real one
-because the two pulse columns were not even offered.
+Reported first: a dataset grouped on Import by genotype + pulse_time +
+pulse_duration_min opened on the Actograms and Phase shift pages grouped by
+**genotype alone**, because the two pulse columns were stored under other coord
+names (``pulse_zt_hour``, ``pulse_duration_minutes``) and nothing could find them.
 
-The cause is a name mismatch that looks like nothing. ``attrs['group_columns']``
-records the metadata COLUMNS ticked at import, which is the honest record of the
-choice; but two of those columns are stored as coords under different names
-(``pulse_time`` -> ``pulse_zt_hour``), because their values are transformed on the
-way in. Filtering ``group_columns`` down to "columns that are also coords" therefore
-dropped them silently, and ``group_defining_coords`` could not offer them either: it
-identifies metadata coords by "is a per-id coord AND an attr key", and those two
-columns deliberately have no attr, since their unique values mix strings, numbers and
-the NaN of an unpulsed cohort — which NetCDF cannot serialize.
-
-So the fix records the provenance directly, and these tests hold it in place.
+The first fix recorded the coord names beside the column names. BACKLOG 21 found
+the deeper problem: one column under two names meant two spellings of its values
+too, so the same grouping gave ``dsmcherry-ZT21`` from Import and
+``dsmcherry-21.0`` from Redefine groups. Now every metadata column is stored under
+its own name, ``pulse_time`` holds the text the metadata wrote, and the hour is
+parsed when an analysis needs it. These tests hold that, and the read-side
+migration that keeps older ``.nc`` files working.
 """
 
 import numpy as np
 import pandas as pd
 import pytest
 
-import dam_utilities
-import phase_shift as ps
+from clockwork.core import dam_utilities
+from clockwork.core import phase_shift as ps
 
 
 @pytest.fixture
@@ -66,44 +62,69 @@ def pulse_ds_built(pulse_metadata):
     )
 
 
-class TestRenamedColumnsStayFindable:
-    def test_the_renamed_coords_are_offered_for_grouping(self, pulse_ds_built):
+class TestEachColumnHasOneName:
+    def test_the_pulse_columns_are_offered_for_grouping(self, pulse_ds_built):
         """The reported symptom: they were missing from the picker entirely."""
         offered = dam_utilities.group_defining_coords(pulse_ds_built)
-        assert "pulse_zt_hour" in offered
-        assert "pulse_duration_minutes" in offered
+        assert "pulse_time" in offered
+        assert "pulse_duration_min" in offered
 
-    def test_group_columns_still_records_what_was_ticked(self, pulse_ds_built):
-        """Unchanged, deliberately: it answers "which columns did I choose", which is
-        a different question from "which coords hold them"."""
-        assert dam_utilities.get_group_columns(pulse_ds_built) == [
-            "genotype",
-            "pulse_time",
-            "pulse_duration_min",
-        ]
+    def test_the_grouping_is_recorded_under_the_names_ticked(self, pulse_ds_built):
+        ticked = ["genotype", "pulse_time", "pulse_duration_min"]
+        assert dam_utilities.get_group_columns(pulse_ds_built) == ticked
+        assert dam_utilities.get_group_coord_names(pulse_ds_built) == ticked
+        assert all(c in pulse_ds_built.coords for c in ticked)
 
-    def test_group_coord_names_gives_names_the_dataset_actually_has(self, pulse_ds_built):
-        got = dam_utilities.get_group_coord_names(pulse_ds_built)
-        assert got == ["genotype", "pulse_zt_hour", "pulse_duration_minutes"]
-        assert all(c in pulse_ds_built.coords for c in got), (
-            "every name returned has to be readable off the dataset — that is the "
-            "whole point of it existing alongside get_group_columns"
+    def test_pulse_time_is_kept_as_written(self, pulse_ds_built):
+        values = {str(v) for v in pulse_ds_built["pulse_time"].values}
+        assert values == {"ZT21", "none"}
+
+    def test_the_hour_is_parsed_when_needed(self, pulse_ds_built):
+        hours = dam_utilities.pulse_zt_hours(pulse_ds_built)
+        by_id = dict(zip(map(str, pulse_ds_built["id"].values), hours))
+        assert by_id["Mito_LP"] == 21.0
+        assert np.isnan(by_id["Mito_noLP"])
+
+    def test_import_and_regroup_give_the_same_labels(self, pulse_ds_built):
+        """BACKLOG 21: the same grouping set two ways named the groups two ways."""
+        cols = ["genotype", "pulse_time", "pulse_duration_min"]
+        regrouped = dam_utilities.regroup_dataset(pulse_ds_built, cols)
+        assert list(regrouped["group"].values) == list(pulse_ds_built["group"].values)
+        # pulse_time as written; the duration is a number, so it reads as one.
+        assert "Mito-ZT21-20.0" in {str(g) for g in pulse_ds_built["group"].values}
+
+    def test_a_blank_reads_nan_in_every_label(self, pulse_ds_built):
+        """The phase-shift page builds its own labels; an unpulsed control's
+        pulse_time is "" and must read "nan" there too, not vanish ("Mito_")."""
+        labels, _ = ps.group_labels(pulse_ds_built, ("genotype", "pulse_duration_min"))
+        assert set(labels) >= {"Mito_20.0", "Mito_0.0"}
+        blank = pulse_ds_built.assign_coords(
+            pulse_time=("id", ["" if "noLP" in str(i) else "ZT21" for i in pulse_ds_built["id"].values])
         )
+        labels, _ = ps.group_labels(blank, ("genotype", "pulse_time"))
+        assert set(labels) == {"Mito_ZT21", "Mito_nan", "per_ZT21", "per_nan"}
 
-    def test_an_older_dataset_without_the_attr_still_resolves(self, pulse_ds_built):
-        """A .nc saved before the attr existed maps its columns through the rename
-        table instead, so it is not stuck with the broken default."""
-        old = pulse_ds_built.copy()
-        del old.attrs["group_coord_names"]
-        assert dam_utilities.get_group_coord_names(old) == [
-            "genotype",
-            "pulse_zt_hour",
-            "pulse_duration_minutes",
-        ]
+    def test_spellings_are_the_owners_to_choose(self, pulse_metadata):
+        """"ZT21" and "zt21" are the same hour but kept apart: a lab may write them
+        differently on purpose, and it is not ClockWork's call to merge them."""
+        meta = pulse_metadata.copy()
+        meta.loc[meta["id"] == "per_LP", "pulse_time"] = "zt21"
+        data = pd.DataFrame(
+            np.zeros((1440, len(meta))), columns=list(meta["id"]), index=pd.RangeIndex(1440)
+        )
+        ds = dam_utilities.create_xarray_dataset(data, meta, group_columns=["pulse_time"])
+        assert {str(g) for g in ds["group"].values} == {"ZT21", "zt21", "none"}
+
+    def test_an_unreadable_pulse_time_fails_at_import(self, pulse_metadata):
+        meta = pulse_metadata.copy()
+        meta.loc[0, "pulse_time"] = "after lunch"
+        data = pd.DataFrame(np.zeros((10, len(meta))), columns=list(meta["id"]), index=pd.RangeIndex(10))
+        with pytest.raises(ValueError, match="Unparseable pulse_time"):
+            dam_utilities.create_xarray_dataset(data, meta)
 
     def test_the_recorded_names_reproduce_the_datasets_own_partition(self, pulse_ds_built):
-        """The test that would have caught the bug: re-deriving the grouping from the
-        recorded coord names has to give the SAME groups as the group coord."""
+        """Re-deriving the grouping from the recorded names has to give the SAME
+        groups as the group coord."""
         by_coords, _ = ps.group_labels(
             pulse_ds_built, tuple(dam_utilities.get_group_coord_names(pulse_ds_built))
         )
@@ -114,19 +135,26 @@ class TestRenamedColumnsStayFindable:
             frozenset(np.flatnonzero(by_group == g)) for g in set(by_group)
         }
 
-    def test_filtering_group_columns_to_coords_is_the_bug(self, pulse_ds_built):
-        """Pinning the wrong answer so nobody reinvents it: this is exactly what the
-        pages used to do, and it collapses three grouping factors to one."""
-        offered = dam_utilities.group_defining_coords(pulse_ds_built)
-        naive = [c for c in dam_utilities.get_group_columns(pulse_ds_built) if c in offered]
-        assert naive == ["genotype"], "the old default; kept here to show what it cost"
-        labels, _ = ps.group_labels(pulse_ds_built, tuple(naive))
-        assert len(set(labels)) == 2, "two genotypes, not the four real groups"
+
+def _as_saved_before_backlog_21(ds):
+    """``ds`` as a dataset saved before every column kept its own name."""
+    hours = dam_utilities.pulse_zt_hours(ds)
+    old = ds.drop_vars(["pulse_time", "pulse_duration_min"]).assign_coords(
+        pulse_zt_hour=("id", hours.astype("float32")),
+        pulse_duration_minutes=("id", ds["pulse_duration_min"].values),
+    )
+    old.attrs = dict(ds.attrs)
+    old.attrs["group_coord_names"] = ["genotype", "pulse_zt_hour", "pulse_duration_minutes"]
+    old.attrs["metadata_coords"] = [
+        "pulse_zt_hour" if c == "pulse_time" else "pulse_duration_minutes" if c == "pulse_duration_min" else c
+        for c in ds.attrs["metadata_coords"]
+    ]
+    return old
 
 
 class TestAttrsSurviveNetCDF:
-    """Both new attrs must be plain string lists. The pulse columns have no attr of
-    their own precisely because theirs could not be serialized."""
+    """The grouping attrs must be plain string lists; the pulse columns have no
+    attr of their own because their values could not be serialized."""
 
     def test_they_are_string_lists(self, pulse_ds_built):
         for key in ("metadata_coords", "group_coord_names"):
@@ -134,50 +162,81 @@ class TestAttrsSurviveNetCDF:
             assert isinstance(val, list), f"{key} is {type(val).__name__}"
             assert all(isinstance(v, str) for v in val), f"{key} holds non-strings"
 
-    def test_a_round_trip_keeps_them_readable(self, pulse_ds_built, tmp_path):
-        """Through the app's own saver, not a bare ``to_netcdf``.
-
-        A bare one cannot write this dataset at all — ``attrs['start_datetime']``
-        holds Timestamps, which NetCDF refuses — and ``save_dataset_to_netcdf``
-        exists to convert exactly those. Testing the raw call would have been
-        testing a path the app never takes.
-        """
-        from load_and_save_datasets import load_dataset_from_netcdf, save_dataset_to_netcdf
+    def test_a_round_trip_keeps_the_text_and_the_names(self, pulse_ds_built, tmp_path):
+        """Through the app's own saver, not a bare ``to_netcdf`` (which cannot
+        write the Timestamp attrs this dataset carries)."""
+        from clockwork.core.load_and_save_datasets import (
+            load_dataset_from_netcdf,
+            save_dataset_to_netcdf,
+        )
 
         path = tmp_path / "rt.nc"
         save_dataset_to_netcdf(pulse_ds_built, str(path))
         back = load_dataset_from_netcdf(str(path))
         assert dam_utilities.get_group_coord_names(back) == [
             "genotype",
-            "pulse_zt_hour",
-            "pulse_duration_minutes",
+            "pulse_time",
+            "pulse_duration_min",
         ]
-        assert "pulse_zt_hour" in dam_utilities.group_defining_coords(back)
+        assert [str(v) for v in back["pulse_time"].values] == [
+            str(v) for v in pulse_ds_built["pulse_time"].values
+        ]
+        assert "pulse_time" in dam_utilities.group_defining_coords(back)
+
+
+class TestOlderFilesAreMigratedOnLoad:
+    def test_an_older_nc_loads_under_the_new_names(self, pulse_ds_built, tmp_path):
+        from clockwork.core.load_and_save_datasets import (
+            load_dataset_from_netcdf,
+            save_dataset_to_netcdf,
+        )
+
+        path = tmp_path / "old.nc"
+        save_dataset_to_netcdf(_as_saved_before_backlog_21(pulse_ds_built), str(path))
+        back = load_dataset_from_netcdf(str(path))
+        assert "pulse_zt_hour" not in back.coords and "pulse_duration_minutes" not in back.coords
+        # The original spelling was not kept by those versions; "ZT21" is chosen.
+        assert {str(v) for v in back["pulse_time"].values} == {"ZT21", ""}
+        np.testing.assert_array_equal(
+            back["pulse_duration_min"].values, pulse_ds_built["pulse_duration_min"].values
+        )
+        assert dam_utilities.get_group_coord_names(back) == [
+            "genotype",
+            "pulse_time",
+            "pulse_duration_min",
+        ]
+        assert {"pulse_time", "pulse_duration_min"} <= set(dam_utilities.group_defining_coords(back))
+        np.testing.assert_array_equal(
+            dam_utilities.pulse_zt_hours(back), dam_utilities.pulse_zt_hours(pulse_ds_built)
+        )
+
+    def test_the_settings_export_reads_older_attrs_as_column_names(self, pulse_ds_built):
+        from clockwork.pipeline import GroupsConfig
+
+        attrs = dict(pulse_ds_built.attrs, group_columns=["genotype", "pulse_zt_hour"])
+        assert GroupsConfig.from_attrs(attrs).by == ["genotype", "pulse_time"]
 
 
 class TestPagesDefaultToTheDatasetGrouping:
     def test_the_picker_speaks_metadata_column_names(self, pulse_ds_built):
-        """The chips say what you ticked on Import — `pulse_time`, not
-        `pulse_zt_hour`. A picker that renames your columns back at you is its own
-        small confusion."""
-        from ui import filters
+        """The chips say what you ticked on Import."""
+        from clockwork.app.ui import filters
 
         options, default = filters.group_by_options(pulse_ds_built)
         assert default == ["genotype", "pulse_time", "pulse_duration_min"]
         assert "pulse_time" in options and "pulse_zt_hour" not in options
 
-    def test_the_selection_translates_back_to_coords(self, pulse_ds_built):
-        from ui import filters
+    def test_the_selection_is_the_coord_names(self, pulse_ds_built):
+        from clockwork.app.ui import filters
 
         assert filters.group_by_coords(
             pulse_ds_built, ["genotype", "pulse_time", "pulse_duration_min"]
-        ) == ("genotype", "pulse_zt_hour", "pulse_duration_minutes")
+        ) == ("genotype", "pulse_time", "pulse_duration_min")
 
     def test_the_import_grouping_is_recognised_so_labels_stay_readable(self, pulse_ds_built):
         """When the selection IS the import grouping, a page labels from ds['group'],
-        whose labels carry the metadata's own values (ZT21) rather than the parsed
-        ones (21.0). Same flies, better names."""
-        from ui import filters
+        so its labels match every other page's."""
+        from clockwork.app.ui import filters
 
         assert filters.is_import_grouping(
             pulse_ds_built, ["genotype", "pulse_time", "pulse_duration_min"]
@@ -185,7 +244,7 @@ class TestPagesDefaultToTheDatasetGrouping:
         assert not filters.is_import_grouping(pulse_ds_built, ["genotype"])
 
     def test_a_dataset_with_no_group_coord_falls_back(self, pulse_ds_built):
-        from ui import filters
+        from clockwork.app.ui import filters
 
         bare = pulse_ds_built.drop_vars("group")
         options, default = filters.group_by_options(bare)

@@ -17,8 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import dam_utilities
-import plotting
+from clockwork.core import dam_utilities, plotting
 
 DAY = 1440
 

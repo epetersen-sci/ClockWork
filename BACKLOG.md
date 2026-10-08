@@ -122,3 +122,97 @@ kind of number that ends up in a methods section.
 
 Either restore the test that produced it or remove the claim. Do not simply
 re-point the citation at a different file without re-deriving the numbers.
+
+---
+
+## 21. `group_columns` means two different things depending on who wrote it
+
+ARCHITECTURE rule 1 says `attrs['group_columns']` records the metadata COLUMN
+names that were ticked. `create_xarray_dataset` does that. `regroup_dataset`
+(`core/dam_utilities.py`) writes the COORD names instead, so after "Redefine
+groups" by `pulse_time` the attr says `pulse_zt_hour`, a name no metadata file
+contains. Only two columns are renamed (`METADATA_COORD_RENAMES`), which is why
+it has not bitten.
+
+It is not a one-line fix, because readers assume both meanings:
+`app_pages/data_groups.py` defaults its regroup picker by testing
+`group_columns` against coord names (so a freshly imported dataset grouped by
+`pulse_time` loses that column from the default), while `ui/facet_panels.py`
+maps names back and copes with either. `group_coord_names` already records the
+coord side, so the fix is for `regroup_dataset` to write column names, with the
+readers moved to `get_group_coord_names` where they need coords.
+
+`pipeline.GroupsConfig.from_attrs` reads either spelling and reports column
+names, so exported settings are right either way; this item is about the attr.
+
+**Fixed (2026-10-08), more thoroughly than proposed above:** the two pulse
+columns no longer have a second name at all. It turned out the same grouping set
+on Import and on Redefine groups also got different LABELS (`dsmcherry-ZT21` vs
+`dsmcherry-21.0`), because one path labelled from the metadata text and the
+other from the parsed float. Now `pulse_time` is stored as the metadata wrote it
+and `pulse_duration_min` as its number, both under their column names; the ZT
+hour is parsed when an analysis needs it (`dam_utilities.pulse_zt_hours`); and
+import, Redefine groups and the Import preview all build labels with one
+function (`join_group_labels`). Older `.nc` files are migrated on load
+(`migrate_legacy_pulse_coords`; their text is written "ZT21", as the original
+spelling was not kept). `tests/test_grouping_provenance.py`.
+
+---
+
+## 22. Changing groups after curation silently undoes curation and the split
+
+`dataset_full`, the Groups page's restore point, is set only at import. Apply
+selection, Redefine groups and Reset all rebuild the working dataset from it.
+Done after curation, they bring dead flies back (or keep them trimmed by id but
+with uncurated data) and drop the curation and split attrs, with no warning.
+The page's docstring acknowledges the ordering ("subsetting before curation
+... avoids silently invalidating curation afterwards") but the page does not
+enforce it or say so when it happens.
+
+The recorded settings stay honest — a reverted curation has no curation attrs,
+so Export settings will not claim it ran — but a user who curated, then
+narrowed the groups, has lost work they cannot see. Either warn (and name what
+will be undone) when the dataset has curation or split attrs, or apply the
+group change to the current dataset instead of to `dataset_full`.
+
+**Partly addressed (2026-10-02):** the page now warns, beside both group-change
+buttons, naming exactly what would be undone (curation, the split, and which
+analyses' results), and says nothing when there is nothing to lose
+(`tests/test_data_pages_pipeline.py`). The rebuild itself is unchanged; whether
+a group change should instead apply to the current dataset is still open.
+
+**Fixed (2026-10-08):** a group change still rebuilds from the import copy, then
+`pipeline.carry_over` puts the flies' work back: curation, the split and sleep
+are re-applied from their recorded settings, and period results are kept fly by
+fly. Curation decides each fly from its own record alone, so this is exactly
+"grouped first, then curated" (`tests/test_group_change_carry_over.py` holds
+the two orders equal on example_data). Only results that describe groups (the
+HMM, CWT group averages, sleep deprivation, phase shift) are dropped, and the
+page names them before and after the change.
+
+---
+
+## 23. Running a period method reorders the master's flies and adds `split_minute`
+
+`pipeline.merge_period_outputs` (formerly `ui.period_context.merge_analysis_outputs`,
+moved unchanged) merges an estimator's per-fly outputs onto the master with an
+outer join. The estimator returns its flies in a different order, and an outer
+join of two differently ordered `id` indexes SORTS the union, so after any
+period run the master's flies are in lexical order (`17_1, 17_10, 17_11, ...`)
+rather than the order they were imported in. It also copies every per-fly
+coord of the result onto the master, which includes the `split_minute` coord
+`select_phase` adds, so an unsplit dataset gains a split boundary coord from
+running Lomb-Scargle.
+
+Nothing numerical changes — every value is still under its own fly id, which
+`tests/test_pipeline_period.py` checks fly by fly — but anything that relies on
+fly ORDER (a table exported "in import order", a figure whose rows follow the
+dataset) silently changes order after a period run. Either reindex the merge to
+the master's `id` order, or decide the sorted order is the canonical one and
+apply it at import.
+
+**Fixed (2026-10-02):** the merge restores the master's fly order and copies only
+the method's own coords (`ls_` / `ac_` / `cwt_` / `mesa_`), from the variables as
+well as from the result's coords. `tests/test_pipeline_period.py`
+(`TestTheMergeLeavesTheMasterAsItWas`) pins import order, no `split_minute`, the
+rhythmic flags under the right flies, and the master otherwise untouched.

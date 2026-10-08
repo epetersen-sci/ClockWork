@@ -23,15 +23,16 @@ the control mean itself.
 import numpy as np
 import pandas as pd
 import pytest
+
+from clockwork.core import dam_utilities
+from clockwork.core import phase_shift as ps
 from conftest import (
     PULSE_DD_DAY,
     PULSE_SHIFT_H,
     _build_pulse_cohort,
 )
 
-import phase_shift as ps
-
-GROUP_BY = ("genotype", "pulse_zt_hour", "pulse_duration_minutes")
+GROUP_BY = ("genotype", "pulse_time", "pulse_duration_min")
 
 
 @pytest.fixture(scope="module")
@@ -43,10 +44,10 @@ def prc_ds():
     now that no string is matched against.
     """
     ds = _build_pulse_cohort()
-    zt = np.asarray(ds["pulse_zt_hour"].values, dtype=float)
+    zt = dam_utilities.pulse_zt_hours(ds)
     # Duration 0 exactly where there is no pulse — that IS the control definition.
     return ds.assign_coords(
-        pulse_duration_minutes=("id", np.where(np.isfinite(zt), 20.0, 0.0).astype("float32"))
+        pulse_duration_min=("id", np.where(np.isfinite(zt), 20.0, 0.0).astype("float32"))
     )
 
 
@@ -80,13 +81,13 @@ class TestControlsComeFromThePulse:
     def test_one_control_serves_several_pulses_of_the_same_genotype(self, prc_ds):
         """Matching is on the group columns EXCEPT the pulse ones, so a genotype's
         20-minute and 60-minute arms share its single unpulsed cohort."""
-        dur = np.asarray(prc_ds["pulse_duration_minutes"].values, dtype=float)
+        dur = np.asarray(prc_ds["pulse_duration_min"].values, dtype=float)
         gen = np.asarray(prc_ds["genotype"].values).astype(str)
         # Make half of each genotype's pulsed flies a 60-minute arm.
         new = dur.copy()
         pulsed = np.flatnonzero(dur > 0)
         new[pulsed[::2]] = 60.0
-        ds = prc_ds.assign_coords(pulse_duration_minutes=("id", new.astype("float32")))
+        ds = prc_ds.assign_coords(pulse_duration_min=("id", new.astype("float32")))
         cmap, controls = ps.control_map_from_pulse(ds, GROUP_BY)
         for gene in set(gen.tolist()):
             arms = [g for g in cmap if g.startswith(gene) and cmap[g] != g]
@@ -95,13 +96,13 @@ class TestControlsComeFromThePulse:
 
     def test_a_missing_duration_coord_says_what_to_add(self, prc_ds):
         with pytest.raises(ValueError, match="pulse-duration column"):
-            ps.control_map_from_pulse(prc_ds.drop_vars("pulse_duration_minutes"), GROUP_BY)
+            ps.control_map_from_pulse(prc_ds.drop_vars("pulse_duration_min"), GROUP_BY)
 
     def test_a_group_with_no_control_maps_to_none(self, prc_ds):
         """Dropping one genotype's control must orphan that genotype, not let it
         borrow another's."""
         gen = np.asarray(prc_ds["genotype"].values).astype(str)
-        dur = np.asarray(prc_ds["pulse_duration_minutes"].values, dtype=float)
+        dur = np.asarray(prc_ds["pulse_duration_min"].values, dtype=float)
         keep = ~((gen == "B") & (dur == 0))
         cmap, _ = ps.control_map_from_pulse(prc_ds.isel(id=np.flatnonzero(keep)), GROUP_BY)
         assert any(g.startswith("B") and c is None for g, c in cmap.items())
@@ -146,7 +147,7 @@ class TestTheResponseItself:
         ds = prc_ds.copy(deep=True)
         # np.array, not asarray: asarray would hand back a view into the fixture.
         act = np.array(ds["activity"].transpose("time", "id").values, dtype=float)
-        zt = np.asarray(ds["pulse_zt_hour"].values, dtype=float)
+        zt = dam_utilities.pulse_zt_hours(ds)
         # Roll the pulsed flies' post-pulse activity EARLIER by two hours.
         start = (PULSE_DD_DAY + 1) * 1440
         for j in np.flatnonzero(np.isfinite(zt)):
@@ -172,7 +173,7 @@ class TestTheResponseItself:
 
     def test_an_orphaned_group_is_dropped_wholesale(self, prc_ds):
         gen = np.asarray(prc_ds["genotype"].values).astype(str)
-        dur = np.asarray(prc_ds["pulse_duration_minutes"].values, dtype=float)
+        dur = np.asarray(prc_ds["pulse_duration_min"].values, dtype=float)
         ds = prc_ds.isel(id=np.flatnonzero(~((gen == "B") & (dur == 0))))
         res = ps.compute_phase_response(ds, group_by=GROUP_BY)
         assert not any(g.startswith("B_2") for g in res["per_fly"]["group"]), (
@@ -188,7 +189,7 @@ class TestTheResponseItself:
 
     def test_no_pulse_anywhere_says_so(self, prc_ds):
         ds = prc_ds.assign_coords(
-            pulse_zt_hour=("id", np.full(prc_ds.sizes["id"], np.nan, dtype="float32"))
+            pulse_time=("id", np.full(prc_ds.sizes["id"], "", dtype=object))
         )
         with pytest.raises(ValueError, match="no phase response"):
             ps.compute_phase_response(ds, group_by=GROUP_BY)
@@ -225,7 +226,7 @@ class TestBaselineCorrection:
         ds = prc_ds.copy(deep=True)
         # np.array, not asarray: asarray would hand back a view into the fixture.
         act = np.array(ds["activity"].transpose("time", "id").values, dtype=float)
-        zt = np.asarray(ds["pulse_zt_hour"].values, dtype=float)
+        zt = dam_utilities.pulse_zt_hours(ds)
         for j in np.flatnonzero(np.isfinite(zt)):
             act[:, j] = np.roll(act[:, j], 60)  # a whole-record hour later
         ds["activity"] = xr.DataArray(act, dims=("time", "id"), coords=ds["activity"].coords)
@@ -260,10 +261,10 @@ class TestSummary:
 def test_grouping_suggestion_names_real_coords(prc_ds):
     """The message shown when no control matched has to suggest columns this
     dataset actually has, or it is just noise."""
-    import dam_utilities
+    from clockwork.core import dam_utilities
 
     sugg = ps.grouping_suggestion(prc_ds)
     assert sugg, "expected a suggestion"
     available = set(dam_utilities.group_defining_coords(prc_ds))
     assert set(sugg) <= available
-    assert "genotype" in sugg and "pulse_duration_minutes" in sugg
+    assert "genotype" in sugg and "pulse_duration_min" in sugg

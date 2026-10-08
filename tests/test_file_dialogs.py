@@ -9,8 +9,8 @@ import subprocess
 
 import pytest
 
-from ui import file_dialogs
-from ui.file_dialogs import DialogUnavailable
+from clockwork.app.ui import file_dialogs
+from clockwork.app.ui.file_dialogs import DialogUnavailable
 
 
 class _Done:

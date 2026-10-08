@@ -1,0 +1,158 @@
+"""
+ClockWork — Drosophila Activity Monitor (DAM) analysis pipeline. Entry point.
+
+Launch it with the ``clockwork gui`` command (see ``clockwork/cli.py``), or
+directly with ``streamlit run src/clockwork/app/ClockWork.py`` from a checkout.
+
+This file is a ROUTER, not a page. It seeds session state, declares the
+navigation, and hands off to the selected page. The landing content lives in
+``app_pages/home.py`` like any other page.
+"""
+
+import streamlit as st
+
+# Guard the actual app rendering behind __name__ == '__main__'.
+#
+# Why: the analysis pipeline uses multiprocessing.Pool, which on Windows
+# (and on macOS Python 3.8+) defaults to the *spawn* start method. Each
+# spawned worker re-runs this entry script via
+# ``multiprocessing.spawn._fixup_main_from_path`` → ``runpy.run_path``,
+# which sets ``__name__ == '__mp_main__'``. Under ``streamlit run``,
+# runpy sets ``__name__ == '__main__'``. Wrapping all module-level
+# Streamlit calls behind that guard means workers don't execute
+# ``st.set_page_config`` / ``st.navigation`` / etc. without a
+# ``ScriptRunContext`` (which would otherwise emit
+# ``missing ScriptRunContext!`` warnings — one per worker spawn).
+#
+# ``page.run()`` is separately safe — it returns early when there is no
+# ScriptRunContext — but ``st.navigation`` itself is not, so the guard stays.
+#
+# The streamlit import intentionally stays *outside* the guard: workers that
+# pickle objects referencing streamlit types still need the module loaded.
+# Everything else resolves through the installed ``clockwork`` package, so no
+# sys.path setup is needed here or anywhere else.
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="ClockWork",
+        page_icon="🪰",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    from clockwork.app.ui import charts
+    from clockwork.app.ui.state import init_session_state
+
+    init_session_state()
+
+    # Start this rerun's figure collection. Here rather than in each page because
+    # this is the one place that runs exactly once per rerun, before any page body:
+    # ui.charts.plotly_chart records what it draws, and the button rendered after
+    # page.run() offers the lot as PNGs.
+    charts.begin_run()
+
+    # Sections are the "folders" in the sidebar. st.navigation supports exactly
+    # one level of them — a dict of section label -> pages — so this is as nested
+    # as Streamlit goes. Order within each section follows the data-dependency
+    # order the work actually takes, which is why Groups & subsets precedes
+    # Curate & split (subset before you curate, and the curation heatmap draws
+    # its y-axis from the group coord).
+    #
+    # Two former pages are gone, both because they were STEPS rather than
+    # destinations. Sleep analysis is now the control at the top of the Sleep
+    # tab, beside the figures it produces; HMM model selection is the first tab
+    # of HMM analysis, beside the run it parameterises. Nobody opens an app to
+    # run a step.
+    page = st.navigation(
+        {
+            "": [
+                st.Page(
+                    "app_pages/home.py",
+                    title="Home",
+                    icon=":material/home:",
+                    default=True,
+                ),
+            ],
+            "Data": [
+                st.Page(
+                    "app_pages/data_import.py",
+                    title="Import",
+                    icon=":material/upload_file:",
+                ),
+                st.Page(
+                    "app_pages/data_groups.py",
+                    title="Groups & subsets",
+                    icon=":material/groups:",
+                ),
+                st.Page(
+                    "app_pages/data_curate_split.py",
+                    title="Curate & split",
+                    icon=":material/content_cut:",
+                ),
+            ],
+            "Circadian analysis": [
+                st.Page(
+                    "app_pages/actograms.py",
+                    title="Actograms",
+                    icon=":material/view_day:",
+                ),
+                # One page, five tabs: it was Period analysis, Rhythmicity and
+                # Periodograms, which had to agree on the phase and the period range.
+                st.Page(
+                    "app_pages/period_rhythmicity.py",
+                    title="Period & rhythmicity",
+                    icon=":material/schedule:",
+                ),
+                st.Page(
+                    "app_pages/phase_shift.py",
+                    title="Phase shift",
+                    icon=":material/light_mode:",
+                ),
+            ],
+            "Activity & Sleep": [
+                st.Page(
+                    "app_pages/sleep_activity.py",
+                    title="Activity & Sleep",
+                    icon=":material/stacked_line_chart:",
+                ),
+                st.Page(
+                    "app_pages/sleep_states.py",
+                    title="Sleep states",
+                    icon=":material/bar_chart:",
+                ),
+                st.Page(
+                    "app_pages/sleep_deprivation.py",
+                    title="Sleep deprivation",
+                    icon=":material/alarm:",
+                ),
+                st.Page(
+                    "app_pages/hmm.py",
+                    title="HMM analysis",
+                    icon=":material/psychology:",
+                ),
+            ],
+            "Export": [
+                st.Page(
+                    "app_pages/export_data.py",
+                    title="Save & export",
+                    icon=":material/save:",
+                ),
+                st.Page(
+                    "app_pages/export_scamp.py",
+                    title="SCAMP export",
+                    icon=":material/share:",
+                ),
+            ],
+        },
+        # 15 pages. Without this the menu collapses to ten with a "View 5 more"
+        # button, which hides a whole section behind a click.
+        expanded=True,
+    )
+
+    # The router owns the page title, so pages carry no st.header of their own.
+    st.title(page.title, icon=page.icon)
+    page.run()
+
+    # After the body, so it has seen every figure the page drew — and so the offer
+    # appears in the same place on every page instead of each one placing its own.
+    # Renders nothing when the page drew no figures.
+    charts.save_figures_button()

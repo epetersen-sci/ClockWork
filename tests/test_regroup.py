@@ -11,8 +11,8 @@ into the new ones.
 import numpy as np
 import pytest
 
-import dam_utilities
-from ui.state import DERIVED_CACHE_KEYS
+from clockwork.app.ui.state import DERIVED_CACHE_KEYS
+from clockwork.core import dam_utilities
 
 
 class TestCandidateColumns:

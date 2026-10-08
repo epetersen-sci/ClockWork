@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from dam_processor import MetadataProcessor
+from clockwork.core.dam_processor import MetadataProcessor
 
 
 class _FakeProcessor(MetadataProcessor):
@@ -114,7 +114,7 @@ class TestCounterRendering:
     def test_silent_when_the_dataset_predates_the_counters(self, app, master_ds):
         """Absence means "not recorded", which is NOT "clean" and must not be
         reported as such."""
-        from ui.status import render_integrity_counters
+        from clockwork.app.ui.status import render_integrity_counters
 
         ds = master_ds.copy()
         for key in list(ds.attrs):
@@ -130,7 +130,7 @@ class TestCounterRendering:
         ],
     )
     def test_renders_when_counters_are_present(self, master_ds, attrs, expected):
-        from ui.status import render_integrity_counters
+        from clockwork.app.ui.status import render_integrity_counters
 
         ds = master_ds.copy()
         ds.attrs.update(attrs)

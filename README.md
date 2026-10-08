@@ -20,6 +20,7 @@ any point and reload without recomputing.
 - [Running the app](#running-the-app)
 - [Quick start](#quick-start)
   - [Try it on the example data](#try-it-on-the-example-data)
+- [Running from a config file](#running-from-a-config-file)
 - [The metadata file](#the-metadata-file)
   - [Column reference](#column-reference)
   - [Which columns each analysis needs](#which-columns-each-analysis-needs)
@@ -58,8 +59,9 @@ any point and reload without recomputing.
 
 ## Installation
 
-ClockWork needs **Python 3.10 or later**; 3.11 is what it's developed and tested
-on, and what the instructions below create.
+ClockWork needs **Python 3.11 or later** (its scipy and astropy floors require
+it); 3.11 is what it's developed and tested on, and what the instructions below
+create.
 
 ### 1. Create and activate the environment
 
@@ -71,45 +73,65 @@ conda create -n clockwork python=3.11
 conda activate clockwork
 ```
 
-### 2. Install the dependencies
+### 2. Install ClockWork
 
-From the repository root (the folder containing `requirements.txt`):
+From the repository root (the folder containing `pyproject.toml`):
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-Four packages are **version-pinned on purpose** — `numpy`, `scipy`, `astropy`
-and `PyWavelets`. Their default behaviour is baked into the numbers ClockWork
-reports, so upgrading them can silently shift results. Don't bump them casually.
+This installs ClockWork and its dependencies, and puts the `clockwork` command
+on your path. `-e` (editable) means edits to the source take effect without
+reinstalling; use `pip install -e ".[dev]"` to also get the test and lint tools.
+
+**Version ranges are measured, not guessed.** The numerical libraries —
+`numpy`, `scipy`, `astropy`, `PyWavelets` — decide the numbers ClockWork
+reports, so every range in `pyproject.toml` was checked by running each
+estimator on `example_data` in each version and diffing the unrounded output
+(`tools/numeric_fingerprint.py`). Within the declared ranges results agree to
+floating-point rounding. `astropy` 8 is excluded because it changes the
+Lomb-Scargle numbers. ClockWork passes the wavelet settings that matter
+explicitly (see [Continuous wavelet transform](#continuous-wavelet-transform-cwt)),
+which is why `PyWavelets` needs 1.9 or later.
+
+**PNG export needs Chrome or Chromium.** Plotly's image exporter (`kaleido`)
+renders through a browser it does not ship. If you have no Chrome, run this
+once in the environment:
+
+```bash
+plotly_get_chrome
+```
 
 ### 3. Optional — GPU acceleration
 
-Two things run much faster on an NVIDIA GPU: the continuous wavelet transform
-and the zero-inflated-Poisson HMM likelihood. Both fall back to CPU
-automatically, so this step is optional.
+The zero-inflated-Poisson HMM likelihood can run on an NVIDIA GPU; it falls
+back to CPU automatically, so this step is optional. (The wavelet transform is
+CPU-only by design: one implementation, so the same data gives the same numbers
+on every machine. It takes well under a second per fly.)
+
+Install the torch build matching your CUDA version first, from
+<https://pytorch.org/get-started/locally/>, then:
 
 ```bash
-pip install torch ptwt
+pip install -e ".[gpu]"
 ```
 
-Pick the CUDA build matching your system at
-<https://pytorch.org/get-started/locally/>. On CPU the CWT is *slow* — if you
-plan to use it on a full cohort, the GPU is strongly recommended. Set
-`HMM_USE_GPU=0` in the environment to force the HMM back to CPU.
+Set `HMM_USE_GPU=0` in the environment to force the HMM back to CPU.
 
 ---
 
 ## Running the app
 
-From the repository root:
+From any folder:
 
 ```bash
-streamlit run app/ClockWork.py
+clockwork gui
 ```
 
 The app opens in your browser at `http://localhost:8501`. If that port is
-taken, append `--server.port 8502`.
+taken, append `--server.port 8502` (any option after `gui` is passed on to
+`streamlit run`).
 
 ---
 
@@ -151,6 +173,52 @@ carry about a week of extra recording before the window the metadata asks for,
 and everything the monitor kept recording after it. ClockWork reads whatever
 range `start_datetime` and `stop_datetime` describe and ignores the rest, so you
 can point it straight at the raw file your monitor wrote.
+
+---
+
+## Running from a config file
+
+Everything the GUI does for the core analyses — import, groups, curation, the
+LD/DD split, period & rhythmicity, sleep, and the HMM — can also run unattended
+from a YAML file. Phase shift and sleep deprivation are GUI-only for now.
+
+```bash
+clockwork init my_experiment.yaml --metadata path/to/metadata.xlsx
+clockwork validate my_experiment.yaml
+clockwork run my_experiment.yaml
+```
+
+`init` writes a commented file to start from, filled in from your metadata's
+columns: every setting you are likely to change is there, commented out at its
+default. `validate` checks it without running anything — misspelt settings,
+missing files, metadata columns the analyses need, and analyses whose upstream
+step is missing (the HMM needs sleep, sleep needs curation) — and prints what the
+file will do. `run` writes, into `results/<experiment>/`:
+
+| file | what it is |
+|---|---|
+| `<experiment>.nc` | the analysed dataset, as the GUI would save it |
+| `tables/*.csv` | per-fly result tables: period summary, sleep totals per LD/DD, sleep states, sleep bouts, HMM occupancy and states |
+| `qc_report.html` | the figures to check the run by eye: who curation removed, the rhythmicity cutoffs, sleep totals, HMM occupancy. Opens offline. |
+| `scalograms/` | each group's averaged CWT scalogram (PNG + CSV), when the config's `cwt` method sets `group_scalograms: true` |
+| `config.resolved.yaml` | every value the run used, defaults included, plus the package versions. Runnable as it stands. |
+| `run.log` | what the analyses printed along the way (per-fly exclusions and the like) |
+
+`run` never overwrites an earlier run's outputs unless you pass `--force`, which
+replaces them, all of them, once the new run's analyses have finished; files of
+your own in that folder are left alone.
+Several files run one after another with `clockwork run a.yaml b.yaml c.yaml`.
+
+**The easiest way to get a config is from the GUI.** Explore an experiment in
+the app, then open **Export → Save & export → Settings (.yaml)**: it writes the
+settings of every analysis that has actually run on the dataset — read off the
+dataset itself, so it works on a `.nc` you saved months ago too. Point that file
+at the next experiment's data and run it.
+
+A config lists only what differs from the defaults. Settings a lab shares can
+live in one file that each experiment's file `extends:`. Paths are relative to
+the file that names them. `clockwork schema` prints a JSON Schema for editor
+autocompletion. The full design is in [docs/cli-config.md](docs/cli-config.md).
 
 ---
 
@@ -515,12 +583,14 @@ selected will not describe the data you fit.
 
 ### Save & export
 
-Three tabs. **Dataset (.nc)** saves the dataset to NetCDF, optionally the LD and
+Four tabs. **Dataset (.nc)** saves the dataset to NetCDF, optionally the LD and
 DD partitions as separate files too. **Activity & ZT tables** exports raw
 activity and ZT-binned group averages in GraphPad-friendly Mean/SD/N layout plus
 a matching per-fly long-format file. **Analysis results** exports the period
 summary (optionally filtered to rhythmic flies only), sleep bouts, and — if
 you've run it — HMM state assignments and ZT-binned state fractions.
+**Settings (.yaml)** writes a config file of every analysis that has run, for
+`clockwork run` (see [Running from a config file](#running-from-a-config-file)).
 
 ### SCAMP export
 
@@ -531,7 +601,7 @@ per-phase minimum-day thresholds, and which sampling intervals to write (1-min
 and/or 30-min). Reports a per-board manifest and lists any dropped flies.
 
 There is also a standalone CLI — see
-[`scamp_export/README.md`](scamp_export/README.md).
+[`scamp_export/README.md`](src/clockwork/scamp_export/README.md).
 
 ---
 
@@ -623,8 +693,14 @@ rather than a fabricated low value. A warning prints when the requested maximum
 period exceeds what the record length can resolve — roughly 2√2 × period of
 data, which is why 32 h needs about 3.8 days and lines up with the 4-day floor.
 
-Built on `PyWavelets`, with a **CUDA path via PyTorch + `ptwt`** that is
-auto-detected. This is the analysis that most benefits from a GPU.
+Built on `PyWavelets` (≥ 1.9), CPU only, using its FFT convolution with the
+tabulated mother wavelet at `precision=16` (2¹⁶ points). The precision matters
+here: `pywt.cwt` stretches that table to each scale, and ClockWork's circadian
+scales on 1-minute data (~980–2140) are far past what the pre-1.9 hardcoded
+value of 10 or the 1.9 default of 12 can resolve — the effective wavelet turns
+into a comb of spikes and the power spectrum is distorted by several percent
+on average. At 16 it is converged. Both settings are recorded on the dataset
+(`cwt_wavelet_precision`, `cwt_convolution_method`).
 
 > Torrence & Compo 1998 (the wavelet framework, AR(1) significance, COI, global
 > spectrum); Leise & Harrington 2011 and Leise 2013 (CWT in circadian
@@ -820,7 +896,7 @@ Lomb-Scargle never uses this path at all.
 ## Thresholds and defaults
 
 Every user-owned soft threshold is defined **once**, in
-[`core/calibrations.py`](core/calibrations.py), with its provenance. Both the
+[`core/calibrations.py`](src/clockwork/core/calibrations.py), with its provenance. Both the
 code defaults and the UI controls read from there, so there is no second copy to
 drift. These are *calibrations*, not invariants — they're meant to be adjusted.
 
@@ -907,6 +983,6 @@ downcast.
 **Software**
 
 - `astropy` — Lomb-Scargle · `scipy` / `numpy` — signal processing ·
-  `PyWavelets` and `ptwt` — wavelet transforms · `statsmodels` — Burg AR ·
+  `PyWavelets` — wavelet transforms · `statsmodels` — Burg AR ·
   `hmmlearn` — hidden Markov models · `xarray` / `netCDF4` — the data model ·
   `streamlit` and `plotly` — the interface.
