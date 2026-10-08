@@ -166,7 +166,10 @@ taken, append `--server.port 8502` (any option after `gui` is passed on to
 
 `example_data/` holds a complete six-monitor experiment (192 flies, six
 genotypes) with its `metadata.xlsx`. Point **Data → Import** at that folder to see
-the whole workflow run end to end.
+the whole workflow run end to end. The recordings are from Richhariya et al.
+2025, *Current Biology*, and are included with the authors' permission; see
+[`example_data/README.md`](example_data/README.md) for the genotypes and the
+citation.
 
 **You do not need to pre-trim your recordings.** The example files deliberately
 carry about a week of extra recording before the window the metadata asks for,
@@ -979,6 +982,10 @@ downcast.
 - Ghosh, A. & Harbison, S.T. (2026) HMM-based sleep scoring in *Drosophila*. *bioRxiv* 2026.01.14.699526.
 - Abhilash, L. et al. (2026) *(sleep-state duration bins and circadian gating of ultradian rhythms).*
 - Riggle, J. et al. (2022) *(mean-of-matrix scalogram normalisation; Lomb-Scargle over chi-squared).*
+
+**Example data**
+
+- Richhariya, S., Shin, D., Schlichting, M. & Rosbash, M. (2025) Metabolic rewiring prevents neurodegeneration caused by chronic mitochondrial dysfunction. *Current Biology* 35(22):5443. [doi:10.1016/j.cub.2025.09.063](https://doi.org/10.1016/j.cub.2025.09.063)
 
 **Software**
 
