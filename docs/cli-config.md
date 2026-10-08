@@ -233,7 +233,7 @@ it.
 ## Status
 
 - [x] Phase 0: installable package, `clockwork gui`, measured dependency ranges.
-- [ ] Phase 1: pipeline steps (`clockwork/pipeline/`).
+- [x] Phase 1: pipeline steps (`clockwork/pipeline/`).
   - [x] import → groups → curate → split (`pipeline/data.py`); the Data pages
         call them, and the subset is now recorded on the dataset (`subset_keep`).
   - [x] period & rhythmicity (`pipeline/period.py`): the four estimators, their
@@ -246,10 +246,11 @@ it.
         on LD, DD or the whole recording. The GUI's "Both (separate)" is two
         single-phase fits, of which only the viewed one is on the dataset; a
         config describes what the dataset holds.
-  - [ ] Sleep states needs no step of its own: it re-cuts the sleep boundaries
+  - [x] Sleep states needs no step of its own: it re-cuts the sleep boundaries
         (the sleep step) and otherwise computes for display, which the CLI's
-        tables and QC report cover in phase 2.
-  - [ ] exports.
+        `sleep_states` table and QC report cover.
+  - [x] exports: the result tables are `pipeline/tables.py`, shared by the
+        Export page and `clockwork run`; settings export is `pipeline/export.py`.
 - [x] Phase 2: the config file (`pipeline/experiment.py`), `run` / `validate` /
       `init` / `schema` (`cli.py`), the tables and QC report
       (`pipeline/tables.py`, `pipeline/report.py`), and the **Export settings**

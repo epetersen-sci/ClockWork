@@ -51,10 +51,12 @@ from clockwork.pipeline.period import (
     run_period,
     run_period_method,
 )
+from clockwork.pipeline.regroup import carry_over
 from clockwork.pipeline.run import OutputsExist, RunOutputs, run_experiment
 from clockwork.pipeline.sleep import SleepConfig, detect_sleep, detection_phase, reclassify_sleep
 
 __all__ = [
+    "carry_over",
     "ConfigError",
     "ExperimentConfig",
     "LoadedConfig",

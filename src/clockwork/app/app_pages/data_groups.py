@@ -28,7 +28,6 @@ from clockwork.app.ui import status
 from clockwork.app.ui.guards import require_dataset
 from clockwork.app.ui.state import invalidate_derived_caches
 from clockwork.core import dam_utilities
-from clockwork.core.dataset_meta import is_split_applied
 
 
 def _apply_group_filter(selected_groups):
@@ -48,9 +47,7 @@ def _apply_group_filter(selected_groups):
     ds_full = dam_utilities.ensure_numpy_backed(ds_full)
     st.session_state.dataset_full = ds_full
     filtered = pipeline.subset(ds_full, pipeline.keep_for_groups(ds_full, selected_groups))
-    invalidate_derived_caches()
-    st.session_state.dataset = filtered
-    st.session_state.analyses = detect_analyses(filtered)
+    _replace_working_dataset(filtered)
 
 
 def _apply_regroup(chosen):
@@ -60,10 +57,10 @@ def _apply_regroup(chosen):
     subset filter's restore point: regrouping only the working copy would make
     *Reset to all groups* quietly put the old grouping back.
 
-    Every derived cache goes too. ``group`` feeds every group-level comparison,
-    plot and export, so a period analysis computed under the previous grouping
-    describes labels that no longer exist — showing it against the new ones would
-    be worse than making the user re-run it.
+    The flies' own work (curation, the split, sleep, period results) carries
+    over (``_replace_working_dataset``); what describes the old GROUPS (the HMM,
+    the CWT group averages) does not, and every derived cache is cleared, since
+    ``group`` feeds every group-level comparison, plot and export.
     """
     ds_full = st.session_state.get("dataset_full")
     base = ds_full if ds_full is not None else st.session_state.dataset
@@ -83,10 +80,9 @@ def _apply_regroup(chosen):
         # travels with them, or the regrouped dataset would claim no subset.
         if "subset_keep" in current.attrs:
             kept.attrs["subset_keep"] = current.attrs["subset_keep"]
-        st.session_state.dataset = kept
+        _replace_working_dataset(kept)
     else:
-        st.session_state.dataset = regrouped_full.copy()
-    st.session_state.analyses = detect_analyses(st.session_state.dataset)
+        _replace_working_dataset(regrouped_full.copy())
 
 
 def _reset_group_filter():
@@ -94,9 +90,30 @@ def _reset_group_filter():
     ds_full = st.session_state.get("dataset_full")
     if ds_full is None:
         return
+    _replace_working_dataset(ds_full.copy())
+
+
+#: Where a group change leaves its account of what was carried over, for the
+#: rerun that follows the click (a message drawn before st.rerun() is lost).
+_NOTES_KEY = "_group_change_notes"
+
+
+def _replace_working_dataset(rebuilt):
+    """Make ``rebuilt`` the working dataset, with the current one's work on it.
+
+    ``rebuilt`` comes from the import copy, so it lacks curation, the split and
+    every result; ``pipeline.carry_over`` re-applies or carries what it can
+    (BACKLOG 22) and says what it could not.
+    """
+    current = st.session_state.get("dataset")
+    notes = []
+    if current is not None:
+        with st.spinner("Carrying curation, the split and results over to the new groups..."):
+            rebuilt, notes = pipeline.carry_over(rebuilt, current)
     invalidate_derived_caches()
-    st.session_state.dataset = ds_full.copy()
-    st.session_state.analyses = detect_analyses(st.session_state.dataset)
+    st.session_state.dataset = rebuilt
+    st.session_state.analyses = detect_analyses(rebuilt)
+    st.session_state[_NOTES_KEY] = notes
 
 
 #: Display names for the analyses detect_analyses reports.
@@ -114,29 +131,26 @@ _ANALYSIS_NAMES = {
 
 
 def _undone_by_a_group_change(current, full):
-    """What changing groups here would silently throw away (BACKLOG 22).
+    """What a group change here would still throw away (BACKLOG 22).
 
-    Every change on this page rebuilds the working dataset from ``dataset_full``,
-    the copy made at import. Anything done to the working dataset since — curation,
-    the split, any analysis — is not on that copy, so it goes. This names it,
-    because the change itself says only that "cached results were cleared".
+    Curation, the split, sleep and per-fly period results are carried over
+    (``pipeline.carry_over``). Results that describe GROUPS are not: they were
+    computed from the old groups' members, so they would describe groups that no
+    longer exist. Period results also drop when a change brings in flies that
+    were never analysed; which flies those are is only known once curation has
+    been re-applied, so that is said after the change, in its notes.
     """
     if full is None:
         return []
     undone = []
-    curation = pipeline.CurationConfig.from_attrs(current.attrs)
-    if curation is not None and pipeline.CurationConfig.from_attrs(full.attrs) is None:
-        undone.append(
-            "**curation** — flies removed as dead come back, and survivors lose the "
-            "trimming at their death"
-        )
-    if is_split_applied(current) and not is_split_applied(full):
-        undone.append("**the LD/DD split**")
-    ran_now = {k for k, v in detect_analyses(current).items() if v}
-    ran_then = {k for k, v in detect_analyses(full).items() if v}
-    lost = [_ANALYSIS_NAMES.get(k, k) for k in sorted(ran_now - ran_then) if k != "preprocessing"]
-    if lost:
-        undone.append("results of " + ", ".join(lost))
+    ran = {k for k, v in detect_analyses(current).items() if v}
+    if "hmm" in ran:
+        undone.append("**the HMM**: its model was fitted per group or pooled across flies")
+    if "cwt_group_average_paths" in current.attrs:
+        undone.append("**the CWT group-averaged scalograms**")
+    for key in ("sleep_deprivation", "phase_shift"):
+        if key in ran:
+            undone.append(f"**{_ANALYSIS_NAMES[key]}** results")
     return undone
 
 
@@ -144,15 +158,22 @@ def _warn_if_work_would_be_undone(current, full):
     undone = _undone_by_a_group_change(current, full)
     if undone:
         st.warning(
-            "**This undoes work.** Changing groups rebuilds the dataset from the "
-            "copy made at import, which does not include:\n\n"
+            "**This discards some results.** Curation, the LD/DD split, sleep and each "
+            "fly's period results carry over to the new groups, but these do not:\n\n"
             + "\n".join(f"- {item}" for item in undone)
-            + "\n\nChange groups before curating, or re-run those steps afterwards."
+            + "\n\nRe-run them after changing groups."
         )
 
 
 ds = require_dataset()
 ds_full = st.session_state.get("dataset_full")
+
+# What the last group change carried over and what it could not, said once.
+_notes = st.session_state.pop(_NOTES_KEY, None)
+if _notes is not None:
+    st.success(
+        "**Groups changed.**" + ("\n\n" + "\n".join(f"- {n}" for n in _notes) if _notes else "")
+    )
 
 # ---- Active-filter status badge ----------------------------------
 if ds_full is not None and len(ds["id"]) < len(ds_full["id"]) and "group" in ds_full.coords:
@@ -197,10 +218,9 @@ if _regroup_candidates:
         _current_cols = dam_utilities.get_group_columns(ds)
         st.markdown(
             "Groups are built by joining one or more metadata columns with `-`. "
-            "Changing them **re-derives the `group` coord in place** and clears "
-            "every cached analysis result — `group` feeds every group-level "
-            "comparison, plot and export, so previous results describe labels "
-            "that no longer exist."
+            "Changing them **re-derives the `group` coord in place**. Curation, the "
+            "LD/DD split, sleep and each fly's period results carry over; results "
+            "that describe whole groups (the HMM, CWT group averages) do not."
         )
         _chosen = st.multiselect(
             "Metadata columns that define a group",
@@ -237,10 +257,6 @@ if _regroup_candidates:
                 else None,
             ):
                 _apply_regroup(_chosen)
-                st.success(
-                    f"Regrouped by {', '.join(_chosen)} — {len(_new_groups)} group(s). "
-                    "Cached analysis results were cleared."
-                )
                 st.rerun()
 
 # ============================================================
@@ -252,9 +268,9 @@ if ds_full is not None and "group" in ds_full.coords:
     with st.expander("Group selection (subset for downstream analyses)"):
         st.markdown(
             "Pick which groups to keep. Applying a selection **drops the "
-            "other flies from the working dataset** and clears every "
-            "cached analysis result, so downstream pages re-compute on "
-            "the subset only. Click *Reset* to restore the full set."
+            "other flies from the working dataset**. Curation, the LD/DD "
+            "split, sleep and each kept fly's period results carry over. "
+            "Click *Reset* to restore the full set."
         )
 
         # Per-group fly counts from the unfiltered dataset.
@@ -307,10 +323,6 @@ if ds_full is not None and "group" in ds_full.coords:
                 ),
             ):
                 _apply_group_filter(selected)
-                st.success(
-                    f"Filter applied — {preview_n} flies across "
-                    f"{len(selected)} groups. Cached analyses were cleared."
-                )
                 st.rerun()
         with col_reset:
             reset_disabled = len(ds["id"]) == len(ds_full["id"])
@@ -325,5 +337,4 @@ if ds_full is not None and "group" in ds_full.coords:
                 ),
             ):
                 _reset_group_filter()
-                st.success("Restored full dataset. Cached analyses were cleared.")
                 st.rerun()

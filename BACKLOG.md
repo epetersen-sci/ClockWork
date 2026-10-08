@@ -169,6 +169,15 @@ analyses' results), and says nothing when there is nothing to lose
 (`tests/test_data_pages_pipeline.py`). The rebuild itself is unchanged; whether
 a group change should instead apply to the current dataset is still open.
 
+**Fixed (2026-10-08):** a group change still rebuilds from the import copy, then
+`pipeline.carry_over` puts the flies' work back: curation, the split and sleep
+are re-applied from their recorded settings, and period results are kept fly by
+fly. Curation decides each fly from its own record alone, so this is exactly
+"grouped first, then curated" (`tests/test_group_change_carry_over.py` holds
+the two orders equal on example_data). Only results that describe groups (the
+HMM, CWT group averages, sleep deprivation, phase shift) are dropped, and the
+page names them before and after the change.
+
 ---
 
 ## 23. Running a period method reorders the master's flies and adds `split_minute`

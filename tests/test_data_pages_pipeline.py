@@ -110,30 +110,3 @@ def built_master(raw_folder):
 
     inputs = InputsConfig(metadata=raw_folder / "metadata_exp17.csv", monitors=raw_folder)
     return pipeline.build_dataset(pipeline.read_monitors(inputs), inputs)
-
-
-class TestGroupChangesWarnBeforeUndoingWork:
-    """BACKLOG 22: changing groups rebuilds from the import-time copy, so it undoes
-    curation and the split. The page has to say so before the button is pressed."""
-
-    @staticmethod
-    def _warnings(at):
-        return [w.value for w in at.warning if "This undoes work" in w.value]
-
-    def test_nothing_to_undo_means_no_warning(self, app, built_master):
-        at = app(ds=built_master, page="data_groups")
-        assert not at.exception
-        assert self._warnings(at) == []
-
-    def test_curation_and_split_are_named(self, app, built_master):
-        from clockwork import pipeline
-
-        curated = pipeline.curate(built_master, CurationConfig()).live
-        worked = pipeline.split(curated, SplitConfig())
-        at = app(ds=worked, page="data_groups", dataset_full=built_master)
-        assert not at.exception
-        warnings = self._warnings(at)
-        assert warnings, "a curated, split dataset must warn before a group change"
-        # Both expanders carry it, beside their buttons.
-        assert len(warnings) == 2
-        assert "curation" in warnings[0] and "LD/DD split" in warnings[0]
