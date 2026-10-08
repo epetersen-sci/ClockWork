@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from clockwork.app import export_helpers
-from clockwork.app.ui import charts, filters, status
+from clockwork.app.ui import charts, status
 from clockwork.app.ui.guards import require_dataset
 from clockwork.core import dam_utilities, plotting
 from clockwork.core import phase_shift as ps_module
@@ -38,7 +38,7 @@ st.caption(
 # ============================================================
 ds = require_dataset()
 
-if "pulse_zt_hour" not in ds.coords:
+if "pulse_time" not in ds.coords:
     st.error(
         "This dataset has no **pulse_time** column. Phase-shift analysis needs to know at "
         "what circadian time the light pulse was given.\n\n"
@@ -201,12 +201,8 @@ with _tab_setup:
         if not _coord_opts:
             st.error("This dataset has no categorical metadata coordinates to group by.")
             st.stop()
-        # Start from the grouping the dataset already has — as COORD names, via
-        # get_group_coord_names. attrs['group_columns'] records the metadata COLUMNS
-        # ticked at import, and two of those live under different coord names
-        # (pulse_time -> pulse_zt_hour), so filtering that list down to real coords
-        # dropped them and left this page defaulting to genotype alone: a different
-        # partition from the one the dataset is grouped by.
+        # Start from the grouping the dataset already has (get_group_coord_names),
+        # so this page partitions the flies the way every other page does.
         #
         # Unlike the actograms page this cannot simply select the `group` coord: the
         # matched pairing needs a column that separates pulsed from unpulsed, which
@@ -226,7 +222,7 @@ with _tab_setup:
 
             A column that does not splits nothing, and adding it to the grouping
             only lengthens every label — ``A_LP`` becomes ``A_LP_nan``. That is
-            exactly what happens with the ``pulse_duration_minutes`` that
+            exactly what happens with the ``pulse_duration_min`` that
             ``add_pulse_metadata`` invents, all-NaN, for a dataset whose metadata
             never carried one.
             """
@@ -239,10 +235,10 @@ with _tab_setup:
             (
                 c
                 for c in (
-                    "pulse_duration_minutes",
+                    "pulse_duration_min",
                     "condition",
                     "treatment",
-                    "pulse_zt_hour",
+                    "pulse_time",
                 )
                 if c in _coord_opts and _separates_something(c)
             ),
@@ -337,7 +333,7 @@ with _tab_setup:
             _dur_default = next(
                 (
                     c
-                    for c in ("pulse_duration_minutes", "pulse_duration", "duration")
+                    for c in ("pulse_duration_min", "pulse_duration", "duration")
                     if c in _numeric_cols
                 ),
                 _numeric_cols[0] if _numeric_cols else None,
@@ -864,7 +860,7 @@ if _tab_results.open:
                             )
                         else:
                             _gb_prc = list(_rp["group_by"])
-                            _zt_coord = "pulse_zt_hour"
+                            _zt_coord = "pulse_time"
 
                             # ---------------------------------------- the curve
                             st.markdown("#### Phase response curve")
@@ -930,24 +926,18 @@ if _tab_results.open:
                                 "their distribution and its line is the mean — the same "
                                 "number the curve above plots.",
                             )
-                            # Named the way Import named them. Two of these columns are
-                            # stored under a different coord name than the one that was
-                            # ticked (pulse_time -> pulse_zt_hour), and a figure that
-                            # labels itself from the coords renames the user's own
-                            # columns back at them.
-                            _back = filters.column_for_coord(ds)
+                            # Named the way Import named them: the coords carry the
+                            # metadata's own column names.
                             _fig_v, _drawn_v = plotting.phase_response_violins(
                                 _treated,
                                 major_cols=_major,
                                 split_col=_split,
                                 show_points=_show_pts,
                                 x_title=" x ".join(
-                                    _back.get(_zt_coord if c == "zt" else c, c).replace("_", " ")
+                                    (_zt_coord if c == "zt" else c).replace("_", " ")
                                     for c in _major
                                 ),
-                                split_title=(
-                                    _back.get(_split, _split).replace("_", " ") if _split else None
-                                ),
+                                split_title=(_split.replace("_", " ") if _split else None),
                             )
                             charts.plotly_chart(
                                 _fig_v, filename="phase_response_per_fly", width="stretch"
@@ -1594,8 +1584,8 @@ if _tab_results.open:
                             post_fit=res1["fits"].get(preview_id, {}).get("post"),
                             pulse_minute=row1.get("pulse_minute"),
                             pulse_duration_minutes=(
-                                float(one["pulse_duration_minutes"].values[0])
-                                if "pulse_duration_minutes" in one.coords
+                                float(one["pulse_duration_min"].values[0])
+                                if "pulse_duration_min" in one.coords
                                 else None
                             ),
                             reference_day_index=(
@@ -1758,8 +1748,8 @@ if _tab_results.open:
                             post_fit=results["fits"].get(view_id, {}).get("post"),
                             pulse_minute=row.get("pulse_minute"),
                             pulse_duration_minutes=(
-                                float(one["pulse_duration_minutes"].values[0])
-                                if "pulse_duration_minutes" in one.coords
+                                float(one["pulse_duration_min"].values[0])
+                                if "pulse_duration_min" in one.coords
                                 else None
                             ),
                             reference_day_index=(

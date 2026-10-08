@@ -455,13 +455,16 @@ def convert_to_relative_time(dam_data: pd.DataFrame, metadata: pd.DataFrame = No
 # Columns that can NEVER define a group: per-fly ids / filenames / monitor+region
 # numbers, and the experiment-timing columns. Datetime-typed columns are excluded
 # additionally by dtype in group_defining_columns (robust to future column names).
-#: Metadata columns stored as a per-id coord under a DIFFERENT name. The value is
-#: transformed on the way in — "ZT21" is parsed to the float 21.0 — so the coord
-#: cannot simply carry the column's name and values. Anything that has to get from a
-#: metadata column name to the coord holding it goes through this.
-METADATA_COORD_RENAMES = {
-    "pulse_time": "pulse_zt_hour",
-    "pulse_duration_min": "pulse_duration_minutes",
+#: Coord names that datasets saved before 2026-10-08 used for two metadata
+#: columns, mapped to the column names every dataset now uses. Those versions
+#: parsed ``pulse_time`` ("ZT21") into a float ``pulse_zt_hour`` (21.0) at import,
+#: so the same column had two names and two spellings of its values (BACKLOG
+#: 21). Now the coord holds the metadata's own text under the column's own name,
+#: and the hour is parsed when an analysis needs it (:func:`pulse_zt_hours`).
+#: Read-side only: :func:`migrate_legacy_pulse_coords` translates older files.
+LEGACY_PULSE_COORDS = {
+    "pulse_zt_hour": "pulse_time",
+    "pulse_duration_minutes": "pulse_duration_min",
 }
 
 #: Columns that are never sensible grouping factors. `region_id` and `id` identify
@@ -503,6 +506,50 @@ def _parse_zt_hour(cell):
         ) from None
 
 
+def pulse_zt_hours(ds):
+    """Each fly's light-pulse time as a ZT hour (float64), NaN where unpulsed.
+
+    ``pulse_time`` is stored as the metadata wrote it ("ZT15", "zt15", "15"), so
+    every analysis that needs the number parses it here, the same way. Raises
+    ``ValueError`` when the dataset has no ``pulse_time``.
+    """
+    if "pulse_time" not in ds.coords:
+        raise ValueError(
+            "This dataset has no 'pulse_time' coordinate. Add a 'pulse_time' column to "
+            "the metadata (a ZT hour such as 'ZT15'; see metadata_template.csv) and reload it."
+        )
+    return np.array([_parse_zt_hour(v) for v in np.asarray(ds["pulse_time"].values)], dtype="float64")
+
+
+def migrate_legacy_pulse_coords(ds):
+    """Rename an older dataset's pulse coords to the names datasets now use.
+
+    ``pulse_zt_hour`` (a parsed float) becomes ``pulse_time`` text, written
+    "ZT21" for 21.0 and "" where unpulsed: the original spelling was not kept,
+    so this is the one place it is chosen. ``pulse_duration_minutes`` becomes
+    ``pulse_duration_min`` unchanged. The grouping attrs that name them are
+    rewritten to match. A dataset already using the new names is returned as is.
+    """
+    old = [c for c in LEGACY_PULSE_COORDS if c in ds.coords]
+    if not old:
+        return ds
+    out = ds
+    if "pulse_zt_hour" in out.coords and "pulse_time" not in out.coords:
+        hours = np.asarray(out["pulse_zt_hour"].values, dtype="float64")
+        text = np.array([f"ZT{h:g}" if np.isfinite(h) else "" for h in hours], dtype=object)
+        out = out.assign_coords(pulse_time=("id", _as_numpy_array(text)))
+    if "pulse_duration_minutes" in out.coords and "pulse_duration_min" not in out.coords:
+        out = out.assign_coords(
+            pulse_duration_min=("id", np.asarray(out["pulse_duration_minutes"].values, dtype="float32"))
+        )
+    out = out.drop_vars([c for c in LEGACY_PULSE_COORDS if c in out.coords])
+    out.attrs = dict(ds.attrs)
+    for key in ("group_columns", "group_coord_names", "metadata_coords"):
+        if key in out.attrs:
+            out.attrs[key] = [LEGACY_PULSE_COORDS.get(str(c), str(c)) for c in np.atleast_1d(out.attrs[key])]
+    return out
+
+
 def group_defining_columns(metadata: pd.DataFrame):
     """Return the metadata columns eligible to define a comparison group: every
     column except the ids/filenames/monitor numbers/timing columns
@@ -531,10 +578,10 @@ def derive_group_labels(metadata: pd.DataFrame, group_columns):
     cols = [c for c in group_columns if c in meta_idx.columns]
     if not cols:
         return None
-    label = meta_idx[cols[0]].astype(str)
-    for c in cols[1:]:
-        label = label + "-" + meta_idx[c].astype(str)
-    return label
+    # The same builder import and Redefine groups use, so the Import page's
+    # preview shows the labels the dataset will actually get.
+    label = join_group_labels([meta_idx[c].to_numpy() for c in cols])
+    return pd.Series(label, index=meta_idx.index)
 
 
 def fly_group_map(ds, default="All Flies"):
@@ -575,21 +622,15 @@ def get_group_columns(ds):
 
 
 def get_group_coord_names(ds):
-    """The per-id COORD names behind ``ds['group']``.
+    """The per-id coord names behind ``ds['group']``.
 
-    :func:`get_group_columns` returns the metadata COLUMNS that were ticked, which
-    is the right record of the choice but not always readable off the dataset —
-    ``pulse_time`` is stored as ``pulse_zt_hour``. Use this wherever the grouping
-    has to be re-derived from coords (a "one figure per …" picker), and
-    ``get_group_columns`` wherever the question is which columns were chosen.
-
-    Falls back to mapping the columns through :data:`METADATA_COORD_RENAMES` for
-    datasets saved before the attr existed, so an older ``.nc`` still resolves.
+    Every metadata column is now stored under its own name, so these are the
+    same as :func:`get_group_columns`; the attr is still read first, because
+    datasets saved before that recorded the two separately (BACKLOG 21).
     """
     recorded = ds.attrs.get("group_coord_names")
-    if recorded is not None:
-        return [str(v) for v in np.atleast_1d(recorded)]
-    return [METADATA_COORD_RENAMES.get(c, c) for c in get_group_columns(ds)]
+    names = np.atleast_1d(recorded) if recorded is not None else get_group_columns(ds)
+    return [LEGACY_PULSE_COORDS.get(str(v), str(v)) for v in names]
 
 
 def group_defining_coords(ds):
@@ -633,6 +674,25 @@ def group_defining_coords(ds):
     return out
 
 
+def join_group_labels(columns):
+    """Per-fly group labels: each column's values as text, joined with '-'.
+
+    The ONE way a label is built, used by import (create_xarray_dataset) and by
+    Redefine groups (regroup_dataset) alike, so the same grouping always gives
+    the same labels (BACKLOG 21: the two paths once named one group two ways).
+    A blank cell ("", None, NaN) reads "nan", kept explicit so a partially
+    annotated fly stays visibly distinct.
+    """
+    parts = []
+    for values in columns:
+        text = _as_numpy_array(values).astype(str)
+        parts.append(np.where(np.isin(text, ["", "None"]), "nan", text))
+    label = parts[0]
+    for p in parts[1:]:
+        label = np.char.add(np.char.add(label, "-"), p)
+    return label
+
+
 def regroup_dataset(ds, group_columns):
     """Re-derive the ``group`` coord on an ALREADY-built dataset from the chosen
     metadata columns (each is stored as a per-id coord). Returns a new dataset with
@@ -642,10 +702,7 @@ def regroup_dataset(ds, group_columns):
     chosen = [c for c in group_columns if c in ds.coords]
     if not chosen:
         return ds
-    parts = [_as_numpy_array(ds[c].values).astype(str) for c in chosen]
-    label = parts[0]
-    for p in parts[1:]:
-        label = np.char.add(np.char.add(label, "-"), p)
+    label = join_group_labels([ds[c].values for c in chosen])
     out = ds.assign_coords(group=("id", _as_numpy_array(label)))
     out.attrs = dict(ds.attrs)
     out.attrs["group_columns"] = list(chosen)
@@ -757,8 +814,8 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     # monitor-level effects are a real thing to look for, so it has to be groupable.
     # `region_id` stays out — it separates individual flies, which is what the `id`
     # coord already does, so as a grouping factor it would just be "one fly per
-    # group". The pulse pair is excluded here and attached below under the names
-    # their PARSED values deserve (see METADATA_COORD_RENAMES).
+    # group". The pulse pair is excluded here only because their values (text and
+    # blanks, numbers and NaN) cannot be netCDF attrs; they are attached below.
     exclude_columns = [
         "file",
         "region_id",
@@ -846,12 +903,20 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     if "first_DD_day" in metadata.columns:
         coords["first_DD_day"] = ("id", _as_numpy_array(metadata["first_DD_day"]))
     if "pulse_time" in metadata.columns:
-        coords["pulse_zt_hour"] = (
-            "id",
-            np.array([_parse_zt_hour(v) for v in metadata["pulse_time"].to_numpy()], dtype="float32"),
-        )
+        # Stored as the metadata wrote it (BACKLOG 21): "ZT15" and "zt15" stay
+        # distinct, because that is the owner's choice to make. Each cell is still
+        # parsed here, so an unreadable one fails at import rather than in an
+        # analysis later; the hour itself is parsed again when needed
+        # (pulse_zt_hours). A blank (unpulsed) cell is "", which netCDF can store.
+        _pulse_text = [
+            "" if (v is None or (isinstance(v, float) and np.isnan(v))) else str(v)
+            for v in metadata["pulse_time"].to_numpy()
+        ]
+        for _v in _pulse_text:
+            _parse_zt_hour(_v)
+        coords["pulse_time"] = ("id", _as_numpy_array(np.array(_pulse_text, dtype=object)))
     if "pulse_duration_min" in metadata.columns:
-        coords["pulse_duration_minutes"] = (
+        coords["pulse_duration_min"] = (
             "id",
             np.asarray(metadata["pulse_duration_min"].to_numpy(), dtype="float32"),
         )
@@ -860,22 +925,15 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     for col in properties:
         coords[col] = ("id", _as_numpy_array(metadata.set_index("id")[col]))
 
-    # Which per-id coords came FROM THE METADATA — including the two stored under a
-    # different name than their column (``pulse_time`` -> ``pulse_zt_hour``,
-    # ``pulse_duration_min`` -> ``pulse_duration_minutes``).
+    # Which per-id coords came FROM THE METADATA.
     #
-    # This is not the same list as ``group_columns``, which records the metadata
-    # COLUMNS the user ticked. A page that wants to re-derive a grouping needs names
-    # it can actually read off the dataset, and for the pulse columns those differ —
-    # which is why defaulting a picker to ``group_columns`` quietly dropped them.
-    #
-    # It is also not recoverable from the attrs. ``group_defining_coords`` identifies
+    # Not recoverable from the attrs. ``group_defining_coords`` identifies
     # metadata coords by "is a per-id coord AND an attr key", and the pulse columns
     # deliberately have no attr: their unique values mix strings, numbers and the NaN
     # of an unpulsed cohort, which NetCDF cannot serialize. A flat list of coord
     # names can be serialized, so the provenance is recorded directly instead.
     _meta_coords = list(properties)
-    for _c in ("genotype", "pulse_zt_hour", "pulse_duration_minutes"):
+    for _c in ("genotype", "pulse_time", "pulse_duration_min"):
         if _c in coords and _c not in _meta_coords:
             _meta_coords.append(_c)
     attrs["metadata_coords"] = sorted(_meta_coords)
@@ -888,17 +946,21 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
         chosen = [c for c in group_columns if c in metadata.columns]
     else:
         chosen = [c for c in ("genotype", "temperature") if c in metadata.columns]
-    group_series = derive_group_labels(metadata, chosen) if chosen else None
-    if group_series is not None:
-        coords["group"] = ("id", _as_numpy_array(group_series))
+    if chosen:
+        # From the coords just built, by the same function Redefine groups uses,
+        # so the labels cannot depend on which path made them (BACKLOG 21).
+        coords["group"] = (
+            "id",
+            _as_numpy_array(
+                join_group_labels(
+                    [coords[c][1] if c in coords else metadata[c].to_numpy() for c in chosen]
+                )
+            ),
+        )
         attrs["group_columns"] = list(chosen)
-        # The same choice, as COORD names. `group_columns` is what the user ticked
-        # and is the honest record of that; but two of those columns live under
-        # different coord names, so a page that wants to re-derive the grouping
-        # from coords cannot use it directly and silently dropped them.
-        attrs["group_coord_names"] = [
-            METADATA_COORD_RENAMES.get(c, c) for c in chosen
-        ]
+        # Kept beside group_columns for the datasets and readers that predate
+        # every column having its own coord name; the two are now always equal.
+        attrs["group_coord_names"] = list(chosen)
 
     ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
@@ -1434,7 +1496,7 @@ def _derive_pulse_minute(ds):
     into DD. So the day is not a free parameter: it is the day whose ZT0 is one day
     before ``first_DD_day``, which is why only the ZT needs writing down::
 
-        pulse[id] = split_minute[id] - 1440 + pulse_zt_hour[id] * 60
+        pulse[id] = split_minute[id] - 1440 + pulse_zt_hours(ds)[id] * 60
 
     Example (the lab's own): ``first_DD_day`` 6/23 09:00 with ``start_datetime``
     6/20 09:00 gives ``split_minute`` 4320, so ZT15 resolves to minute 3780 — 9 h
@@ -1444,9 +1506,9 @@ def _derive_pulse_minute(ds):
     unpulsed control cohort and that "no pulse" state must survive as NaN. An integer
     sentinel would read as a real minute to any caller that forgot to check.
     """
-    if "pulse_zt_hour" not in ds.coords:
+    if "pulse_time" not in ds.coords:
         raise ValueError(
-            "Cannot derive 'pulse_minute': dataset has no 'pulse_zt_hour' coordinate. "
+            "Cannot derive 'pulse_minute': dataset has no 'pulse_time' coordinate. "
             "Add a 'pulse_time' column to the metadata (a ZT hour such as 'ZT15'; see "
             "metadata_template.csv) and reload the dataset."
         )
@@ -1466,32 +1528,30 @@ def _derive_pulse_minute(ds):
         ds = add_phase_metadata(ds)
 
     split = np.asarray(ds["split_minute"].values, dtype="float64")
-    zt = np.asarray(ds["pulse_zt_hour"].values, dtype="float64")
+    zt = pulse_zt_hours(ds)
     return np.rint(split - 1440.0 + zt * 60.0).astype(np.float32)
 
 
 def add_pulse_metadata(ds):
     """Attach per-`id` light-pulse coordinates to ``ds`` (idempotent).
 
-    Adds ``pulse_minute`` (float32, NaN where a cohort received no pulse) and passes
-    ``pulse_duration_minutes`` through (float32, NaN meaning "duration unrecorded" —
-    callers treat that as an instantaneous pulse). Structured exactly like
+    Adds ``pulse_minute`` (float32, NaN where a cohort received no pulse), and
+    ``pulse_duration_min`` all-NaN when the metadata had no such column (NaN means
+    "duration unrecorded"; callers treat that as an instantaneous pulse). Structured exactly like
     :func:`add_phase_metadata`: the value lives in a coordinate (which round-trips
     through NetCDF losslessly) rather than in attrs.
 
     Raises
     ------
     ValueError
-        If ``pulse_zt_hour`` / ``first_DD_day`` are absent, or the time axis is not
+        If ``pulse_time`` / ``first_DD_day`` are absent, or the time axis is not
         relative-integer-minute.
     """
     pulse_minute = _derive_pulse_minute(ds)
     out = ds.assign_coords(pulse_minute=("id", pulse_minute))
-    if "pulse_duration_minutes" in ds.coords:
-        durations = np.asarray(ds["pulse_duration_minutes"].values, dtype="float32")
-    else:
-        durations = np.full(ds["id"].size, np.nan, dtype="float32")
-    return out.assign_coords(pulse_duration_minutes=("id", durations))
+    if "pulse_duration_min" in ds.coords:
+        return out
+    return out.assign_coords(pulse_duration_min=("id", np.full(ds["id"].size, np.nan, dtype="float32")))
 
 
 def select_phase(ds, phase="auto", discard_first_dd_day=False):

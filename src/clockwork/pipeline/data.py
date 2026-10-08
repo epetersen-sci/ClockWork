@@ -31,10 +31,10 @@ from clockwork.core.dataset_meta import (
 from clockwork.core.load_and_save_datasets import load_dataset_from_netcdf
 from clockwork.pipeline._config import StepConfig
 
-# Two metadata columns are stored under different coord names. The config speaks
-# in COLUMN names — the ones in the user's metadata file — and translates here.
-_COORD_FOR = dict(dam_utilities.METADATA_COORD_RENAMES)
-_COLUMN_FOR = {coord: column for column, coord in _COORD_FOR.items()}
+# Every metadata column is stored as a coord under its own name, so the config's
+# column names are coord names. Older datasets (and attrs written by them) used two
+# other names for the pulse columns; reading maps those to the column names.
+_COLUMN_FOR = dict(dam_utilities.LEGACY_PULSE_COORDS)
 
 Scalar = str | int | float | bool | None
 
@@ -103,8 +103,8 @@ class GroupsConfig(StepConfig):
 
     @classmethod
     def _normalise_from_attrs(cls, values):
-        # regroup_dataset records coord names where import records column names
-        # (BACKLOG); read either, report column names.
+        # Datasets saved before BACKLOG 21 was fixed may name a pulse column by its
+        # old coord name; report the column name.
         if values.get("by") is not None:
             values["by"] = [_COLUMN_FOR.get(c, c) for c in values["by"]]
         return values
@@ -291,14 +291,13 @@ def apply_groups(ds: xr.Dataset, groups: GroupsConfig) -> xr.Dataset:
     """
     out = ds
     if groups.by is not None:
-        coords = [_COORD_FOR.get(c, c) for c in groups.by]
-        missing = [col for col, coord in zip(groups.by, coords) if coord not in ds.coords]
+        missing = [col for col in groups.by if col not in ds.coords]
         if missing:
             raise ValueError(
                 f"groups.by names {missing}, which this dataset does not carry per fly; "
-                f"it has {sorted(_COLUMN_FOR.get(c, c) for c in dam_utilities.group_defining_coords(ds))}"
+                f"it has {sorted(dam_utilities.group_defining_coords(ds))}"
             )
-        out = dam_utilities.regroup_dataset(out, coords)
+        out = dam_utilities.regroup_dataset(out, list(groups.by))
     if groups.keep is not None:
         out = subset(out, groups.keep)
     return out
@@ -344,16 +343,15 @@ def keep_for_groups(ds: xr.Dataset, labels) -> list[dict[str, Any]]:
         if str(label) in wanted:
             rows.add(tuple(_scalar(ds[c].values[i]) for c in coords))
     return [
-        {_COLUMN_FOR.get(c, c): v for c, v in zip(coords, row)}
+        dict(zip(coords, row))
         for row in sorted(rows, key=lambda r: tuple(str(v) for v in r))
     ]
 
 
 def _column_values(ds, column):
-    coord = _COORD_FOR.get(column, column)
-    if coord not in ds.coords or ds[coord].dims != ("id",):
+    if column not in ds.coords or ds[column].dims != ("id",):
         raise ValueError(f"groups.keep names {column!r}, which is not a per-fly metadata column")
-    return [_scalar(v) for v in ds[coord].values]
+    return [_scalar(v) for v in ds[column].values]
 
 
 def _scalar(value):

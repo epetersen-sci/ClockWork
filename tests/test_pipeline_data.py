@@ -146,8 +146,9 @@ class TestRoundTrip:
         assert CurationConfig(min_alive_days=3).overrides() == {"min_alive_days": 3.0}
 
     def test_a_regrouped_dataset_reports_column_names(self, built):
-        """regroup_dataset records the coord name pulse_zt_hour where import records
-        the column pulse_time. The config must speak the metadata's language."""
+        """Datasets saved before BACKLOG 21 was fixed recorded the coord name
+        pulse_zt_hour for the column pulse_time. The config must speak the
+        metadata's language when reading them."""
         regrouped = pipeline.apply_groups(built, GroupsConfig(by=["genotype", "Monitor"]))
         assert GroupsConfig.from_attrs(regrouped.attrs).by == ["genotype", "Monitor"]
         attrs = dict(regrouped.attrs, group_columns=["pulse_zt_hour"])

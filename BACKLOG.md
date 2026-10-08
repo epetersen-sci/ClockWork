@@ -145,6 +145,18 @@ readers moved to `get_group_coord_names` where they need coords.
 `pipeline.GroupsConfig.from_attrs` reads either spelling and reports column
 names, so exported settings are right either way; this item is about the attr.
 
+**Fixed (2026-10-08), more thoroughly than proposed above:** the two pulse
+columns no longer have a second name at all. It turned out the same grouping set
+on Import and on Redefine groups also got different LABELS (`dsmcherry-ZT21` vs
+`dsmcherry-21.0`), because one path labelled from the metadata text and the
+other from the parsed float. Now `pulse_time` is stored as the metadata wrote it
+and `pulse_duration_min` as its number, both under their column names; the ZT
+hour is parsed when an analysis needs it (`dam_utilities.pulse_zt_hours`); and
+import, Redefine groups and the Import preview all build labels with one
+function (`join_group_labels`). Older `.nc` files are migrated on load
+(`migrate_legacy_pulse_coords`; their text is written "ZT21", as the original
+spelling was not kept). `tests/test_grouping_provenance.py`.
+
 ---
 
 ## 22. Changing groups after curation silently undoes curation and the split

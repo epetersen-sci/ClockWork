@@ -68,8 +68,7 @@ def facet_controls(ds, *, container=None):
 
     from clockwork.core import dam_utilities
 
-    back = {v: k for k, v in dam_utilities.METADATA_COORD_RENAMES.items()}
-    grouped_by = [back.get(c, c) for c in dam_utilities.get_group_columns(ds)]
+    grouped_by = list(dam_utilities.get_group_columns(ds))
 
     box.subheader("Compare within panels")
     compare_opts = [_OFF] + factors

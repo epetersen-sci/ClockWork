@@ -119,8 +119,8 @@ outputs:
 
    The second exists because a hand-picked set of groups is not always a
    product of column values; it is what the GUI records. Keys are metadata
-   column names (`pulse_time`, not its stored coord `pulse_zt_hour`), and values
-   match by meaning, so `Monitor: [17]` and `Monitor: ["17"]` are the same.
+   column names, and values match by meaning, so `Monitor: [17]` and
+   `Monitor: ["17"]` are the same.
 5. **A missing upstream step is an error**, not a silent default. Asking for
    `hmm` without `sleep` fails validation and names the missing section: the
    sleep threshold changes every downstream number, so it must be a choice.

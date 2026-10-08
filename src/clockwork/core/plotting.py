@@ -4717,7 +4717,7 @@ def phase_response_curve(
 def phase_response_violins(
     per_fly,
     *,
-    major_cols=("genotype", "zt", "pulse_duration_minutes"),
+    major_cols=("genotype", "zt", "pulse_duration_min"),
     split_col=None,
     value_col="response_hours",
     show_points=True,
@@ -4750,12 +4750,9 @@ def phase_response_violins(
         own — pulse intensity, normally, so two intensities of the same dose can
         be compared without hunting across the axis.
     x_title, split_title : str, optional
-        What to CALL the axis and the legend. The caller passes these because it
-        knows the names the Import page used, and the coords do not: two metadata
-        columns are stored under different coord names (``pulse_time`` becomes
-        ``pulse_zt_hour``), so a figure that labels itself from its column names
-        renames the user's own columns back at them. Defaults to the column names
-        when nothing is passed.
+        What to CALL the axis and the legend, when the caller wants something
+        other than the column names. Defaults to the column names, which are the
+        metadata's own (every metadata column is stored under its own name).
 
     Returns
     -------

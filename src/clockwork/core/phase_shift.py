@@ -92,6 +92,7 @@ from clockwork.core.calibrations import (
     DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
 )
+from clockwork.core.dam_utilities import _parse_zt_hour
 
 MINUTES_PER_DAY = 1440
 
@@ -644,8 +645,8 @@ def compute_phase_shift_analysis(
 
     fly_ids = [str(i) for i in ds["id"].values]
     pulse_minutes = np.asarray(ds["pulse_minute"].values, dtype=float)
-    if "pulse_duration_minutes" in ds.coords:
-        durations = np.asarray(ds["pulse_duration_minutes"].values, dtype=float)
+    if "pulse_duration_min" in ds.coords:
+        durations = np.asarray(ds["pulse_duration_min"].values, dtype=float)
     else:
         durations = np.full(len(fly_ids), np.nan)
     # The LD/DD boundary keeps each regression inside one phase. split_minute is
@@ -926,10 +927,10 @@ BASELINE_DAYS_AFTER_PULSE = (-1,)
 #: Coord names that describe the light pulse itself rather than the animal. Groups
 #: differ in these BECAUSE of the treatment, so they are the columns a control is
 #: matched ACROSS rather than on — see :func:`control_map_from_pulse`.
-PULSE_COORDS = ("pulse_zt_hour", "pulse_duration_minutes", "pulse_intensity")
+PULSE_COORDS = ("pulse_time", "pulse_duration_min", "pulse_intensity")
 
 
-def control_map_from_pulse(ds, group_by, *, duration_coord="pulse_duration_minutes"):
+def control_map_from_pulse(ds, group_by, *, duration_coord="pulse_duration_min"):
     """Pair every group with its unpulsed control, using the pulse itself.
 
     A control is a group whose pulse duration is 0: no pulse was given, whatever
@@ -1100,12 +1101,12 @@ def _per_fly_day_phase_hours(
 def compute_phase_response(
     ds,
     *,
-    group_by=("genotype", "pulse_zt_hour", "pulse_duration_minutes"),
+    group_by=("genotype", "pulse_time", "pulse_duration_min"),
     control_map=None,
     response_days=RESPONSE_DAYS_AFTER_PULSE,
     baseline_days=BASELINE_DAYS_AFTER_PULSE,
-    duration_coord="pulse_duration_minutes",
-    zt_coord="pulse_zt_hour",
+    duration_coord="pulse_duration_min",
+    zt_coord="pulse_time",
     progress_callback=None,
     activity_var="activity",
     filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
@@ -1189,7 +1190,9 @@ def compute_phase_response(
 
     fly_ids = [str(i) for i in ds["id"].values]
     pulse_minutes = np.asarray(ds["pulse_minute"].values, dtype=float)
-    zt_vals = np.asarray(ds[zt_coord].values, dtype=float)
+    # The pulse time is stored as the metadata wrote it ("ZT15"); parse it here,
+    # the one place the PRC needs the number (BACKLOG 21).
+    zt_vals = np.array([_parse_zt_hour(v) for v in np.asarray(ds[zt_coord].values)], dtype=float)
 
     # The pulse day, resolved before detection because the control flies need it too.
     pulsed = pulse_minutes[np.isfinite(pulse_minutes)]

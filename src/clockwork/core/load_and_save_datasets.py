@@ -171,6 +171,10 @@ def load_dataset_from_netcdf(filepath: str) -> xr.Dataset:
     for attr_to_remove in attrs_to_remove:
         del ds_loaded.attrs[attr_to_remove]
 
+    # Files saved before every metadata column kept its own coord name
+    # (BACKLOG 21) name the pulse columns pulse_zt_hour / pulse_duration_minutes.
+    ds_loaded = dam_utilities.migrate_legacy_pulse_coords(ds_loaded)
+
     # Defense in depth: NetCDF normally yields numpy, but any pandas/Arrow-backed
     # remnant would break .sel/.isel — normalize before returning to the app.
     return dam_utilities.ensure_numpy_backed(ds_loaded)

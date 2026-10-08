@@ -168,8 +168,8 @@ def facet_colours(levels):
 class FacetSpec:
     """How to arrange one figure's flies into panels. Plain data; JSON round-trips.
 
-    Column names are METADATA column names, the ones ticked on Import
-    (``pulse_time``, not the ``pulse_zt_hour`` coord it is stored under).
+    Column names are METADATA column names, the ones ticked on Import (each is
+    stored as a coord under that same name).
 
     compare_by
         The factor compared inside each panel: one line per level on a profile,
@@ -272,9 +272,11 @@ class FacetSpec:
 
 
 def factor_columns(ds):
-    """The dataset's grouping factors, in METADATA column names, Import order."""
-    back = {v: k for k, v in dam_utilities.METADATA_COORD_RENAMES.items()}
-    return [back.get(c, c) for c in dam_utilities.group_defining_coords(ds)]
+    """The dataset's grouping factors, in METADATA column names, Import order.
+
+    Every metadata column is stored under its own name, so these are the coords.
+    """
+    return list(dam_utilities.group_defining_coords(ds))
 
 
 def _cell(v):
@@ -299,8 +301,7 @@ def fly_factor_table(ds):
     ids = [str(v.item() if hasattr(v, "item") else v) for v in ds["id"].values]
     cols = {}
     for col in factor_columns(ds):
-        coord = dam_utilities.METADATA_COORD_RENAMES.get(col, col)
-        cols[col] = [_cell(v) for v in ds[coord].values]
+        cols[col] = [_cell(v) for v in ds[col].values]
     if "group" in ds.coords:
         cols["group"] = [_cell(v) for v in ds["group"].values]
     else:
@@ -499,8 +500,6 @@ def suggested_spec(ds):
     after genotype) within panels of the others.
     """
     cols = list(dam_utilities.get_group_columns(ds))
-    back = {v: k for k, v in dam_utilities.METADATA_COORD_RENAMES.items()}
-    cols = [back.get(c, c) for c in cols]
     if len(cols) < 2:
         return None
     return FacetSpec(compare_by=cols[-1], panel_by=tuple(cols[:-1]))

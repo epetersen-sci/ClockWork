@@ -381,7 +381,10 @@ class MetadataProcessor:
                 f"'{os.path.basename(self.metadata_path)}' is not a .csv or .xlsx/.xls file.",
             )
         try:
-            meta_df = reader(self.metadata_path)
+            # pulse_time is kept as the text it was written as (BACKLOG 21): read as
+            # numbers, "15" would become 15.0 and "ZT15" and "15" could not both
+            # survive. A missing column is fine; dtype only applies where it exists.
+            meta_df = reader(self.metadata_path, dtype={"pulse_time": str})
         except Exception as e:
             raise MetadataError(
                 import_diagnostics.REASON_METADATA_UNREADABLE,

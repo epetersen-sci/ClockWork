@@ -317,7 +317,11 @@ def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
             "genotype": ("id", np.array(genotypes)),
             "condition": ("id", np.array(conditions)),
             "flybox": ("id", np.array(boxes)),
-            "pulse_zt_hour": ("id", np.array(zt, dtype=float)),
+            # As the metadata writes it (BACKLOG 21); "" is an unpulsed cohort.
+            "pulse_time": (
+                "id",
+                np.array([f"ZT{h:g}" if np.isfinite(h) else "" for h in zt], dtype=object),
+            ),
             "start_datetime": ("id", np.array([start] * n_id)),
             "first_DD_day": (
                 "id",
@@ -338,14 +342,14 @@ def _build_pulse_cohort(n_per_arm=6, n_days=8, seed=0):
             "condition": ["LP", "noLP"],
             "flybox": ["bun", "pie"],
             # What create_xarray_dataset records so group_defining_coords can find
-            # the coords whose columns were renamed on the way in. Without it this
-            # fixture silently offers fewer grouping factors than a real import.
+            # the metadata coords that have no attr of their own (the pulse columns).
+            # Without it this fixture offers fewer grouping factors than a real import.
             "metadata_coords": [
                 "condition",
                 "flybox",
                 "genotype",
-                "pulse_duration_minutes",
-                "pulse_zt_hour",
+                "pulse_duration_min",
+                "pulse_time",
             ],
             "group_coord_names": ["genotype", "condition"],
         },
