@@ -17,7 +17,7 @@ any point and reload without recomputing.
 ## Contents
 
 - [Installation](#installation)
-- [Running the app](#running-the-app)
+- [Running ClockWork](#running-clockwork)
 - [Quick start](#quick-start)
   - [Try it on the example data](#try-it-on-the-example-data)
 - [Running from a config file](#running-from-a-config-file)
@@ -59,11 +59,30 @@ any point and reload without recomputing.
 
 ## Installation
 
-ClockWork needs **Python 3.11 or later** (its scipy and astropy floors require
-it); 3.11 is what it's developed and tested on, and what the instructions below
-create.
+### Requirements
 
-### 1. Create and activate the environment
+- **conda**, e.g. [Miniforge](https://github.com/conda-forge/miniforge),
+  Anaconda or Miniconda. On Windows, run the commands below in the
+  *Miniforge Prompt* (or *Anaconda Prompt*).
+- **git** (optional). Without it, use **Code → Download ZIP** at the top of
+  this page and unzip it.
+- **Chrome or Chromium**, for PNG export only (see step 4).
+
+ClockWork runs on Python 3.11 or later; the environment below uses 3.11.
+
+### 1. Download ClockWork
+
+```bash
+git clone https://github.com/epetersen-sci/ClockWork.git
+```
+
+```bash
+cd ClockWork
+```
+
+From a ZIP, `cd` into the unzipped `ClockWork-main` folder instead.
+
+### 2. Create and activate the environment
 
 ```bash
 conda create -n clockwork python=3.11
@@ -73,42 +92,53 @@ conda create -n clockwork python=3.11
 conda activate clockwork
 ```
 
-### 2. Install ClockWork
+Run `conda activate clockwork` again in every new terminal before using
+ClockWork.
 
-From the repository root (the folder containing `pyproject.toml`):
+### 3. Install ClockWork
+
+From that same folder:
 
 ```bash
 pip install -e .
 ```
 
 This installs ClockWork and its dependencies, and puts the `clockwork` command
-on your path. `-e` (editable) means edits to the source take effect without
-reinstalling; use `pip install -e ".[dev]"` to also get the test and lint tools.
+on your path. Use `pip install -e ".[dev]"` to also get the test and lint tools.
 
-**Version ranges are measured, not guessed.** The numerical libraries —
-`numpy`, `scipy`, `astropy`, `PyWavelets` — decide the numbers ClockWork
-reports, so every range in `pyproject.toml` was checked by running each
-estimator on `example_data` in each version and diffing the unrounded output
-(`tools/numeric_fingerprint.py`). Within the declared ranges results agree to
-floating-point rounding. `astropy` 8 is excluded because it changes the
-Lomb-Scargle numbers. ClockWork passes the wavelet settings that matter
-explicitly (see [Continuous wavelet transform](#continuous-wavelet-transform-cwt)),
-which is why `PyWavelets` needs 1.9 or later.
+### 4. Check it worked
 
-**PNG export needs Chrome or Chromium.** Plotly's image exporter (`kaleido`)
-renders through a browser it does not ship. If you have no Chrome, run this
-once in the environment:
+```bash
+clockwork --version
+```
+
+This should print `clockwork 0.1.0` (or later). If the command is not found,
+run `conda activate clockwork` and try again.
+
+If you have no Chrome or Chromium, run this once in the environment so PNG
+export works:
 
 ```bash
 plotly_get_chrome
 ```
 
-### 3. Optional — GPU acceleration
+### Updating
 
-The zero-inflated-Poisson HMM likelihood can run on an NVIDIA GPU; it falls
-back to CPU automatically, so this step is optional. (The wavelet transform is
-CPU-only by design: one implementation, so the same data gives the same numbers
-on every machine. It takes well under a second per fly.)
+From the ClockWork folder, with the environment active:
+
+```bash
+git pull
+```
+
+```bash
+pip install -e .
+```
+
+(ZIP users: download the new ZIP and run `pip install -e .` from its folder.)
+
+### Optional: GPU acceleration
+
+The HMM can run on an NVIDIA GPU; without one it runs on the CPU.
 
 Install the torch build matching your CUDA version first, from
 <https://pytorch.org/get-started/locally/>, then:
@@ -121,9 +151,12 @@ Set `HMM_USE_GPU=0` in the environment to force the HMM back to CPU.
 
 ---
 
-## Running the app
+## Running ClockWork
 
-From any folder:
+There are two ways to run it. Both need the `clockwork` environment active, and
+both work from any folder.
+
+**The app (GUI)**, to explore an experiment interactively:
 
 ```bash
 clockwork gui
@@ -131,7 +164,21 @@ clockwork gui
 
 The app opens in your browser at `http://localhost:8501`. If that port is
 taken, append `--server.port 8502` (any option after `gui` is passed on to
-`streamlit run`).
+`streamlit run`). Stop it with Ctrl+C in the terminal. To try it straight away,
+see [Try it on the example data](#try-it-on-the-example-data).
+
+**The command line**, to run the core analyses unattended from a YAML config:
+
+```bash
+clockwork init my_experiment.yaml --metadata path/to/metadata.xlsx
+```
+
+```bash
+clockwork run my_experiment.yaml
+```
+
+See [Running from a config file](#running-from-a-config-file) for what these
+write. `clockwork --help` lists every command.
 
 ---
 
