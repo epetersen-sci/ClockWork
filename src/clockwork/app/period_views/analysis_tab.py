@@ -12,6 +12,7 @@ import streamlit as st
 from clockwork import pipeline
 from clockwork.app import export_helpers
 from clockwork.app.preprocessing_widgets import render_preprocess_controls
+from clockwork.app.ui.changed import flag_if_changed
 from clockwork.app.ui.period_context import store_master
 from clockwork.core import dam_utilities, periodograms
 from clockwork.core.calibrations import DEFAULT_CWT_METHOD
@@ -86,6 +87,89 @@ def _status(period_ds, key):
     return f"{phase}, {rng}, {extra}"
 
 
+#: Readable names for the settings :func:`_changed_settings` reports.
+_SETTING_LABELS = {
+    "period_range_hours": "period range (h)",
+    "min_dd_days": "min DD days",
+    "max_bridge_gap_minutes": "max gap bridged (min)",
+    "voices_per_octave": "voices/octave",
+    "reduction": "reduction",
+    "group_scalograms": "group scalograms",
+    "scalogram_flies": "scalogram flies",
+    "oversampling": "oversampling",
+    "fap": "FAP method",
+    "peak_day": "peak day",
+    "bin_minutes": "bin (min)",
+    "order": "AR order",
+    "rhythmic_threshold": "rhythmic cutoff",
+    "rhythmic_window_hours": "classification window (h)",
+    "smooth_sigma_minutes": "smoothing σ (min)",
+    "lowpass_hours": "low-pass (h)",
+    "detrend": "detrend",
+    "normalize": "normalize",
+    "rolling_window_hours": "rolling window (h)",
+}
+
+
+def _fmt_setting(value):
+    if isinstance(value, (list, tuple)):
+        return "–".join(f"{v:g}" if isinstance(v, float) else str(v) for v in value)
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _changed_settings(period_ds, key):
+    """The settings method ``key`` was last run with that differ from the defaults,
+    as ``[(label, value)]`` — or None when nothing is stored for it.
+
+    Read back through ``PeriodConfig.from_attrs``, the same reader the Export
+    settings button uses, so this lists exactly what an exported config would.
+    """
+    try:
+        cfg = pipeline.PeriodConfig.from_attrs(period_ds.attrs, period_ds.coords)
+        method = cfg.method(key) if cfg is not None else None
+    except (KeyError, ValueError):  # not run, or attrs from an older version
+        return None
+    if method is None:
+        return None
+    out = []
+    for name, value in cfg.effective(key).items():
+        if name == "phase":  # shown on its own
+            continue
+        if name == "max_bridge_gap_minutes" and not method.BRIDGES_GAPS:
+            continue
+        if value != type(cfg).model_fields[name].default:
+            out.append((_SETTING_LABELS[name], _fmt_setting(value)))
+    for name, value in method.overrides().items():
+        if name in ("phase", "period_range_hours", "min_dd_days", "max_bridge_gap_minutes"):
+            continue  # resolved above, against the period-level default
+        if name == "classify":  # whether the cutoff tab has run yet, not a setting
+            continue
+        if name == "preprocessing":
+            out += [
+                (f"preprocessing {_SETTING_LABELS.get(k, k)}", _fmt_setting(v))
+                for k, v in value.items()
+            ]
+            continue
+        out.append((_SETTING_LABELS.get(name, name), _fmt_setting(value)))
+    return out
+
+
+def _stored_summary(period_ds, key):
+    """Caption text for a stored method: its phase, then either its non-default
+    settings or a plain statement that every one was left at its default."""
+    phase = period_ds.attrs.get(f"{key}_phase", "?")
+    changed = _changed_settings(period_ds, key)
+    if changed is None:
+        return f"Phase {phase}."
+    if not changed:
+        return f"Phase {phase} · all settings at defaults."
+    return f"Phase {phase} · changed from default: " + "; ".join(
+        f"{label} **{value}**" for label, value in changed
+    )
+
+
 def _advanced_options():
     """Every method's options, in one expander. Returns them as a dict."""
     opts = {}
@@ -109,6 +193,7 @@ def _advanced_options():
                 key="cwt_resolution_voices",
                 persist_state="session",
             )
+            flag_if_changed(opts["cwt_voices"], periodograms.DEFAULT_CWT_VOICES_PER_OCTAVE)
             _methods = ["ar1", "global_rednoise", "global", "global_baseline", "global_neighbor", "ridge"]
             opts["cwt_method"] = st.selectbox(
                 "Reduction method",
@@ -123,6 +208,7 @@ def _advanced_options():
                 key="cwt_method_select",
                 persist_state="session",
             )
+            flag_if_changed(opts["cwt_method"], DEFAULT_CWT_METHOD)
             c1, c2 = st.columns(2)
             with c1:
                 opts["cwt_group_averages"] = st.checkbox(
@@ -133,6 +219,7 @@ def _advanced_options():
                     key="cwt_compute_group_averages",
                     persist_state="session",
                 )
+                flag_if_changed(opts["cwt_group_averages"], False)
             with c2:
                 opts["cwt_avg_filter"] = st.checkbox(
                     "Only AC-rhythmic flies in the average",
@@ -143,6 +230,7 @@ def _advanced_options():
                     persist_state="session",
                     disabled=not opts["cwt_group_averages"],
                 )
+                flag_if_changed(opts["cwt_avg_filter"], True)
         with t_ls:
             opts["ls_oversampling"] = st.number_input(
                 "Oversampling (samples_per_peak)",
@@ -154,6 +242,7 @@ def _advanced_options():
                 persist_state="session",
                 help="Rethomics default is 8. Astropy default is 5.",
             )
+            flag_if_changed(opts["ls_oversampling"], 8)
             opts["ls_fap_method"] = st.selectbox(
                 "FAP method",
                 options=["baluev", "naive", "bootstrap"],
@@ -163,6 +252,7 @@ def _advanced_options():
                 help="`baluev` (Baluev 2008, default), `naive` (Šidák-corrected Beta "
                 "tail), or `bootstrap` (slow but gold-standard).",
             )
+            flag_if_changed(opts["ls_fap_method"], "baluev")
         with t_ac:
             opts["ac_peak"] = st.number_input(
                 "Peak day (1 = first AC peak, 2 = second-day peak)",
@@ -174,6 +264,7 @@ def _advanced_options():
                 persist_state="session",
                 help="SCAMP `acplot.m` searches the 2nd-day peak ([40, 56] h for k = 2).",
             )
+            flag_if_changed(opts["ac_peak"], 2)
         with t_mesa:
             opts["mesa_bin"] = st.number_input(
                 "Bin size (minutes)",
@@ -186,6 +277,7 @@ def _advanced_options():
                 help="Activity is binned to this before the Burg fit; ~30 min is the "
                 "chronobiology convention (Dowse & Ringo).",
             )
+            flag_if_changed(opts["mesa_bin"], int(periodograms.DEFAULT_MESA_BIN_MINUTES))
             _choice = st.selectbox(
                 "AR model order",
                 ["N/3 (Dowse default)", "N/4", "FPE auto", "Fixed"],
@@ -195,6 +287,7 @@ def _advanced_options():
                 help="Too low merges peaks, too high invents spurious ones. N/3 is "
                 "Dowse's circadian 'safe maximum'.",
             )
+            flag_if_changed(_choice, "N/3 (Dowse default)")
             fixed = None
             if _choice == "Fixed":
                 fixed = int(
@@ -309,7 +402,12 @@ def render(ctx):
                 help=("Stored: " + _status(ctx.period_ds, key)) if done else "Not run yet.",
             ):
                 chosen.append(key)
-            st.caption(":material/check_circle: Stored" if done else "Not run yet")
+            if done:
+                st.caption(
+                    ":material/check_circle: Stored. " + _stored_summary(ctx.period_ds, key)
+                )
+            else:
+                st.caption("Not run yet")
 
     opts = _advanced_options()
 

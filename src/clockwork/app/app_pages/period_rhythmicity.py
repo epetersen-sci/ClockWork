@@ -29,10 +29,11 @@ from clockwork.app.period_views import (
 )
 from clockwork.app.ui import facet_panels
 from clockwork.app.ui.filters import DISPLAY_GROUPS_KEY, group_filter_sidebar
-from clockwork.app.ui.guards import require_dataset
+from clockwork.app.ui.guards import require_dataset, warn_if_uncurated
 from clockwork.app.ui.period_context import dd_record_days, render_period_row, render_phase_picker
 
 ds = require_dataset()
+warn_if_uncurated(ds, "period & rhythmicity")
 
 phase_selection, period_ds, analysis_src, phase_arg = render_phase_picker(ds)
 min_period, max_period, min_days_floor, max_bridge_gap = render_period_row()

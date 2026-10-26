@@ -796,12 +796,34 @@ def sleep_bout_duration_lines(
     return fig
 
 
+#: Column name of the user-chosen ZT window in the totals tables.
+CUSTOM_PERIOD = "Custom"
+
+
+def zt_window_mask(zt_bin_minute, start_h, end_h):
+    """True for the ZT bins whose START lies in ``[start_h, end_h)`` hours.
+
+    The same bin-content rule Day and Night use (a bin is Day iff it starts before
+    ZT 12), so a custom window of ZT 0–12 totals exactly what Day does. A window
+    whose end is before its start wraps past ZT 24 (ZT 20–4 is the four hours
+    either side of lights-on); equal ends mean the whole day.
+    """
+    zt = np.asarray(zt_bin_minute, dtype=float) % 1440
+    lo, hi = float(start_h) * 60 % 1440, float(end_h) * 60 % 1440
+    if hi > lo:
+        return (zt >= lo) & (zt < hi)
+    if hi < lo:
+        return (zt >= lo) | (zt < hi)
+    return np.ones(zt.shape, dtype=bool)
+
+
 def per_fly_summary_table(
     ds: xr.Dataset,
     variable="activity",
     selected_genotypes=None,
     selected_temperatures=None,
     bin_size_minutes=30,
+    custom_window=None,
 ) -> pd.DataFrame:
     """Per-FLY total minutes of ``variable`` for All Day / Day Only (ZT 0–12) /
     Night Only (ZT 12–24) — ONE row per fly (``ID``, ``Group``, and the three
@@ -809,10 +831,16 @@ def per_fly_summary_table(
     is just a group mean±SEM, so a per-fly export "for stats" and the plotted
     group summary cannot drift.
 
+    ``custom_window`` — ``(start_h, end_h)`` in ZT hours — adds a fourth column,
+    ``Custom``, totalled over that window by the same bin-content rule as Day and
+    Night (see :func:`zt_window_mask`). ``end_h < start_h`` wraps past ZT 24.
+
     Rows are sorted alphabetically by Group then ID. Empty DataFrame when there is
     no usable data.
     """
     cols = ["ID", "Group", "All Day", "Day Only", "Night Only"]
+    if custom_window is not None:
+        cols.append(CUSTOM_PERIOD)
     if ds is None or variable not in ds.data_vars:
         return pd.DataFrame(columns=cols)
 
@@ -861,16 +889,16 @@ def per_fly_summary_table(
             return np.full(len(fly_ids), np.nan)
         return np.nansum(values[:, mask], axis=1) * bin_size_minutes
 
-    out = pd.DataFrame(
-        {
-            "ID": fly_ids,
-            "Group": [id_to_group.get(f, "All Flies") for f in fly_ids],
-            "All Day": np.nansum(values, axis=1) * bin_size_minutes,
-            "Day Only": _period_total(day),
-            "Night Only": _period_total(night),
-        },
-        columns=cols,
-    )
+    totals = {
+        "ID": fly_ids,
+        "Group": [id_to_group.get(f, "All Flies") for f in fly_ids],
+        "All Day": np.nansum(values, axis=1) * bin_size_minutes,
+        "Day Only": _period_total(day),
+        "Night Only": _period_total(night),
+    }
+    if custom_window is not None:
+        totals[CUSTOM_PERIOD] = _period_total(zt_window_mask(zt, *custom_window))
+    out = pd.DataFrame(totals, columns=cols)
     return out.sort_values(["Group", "ID"]).reset_index(drop=True)
 
 
@@ -881,9 +909,11 @@ def summary_table(
     selected_temperatures=None,
     bin_size_minutes=30,
     phase_label=None,
+    custom_window=None,
 ) -> pd.DataFrame:
     """Per-group mean + SEM total minutes of ``variable`` for All Day / Day Only
-    (ZT 0–12) / Night Only (ZT 12–24), across the flies in each group.
+    (ZT 0–12) / Night Only (ZT 12–24) — and ``Custom`` when ``custom_window`` is
+    given — across the flies in each group.
 
     The group numbers are just :func:`per_fly_summary_table` aggregated by group
     (one computation, no drift) — the same DataFrame :func:`summary_bars` plots
@@ -902,8 +932,13 @@ def summary_table(
         "Night Only",
         "Night Only_sem",
     ]
+    periods = ["All Day", "Day Only", "Night Only"]
+    if custom_window is not None:
+        cols += [CUSTOM_PERIOD, f"{CUSTOM_PERIOD}_sem"]
+        periods.append(CUSTOM_PERIOD)
     per_fly = per_fly_summary_table(
-        ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes
+        ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes,
+        custom_window=custom_window,
     )
     if per_fly.empty:
         return pd.DataFrame(columns=cols)
@@ -917,18 +952,11 @@ def summary_table(
     summary_data = []
     for group in sorted(per_fly["Group"].unique()):
         g = per_fly[per_fly["Group"] == group]
-        summary_data.append(
-            {
-                "group": group,
-                "n": int(len(g)),
-                "All Day": g["All Day"].mean(),
-                "All Day_sem": _sem(g["All Day"]),
-                "Day Only": g["Day Only"].mean(),
-                "Day Only_sem": _sem(g["Day Only"]),
-                "Night Only": g["Night Only"].mean(),
-                "Night Only_sem": _sem(g["Night Only"]),
-            }
-        )
+        row = {"group": group, "n": int(len(g))}
+        for period in periods:
+            row[period] = g[period].mean()
+            row[f"{period}_sem"] = _sem(g[period])
+        summary_data.append(row)
 
     return pd.DataFrame(summary_data, columns=cols)
 

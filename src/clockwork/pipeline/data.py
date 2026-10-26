@@ -9,7 +9,7 @@ both callers.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -393,10 +393,20 @@ class CurationResult:
     removed: int
     unchanged: int
     trimmed: int
+    #: Analysis results that were on the dataset before curation and are gone
+    #: from ``live`` because they were computed on uncurated flies.
+    dropped: list[str] = field(default_factory=list)
 
 
 def curate(ds: xr.Dataset, config: CurationConfig, progress=None) -> CurationResult:
-    """Separate dead flies from live ones, and trim each live one at its death."""
+    """Separate dead flies from live ones, and trim each live one at its death.
+
+    Any analysis already on ``ds`` is dropped first (it was run on uncurated
+    flies); ``CurationResult.dropped`` names what went.
+    """
+    _, dropped = dam_utilities.drop_analysis_outputs(ds)
+    # moving / is_alive are curation's own outputs: re-derived, not lost.
+    dropped = [d for d in dropped if d not in ("moving", "is_alive")]
     (
         live,
         dead,
@@ -414,7 +424,9 @@ def curate(ds: xr.Dataset, config: CurationConfig, progress=None) -> CurationRes
         min_alive_days=config.min_alive_days,
         progress_callback=progress,
     )
-    return CurationResult(live, dead, total_before, total_after, removed, unchanged, trimmed)
+    return CurationResult(
+        live, dead, total_before, total_after, removed, unchanged, trimmed, dropped
+    )
 
 
 def split(ds: xr.Dataset, config: SplitConfig) -> xr.Dataset:

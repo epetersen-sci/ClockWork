@@ -501,9 +501,40 @@ def _parse_zt_hour(cell):
         return float(text)
     except ValueError:
         raise ValueError(
-            f"Unparseable pulse_time cell {cell!r}. Use a ZT hour like 'ZT15' or '15', "
-            f"or leave it blank for a cohort that received no light pulse."
+            f"Unparseable pulse_time cell {cell!r}. Write the pulse date and time in the "
+            f"same format as start_datetime (e.g. '1/17/2024 0:00'), or a ZT hour like "
+            f"'ZT15', or leave it blank for a cohort that received no light pulse."
         ) from None
+
+
+def _pulse_datetime(cell):
+    """A metadata ``pulse_time`` cell written as a date-time, as a Timestamp.
+
+    The pulse is written the same way as ``start_datetime`` (e.g. ``1/17/2024
+    0:00``), so its day and its ZT both follow from the fly's own start (ZT0).
+    Returns None for a blank cell and for the older ZT-hour shorthand (``ZT15``,
+    ``15``), which :func:`_parse_zt_hour` reads instead.
+    """
+    if cell is None or isinstance(cell, bool):
+        return None
+    if isinstance(cell, (pd.Timestamp, np.datetime64)) or hasattr(cell, "year"):
+        ts = pd.Timestamp(cell)
+        return None if pd.isna(ts) else ts
+    if isinstance(cell, (int, float)):
+        return None
+    text = str(cell).strip()
+    if text == "" or text.lower() in ("nan", "none", "na", "nat") or text.upper().startswith("ZT"):
+        return None
+    try:
+        float(text)
+        return None
+    except ValueError:
+        pass
+    try:
+        ts = pd.Timestamp(pd.to_datetime(text))
+    except (ValueError, TypeError):
+        return None
+    return None if pd.isna(ts) else ts
 
 
 def pulse_zt_hours(ds):
@@ -913,13 +944,34 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
         # parsed here, so an unreadable one fails at import rather than in an
         # analysis later; the hour itself is parsed again when needed
         # (pulse_zt_hours). A blank (unpulsed) cell is "", which netCDF can store.
-        _pulse_text = [
-            "" if (v is None or (isinstance(v, float) and np.isnan(v))) else str(v)
-            for v in metadata["pulse_time"].to_numpy()
-        ]
-        for _v in _pulse_text:
-            _parse_zt_hour(_v)
+        #
+        # A pulse written as a date-time — the same format as start_datetime — is
+        # matched to ZT from the fly's own start, which is ZT0, so the day and the
+        # time of the pulse are both known. The date-time itself goes in
+        # `pulse_datetime` (what pulse_minute is derived from), and pulse_time holds
+        # the ZT it resolves to ("ZT21"), so grouping and the PRC's x axis read the
+        # same whichever way the pulse was written.
+        _starts = pd.to_datetime(metadata["start_datetime"]).to_numpy()
+        _pulse_text, _pulse_dt = [], []
+        for _v, _start in zip(metadata["pulse_time"].to_numpy(), _starts):
+            _ts = _pulse_datetime(_v)
+            if _ts is None:
+                _text = "" if (_v is None or (isinstance(_v, float) and np.isnan(_v))) else str(_v)
+                _parse_zt_hour(_text)
+                _pulse_text.append(_text)
+                _pulse_dt.append(np.datetime64("NaT", "ns"))
+                continue
+            _minutes = round((_ts - pd.Timestamp(_start)).total_seconds() / 60.0)
+            if _minutes < 0:
+                raise ValueError(
+                    f"pulse_time {_v!r} is before that row's start_datetime "
+                    f"({pd.Timestamp(_start)}). The pulse must fall within the recording."
+                )
+            _pulse_text.append(f"ZT{(_minutes % 1440) / 60:g}")
+            _pulse_dt.append(_ts.to_datetime64().astype("datetime64[ns]"))
         coords["pulse_time"] = ("id", _as_numpy_array(np.array(_pulse_text, dtype=object)))
+        if not np.isnat(np.array(_pulse_dt, dtype="datetime64[ns]")).all():
+            coords["pulse_datetime"] = ("id", np.array(_pulse_dt, dtype="datetime64[ns]"))
     if "pulse_duration_min" in metadata.columns:
         coords["pulse_duration_min"] = (
             "id",
@@ -1035,6 +1087,57 @@ def _centered_rolling_mean(values, window, block=256):
     return out
 
 
+#: The data variables an import produces. Everything else on a dataset was
+#: computed from them by some analysis.
+RAW_DATA_VARS = ("activity",)
+#: Prefixes of the coords and attrs that analyses write (period, sleep, HMM,
+#: sleep deprivation, phase shift, and the preprocessing they record).
+ANALYSIS_PREFIXES = (
+    "cwt_",
+    "ls_",
+    "ac_",
+    "mesa_",
+    "hmm_",
+    "sd_",
+    "phase_shift_",
+    "sleep_",
+    "prep_",
+)
+_ANALYSIS_ATTRS = ("preprocess_config", "phase_used")
+
+
+def drop_analysis_outputs(ds):
+    """``ds`` with every analysis result removed, and the names of what went.
+
+    Keeps the imported ``activity``, the metadata coords and the curation / split
+    settings; drops every other data variable (``moving``, ``sleep``, period
+    estimates and spectra, HMM states, …), the coords and attrs analyses write,
+    and any dimension only those results used.
+
+    Curation calls this first. Results computed on uncurated flies describe flies
+    that curation then trims or removes, so they cannot be kept — and the extra
+    axes some of them carry (a period axis on the spectra) would otherwise be
+    broadcast against every fly and minute when the alive mask is applied, which
+    is how re-curating after period analysis asked for a 100 GB array.
+    """
+    dropped = [str(v) for v in ds.data_vars if v not in RAW_DATA_VARS]
+    out = ds.drop_vars(dropped)
+    coords = [
+        str(c)
+        for c in out.coords
+        if str(c).startswith(ANALYSIS_PREFIXES)
+        or not set(out[c].dims) <= {"id", "time"}
+    ]
+    out = out.drop_vars(coords)
+    attrs = [
+        str(k)
+        for k in out.attrs
+        if str(k).startswith(ANALYSIS_PREFIXES) or k in _ANALYSIS_ATTRS
+    ]
+    out.attrs = {k: v for k, v in out.attrs.items() if k not in attrs}
+    return out, dropped + coords + attrs
+
+
 def curate_dead_animals(
     data,
     mov_column="moving",
@@ -1079,6 +1182,9 @@ def curate_dead_animals(
              total_before, total_after, removed_count,
              unchanged_count, trimmed_count)
     """
+    # Analyses run before curation describe flies curation is about to trim or
+    # remove: drop them (see drop_analysis_outputs) before the alive mask is applied.
+    data, _ = drop_analysis_outputs(data)
     # Compute 'moving' from the CURRENT activity (force=True): never trust a stale
     # 'moving' carried in (E1 guard) — a re-curation must re-derive it or it could
     # mask a death. _compute_moving copies, so `data` (the caller's) is not mutated.
@@ -1495,11 +1601,17 @@ def dd_onset_days(ds):
 def _derive_pulse_minute(ds):
     """Compute the per-`id` light-pulse onset in the dataset's relative-minute units.
 
-    The pulse is recorded in the metadata as a ZT hour (``pulse_time``, e.g. ``ZT15``)
-    with no date, because that is how the protocol is specified — the pulse is given
-    at a fixed circadian time on the LAST ENTRAINED DAY, immediately before release
-    into DD. So the day is not a free parameter: it is the day whose ZT0 is one day
-    before ``first_DD_day``, which is why only the ZT needs writing down::
+    The pulse is written in the metadata in the same format as ``start_datetime``,
+    and ``start_datetime`` is the fly's ZT0, so the pulse's minute is simply::
+
+        pulse[id] = round((pulse_datetime[id] - start_datetime[id]) / 1 min)
+
+    which fixes both the day and the ZT of the pulse — import keeps that
+    date-time in the ``pulse_datetime`` coordinate.
+
+    The older ZT-hour shorthand (``pulse_time`` ``ZT15``, no date) is still read.
+    It assumes the protocol's pulse on the LAST ENTRAINED DAY, immediately before
+    release into DD, i.e. the day whose ZT0 is one day before ``first_DD_day``::
 
         pulse[id] = split_minute[id] - 1440 + pulse_zt_hours(ds)[id] * 60
 
@@ -1514,8 +1626,9 @@ def _derive_pulse_minute(ds):
     if "pulse_time" not in ds.coords:
         raise ValueError(
             "Cannot derive 'pulse_minute': dataset has no 'pulse_time' coordinate. "
-            "Add a 'pulse_time' column to the metadata (a ZT hour such as 'ZT15'; see "
-            "metadata_template.csv) and reload the dataset."
+            "Add a 'pulse_time' column to the metadata (the pulse's date and time, in "
+            "the same format as start_datetime; see metadata_template.csv) and reload "
+            "the dataset."
         )
     if ds.attrs.get("time_is_relative_minutes", 0) != 1:
         raise ValueError(
@@ -1523,18 +1636,31 @@ def _derive_pulse_minute(ds):
             "(attrs['time_is_relative_minutes'] == 1). The current dataset uses absolute "
             "datetime time; convert with convert_to_relative_time first."
         )
-    if "split_minute" not in ds.coords:
-        if "first_DD_day" not in ds.coords:
-            raise ValueError(
-                "Cannot derive 'pulse_minute': a ZT pulse time is anchored to the LD-DD "
-                "boundary, so the metadata also needs a 'first_DD_day' column. Add it and "
-                "reload the dataset."
-            )
-        ds = add_phase_metadata(ds)
 
-    split = np.asarray(ds["split_minute"].values, dtype="float64")
+    out = np.full(ds["id"].size, np.nan)
+    dated = np.zeros(ds["id"].size, dtype=bool)
+    if "pulse_datetime" in ds.coords:
+        pulse_dts = ds["pulse_datetime"].values.astype("datetime64[s]")
+        dated = ~np.isnat(pulse_dts)
+        start_dts = ds["start_datetime"].values.astype("datetime64[s]")
+        minutes = (pulse_dts - start_dts) / np.timedelta64(1, "s") / 60.0
+        out[dated] = np.rint(minutes[dated])
+
     zt = pulse_zt_hours(ds)
-    return np.rint(split - 1440.0 + zt * 60.0).astype(np.float32)
+    by_zt = ~dated & np.isfinite(zt)
+    if by_zt.any():
+        if "split_minute" not in ds.coords:
+            if "first_DD_day" not in ds.coords:
+                raise ValueError(
+                    "Cannot derive 'pulse_minute': a pulse given as a ZT hour alone is "
+                    "anchored to the LD-DD boundary, so the metadata also needs a "
+                    "'first_DD_day' column. Or write pulse_time as a date and time in "
+                    "the same format as start_datetime."
+                )
+            ds = add_phase_metadata(ds)
+        split = np.asarray(ds["split_minute"].values, dtype="float64")
+        out[by_zt] = np.rint(split[by_zt] - 1440.0 + zt[by_zt] * 60.0)
+    return out.astype(np.float32)
 
 
 def add_pulse_metadata(ds):

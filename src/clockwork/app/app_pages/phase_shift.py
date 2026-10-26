@@ -1,8 +1,10 @@
 """
 Phase Shift Analysis — measure each fly's phase shift after a light pulse.
 
-Requires a ``pulse_time`` column in the metadata (a ZT hour such as ZT15) plus
-``first_DD_day``, which anchors that ZT to the last entrained day before DD release.
+Requires a ``pulse_time`` column in the metadata: the pulse's date and time, in the
+same format as ``start_datetime`` (which is ZT0), so its day and ZT follow from it.
+The older ZT-hour shorthand (ZT15) also works, anchored by ``first_DD_day`` to the
+last entrained day before DD release.
 """
 
 
@@ -42,7 +44,8 @@ if "pulse_time" not in ds.coords:
     st.error(
         "This dataset has no **pulse_time** column. Phase-shift analysis needs to know at "
         "what circadian time the light pulse was given.\n\n"
-        "Add a `pulse_time` column to your metadata file — a ZT hour such as `ZT15` — "
+        "Add a `pulse_time` column to your metadata file — the pulse's date and time, in "
+        "the same format as `start_datetime` (e.g. `1/17/2024 0:00`) — "
         "and a `pulse_duration_min` column, then reload the dataset on the "
         "**Data → Import** page. See `metadata_template.csv` for the format.\n\n"
         "For a group that received no pulse, leave `pulse_time` blank and write **0** "

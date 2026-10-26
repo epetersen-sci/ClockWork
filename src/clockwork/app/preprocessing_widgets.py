@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from clockwork.app.ui.changed import flag_if_changed
 from clockwork.core.preprocessing import (
     PreprocessConfig,
     ac_default_config,
@@ -54,6 +55,7 @@ def _render_one_method(
         key=f"{key_prefix}_{method}_bin",
         help="Sum-bin activity along time. 0 or 1 disables.",
     )
+    flag_if_changed(bin_minutes, defaults.bin_minutes)
     smooth_sigma_min = st.number_input(
         "Smoothing σ (min)",
         min_value=0.0,
@@ -63,6 +65,7 @@ def _render_one_method(
         key=f"{key_prefix}_{method}_smooth",
         help="Per-fly NaN-preserving Gaussian σ in minutes. 0 disables.",
     )
+    flag_if_changed(smooth_sigma_min, defaults.smooth_sigma_min)
     lopass_hours = st.number_input(
         "Low-pass cutoff (h)",
         min_value=0.0,
@@ -72,6 +75,7 @@ def _render_one_method(
         key=f"{key_prefix}_{method}_lopass",
         help="2nd-order zero-phase Butterworth low-pass. 0 disables. AC default = 4.0 (SCAMP).",
     )
+    flag_if_changed(lopass_hours, defaults.lopass_hours)
     detrend = st.selectbox(
         "Detrend",
         options=_DETREND_OPTIONS,
@@ -79,6 +83,7 @@ def _render_one_method(
         key=f"{key_prefix}_{method}_detrend",
         help="`linear` = scipy.signal.detrend. AC default = linear (SCAMP).",
     )
+    flag_if_changed(detrend, defaults.detrend)
     normalize = st.selectbox(
         "Normalize",
         options=_NORMALIZE_OPTIONS,
@@ -86,6 +91,7 @@ def _render_one_method(
         key=f"{key_prefix}_{method}_norm",
         help="Per-fly amplitude normalization. None for production defaults.",
     )
+    flag_if_changed(normalize, defaults.normalize)
     rolling_window_h = st.number_input(
         "Rolling window (h)",
         min_value=1.0,
@@ -96,6 +102,7 @@ def _render_one_method(
         help="Used only when Normalize = rolling.",
         disabled=(normalize != "rolling"),
     )
+    flag_if_changed(rolling_window_h, defaults.rolling_window_h)
     return PreprocessConfig(
         bin_minutes=int(bin_minutes),
         smooth_sigma_min=float(smooth_sigma_min),
