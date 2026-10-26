@@ -20,7 +20,7 @@ from clockwork.core.dataset_meta import is_split_applied
 from clockwork.pipeline import CurationConfig, PeriodConfig, SleepConfig, SplitConfig
 from conftest import EXAMPLE_DIR, EXAMPLE_MONITORS, requires_example_data
 
-pytestmark = requires_example_data
+pytestmark = [requires_example_data, pytest.mark.usefixtures("shared_worker_pool")]
 
 LS_ONLY = PeriodConfig(methods={"lomb_scargle": {}})
 KEEP_ONE = {"genotype": ["dsmcherry"]}
