@@ -477,20 +477,26 @@ def _totals_violins(variable, y_label, key):
     if _facet_panels:
         # Faceted, the three periods would be three rows of panels each. One period
         # at a time keeps the panels side by side and the page readable.
-        _names = {name: col for col, name in panels}
-        pick = st.segmented_control(
+        # The options are the columns, which never change; only their labels do
+        # (the custom window's hours, DD's subjective names). Keyed on the labels,
+        # applying a new custom window removed the selected option and the
+        # control fell back to the first.
+        _label_of = dict(panels)
+        _col = st.segmented_control(
             "Period",
-            list(_names),
-            default=list(_names)[0],
-            key=f"{key}_totals_period",
+            list(_label_of),
+            format_func=_label_of.get,
+            default=panels[0][0],
+            key=f"{key}_totals_period_col",
             persist_state="session",
-        ) or list(_names)[0]
+        ) or panels[0][0]
+        pick = _label_of[_col]
         results = group_stats.per_panel(
-            per_fly, _names[pick], _facet_panels, _family, measure=pick
+            per_fly, _col, _facet_panels, _family, measure=pick
         )
         pairs = plotting.faceted_violins(
             per_fly,
-            _names[pick],
+            _col,
             _facet_panels,
             _facet_colours,
             title=f"{variable.capitalize()} — {pick}",
@@ -503,7 +509,7 @@ def _totals_violins(variable, y_label, key):
             pairs,
             facet_spec,
             ds,
-            key=f"{key}_totals_{_names[pick].replace(' ', '_')}",
+            key=f"{key}_totals_{_col.replace(' ', '_')}",
             filename=f"{variable}_{pick.replace(' ', '_').lower()}_totals",
         )
     else:
