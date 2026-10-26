@@ -70,12 +70,16 @@ Every figure and analysis export on the analysis pages is an Excel workbook
 (`save_df_button`, `save_multi_df_button`, `save_csv_button`, and the CSV
 `st.download_button`s) become workbooks:
 
-- the data that was in the CSV becomes a sheet of the same name;
+- the data that was in the CSV becomes a sheet named for its contents;
 - the content is unchanged, including the per-fly and per-group data with the
   calculated N and SD or SEM;
-- a multi-file CSV export becomes one workbook with one sheet per former file.
+- a multi-file CSV export becomes one workbook with one sheet per former file;
+- browser downloads are built with `export_helpers.excel_bytes`;
+- the Phase Shift per-day CSV download is removed. Its table is the `per_day`
+  sheet of the phase-difference workbook.
 
-The Export Data page, the SCAMP export, and the CLI `tables` output keep their
+The Export Data page, the SCAMP export, the CLI `tables` output, and the
+group-average scalogram files (PNG + CSV, shared with the CLI) keep their
 current formats.
 
 A figure with statistics adds one sheet, `Stats`, to its workbook. It holds the

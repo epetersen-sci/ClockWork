@@ -99,10 +99,10 @@ def render(ctx):
     st.markdown("#### Per-fly periods")
     summary = _build_period_summary_df(dataset_fingerprint(period_ds), period_ds)
     st.dataframe(summary, width="stretch", height=300)
-    ex.save_df_button(
+    ex.save_excel_button(
         "Save period summary to working folder",
-        summary,
+        [("period_summary", summary)],
         period_ds,
-        "period_summary.csv",
+        "period_summary",
         key="download_period_csv",
     )

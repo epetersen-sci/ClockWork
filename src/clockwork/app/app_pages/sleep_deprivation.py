@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts, facet_panels, status
 from clockwork.app.ui.guards import require_dataset
@@ -620,54 +621,60 @@ if tab_export.open:
         st.markdown("#### Download Analysis Data")
 
         # Baseline profile
-        csv_bl = baseline_prof.to_csv(index=False)
         st.download_button(
-            "Download Baseline ZT Profile", csv_bl, "sd_baseline_profile.csv", "text/csv", key="dl_bl"
+            "Download Baseline ZT Profile",
+            ex.excel_bytes([("baseline_profile", baseline_prof)]),
+            "sd_baseline_profile.xlsx",
+            ex.XLSX_MIME,
+            key="dl_bl",
         )
 
         # Recovery profiles
         for rec_num, rec_df in recovery_profs.items():
-            csv_rec = rec_df.to_csv(index=False)
             st.download_button(
                 f"Download Recovery Day {rec_num} ZT Profile",
-                csv_rec,
-                f"sd_recovery_day{rec_num}_profile.csv",
-                "text/csv",
+                ex.excel_bytes([(f"recovery_day{rec_num}_profile", rec_df)]),
+                f"sd_recovery_day{rec_num}_profile.xlsx",
+                ex.XLSX_MIME,
                 key=f"dl_rec_{rec_num}",
             )
 
         # Difference profiles
         for rec_num, diff_df in diff_profs.items():
-            csv_diff = diff_df.to_csv(index=False)
             st.download_button(
                 f"Download Difference Day {rec_num}",
-                csv_diff,
-                f"sd_difference_day{rec_num}.csv",
-                "text/csv",
+                ex.excel_bytes([(f"difference_day{rec_num}", diff_df)]),
+                f"sd_difference_day{rec_num}.xlsx",
+                ex.XLSX_MIME,
                 key=f"dl_diff_{rec_num}",
             )
 
         # Cumulative difference
         for rec_num, cum_df in cum_diffs.items():
-            csv_cum = cum_df.to_csv(index=False)
             st.download_button(
                 f"Download Cumulative Diff Day {rec_num}",
-                csv_cum,
-                f"sd_cumulative_diff_day{rec_num}.csv",
-                "text/csv",
+                ex.excel_bytes([(f"cumulative_diff_day{rec_num}", cum_df)]),
+                f"sd_cumulative_diff_day{rec_num}.xlsx",
+                ex.XLSX_MIME,
                 key=f"dl_cum_{rec_num}",
             )
 
         # Phase totals
         if not phase_totals.empty:
-            csv_phase = phase_totals.to_csv(index=False)
             st.download_button(
-                "Download Phase Totals", csv_phase, "sd_phase_totals.csv", "text/csv", key="dl_phase"
+                "Download Phase Totals",
+                ex.excel_bytes([("phase_totals", phase_totals)]),
+                "sd_phase_totals.xlsx",
+                ex.XLSX_MIME,
+                key="dl_phase",
             )
 
         # Rebound %
         if not rebound_pct.empty:
-            csv_reb = rebound_pct.to_csv(index=False)
             st.download_button(
-                "Download Rebound %", csv_reb, "sd_rebound_pct.csv", "text/csv", key="dl_reb"
+                "Download Rebound %",
+                ex.excel_bytes([("rebound_pct", rebound_pct)]),
+                "sd_rebound_pct.xlsx",
+                ex.XLSX_MIME,
+                key="dl_reb",
             )

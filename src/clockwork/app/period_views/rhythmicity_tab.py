@@ -56,11 +56,11 @@ def render(ctx):
     else:
         summary = summarize_rhythmicity(period_ds)
         st.dataframe(summary, width="stretch", height=260)
-        ex.save_df_button(
+        ex.save_excel_button(
             "Save group summary to working folder",
-            summary,
+            [("group_summary", summary)],
             period_ds,
-            "rhythmicity_group_summary.csv",
+            "rhythmicity_group_summary",
             key="dl_rhyth_group_summary",
         )
         with st.expander("Per-fly classification table"):
@@ -73,11 +73,11 @@ def render(ctx):
                 bool(days.get(str(f), 0.0) < ctx.min_days_floor) for f in table["fly_id"]
             ]
             st.dataframe(table, width="stretch", height=300)
-            ex.save_df_button(
+            ex.save_excel_button(
                 "Save per-fly classification to working folder",
-                table,
+                [("per_fly", table)],
                 period_ds,
-                "rhythmicity_per_fly.csv",
+                "rhythmicity_per_fly",
                 key="dl_rhyth_per_fly",
             )
 
@@ -111,10 +111,10 @@ def render(ctx):
         sens = st.session_state.get("_period_sens_df")
         if sens is not None and not sens.empty:
             st.dataframe(sens, width="stretch")
-            ex.save_df_button(
+            ex.save_excel_button(
                 "Save sensitivity to working folder",
-                sens,
+                [("sensitivity", sens)],
                 period_ds,
-                "rhythmicity_sensitivity.csv",
+                "rhythmicity_sensitivity",
                 key="dl_rhyth_sens",
             )

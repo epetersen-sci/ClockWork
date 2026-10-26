@@ -204,11 +204,11 @@ def render(ctx):
             # drives both the on-screen chart and its PNG export.
             charts.plotly_chart(fig, width="stretch", theme=None)
             if spec_df is not None and not spec_df.empty:
-                ex.save_df_button(
+                ex.save_excel_button(
                     f"Save {title} group-average to working folder",
-                    spec_df,
+                    [("group_average", spec_df)],
                     ds,
-                    f"periodogram_{key}_group_average.csv",
+                    f"periodogram_{key}_group_average",
                     key=f"dl_pg_{key}",
                 )
         st.divider()

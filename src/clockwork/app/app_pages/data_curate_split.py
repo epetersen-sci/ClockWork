@@ -6,6 +6,7 @@ Preprocessing Page - Dead animal curation, LD/DD split and activity heatmap.
 import streamlit as st
 
 from clockwork import pipeline
+from clockwork.app import export_helpers
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts
 from clockwork.app.ui.guards import analyses_done, require_dataset
@@ -353,15 +354,18 @@ else:
                         charts.plotly_chart(fig_dead, width="stretch")
 
                 # Download button for main dataset: the full per-minute data, not
-                # the binned view. Handed over as a callable so the CSV is built
-                # only when the button is clicked; building it eagerly re-ran a
-                # flies x minutes to_csv on every rerun of this page.
+                # the binned view. Handed over as a callable so the workbook is
+                # built only when the button is clicked; building it eagerly re-ran
+                # a flies x minutes write on every rerun of this page. Minutes run
+                # down the rows: Excel allows far more rows than columns.
                 _heat_da = ds[heatmap_var]
                 st.download_button(
-                    f"Download {_var_label} Heatmap Data (CSV)",
-                    lambda: _heat_da.to_pandas().to_csv(),
-                    f"{heatmap_var}_heatmap.csv",
-                    "text/csv",
+                    f"Download {_var_label} Heatmap Data (.xlsx)",
+                    lambda: export_helpers.excel_bytes(
+                        [(heatmap_var, _heat_da.transpose("time", ...).to_pandas())]
+                    ),
+                    f"{heatmap_var}_heatmap.xlsx",
+                    export_helpers.XLSX_MIME,
                     key="dl_heat_preproc",
                 )
             except Exception as e:

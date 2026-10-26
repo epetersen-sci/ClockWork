@@ -4,7 +4,7 @@ Activity & Sleep — the descriptive plots, one tab per measure.
 **Activity**: the daily pattern, then the day/night totals behind it.
 **Sleep**: the same two, plus the bout-duration curves, and the sleep detection
 that produces all of them. Every chart has a matching group-level and per-fly
-CSV export.
+workbook export.
 
 The three old tabs were cut by kind of plot — daily profiles, bouts, day/night
 totals — so each held half an activity answer and half a sleep one, and reading
@@ -125,7 +125,7 @@ def _cached_summary_table(
     fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label,
     custom_window=None,
 ):
-    """Per-group summary table (mean + SEM per period) for CSV export — the
+    """Per-group summary table (mean + SEM per period) for export — the
     SAME numbers plotting.summary_bars draws (one computation, no drift)."""
     return plotting.summary_table(
         _ds,
@@ -143,7 +143,7 @@ def _cached_bout_duration_lines(
 ):
     """Compute the per-fly bout-duration curves, the per-fly summary and the
     group-comparison test, then render them — the same numbers drive the plot and
-    both CSV exports below, so they can't drift apart.
+    both exports below, so they can't drift apart.
 
     The three sleep_analysis calls are HERE rather than inside
     plotting.sleep_bout_duration_lines, which used to defer-import them. That
@@ -555,7 +555,7 @@ if tab_activity.open:
             _ds_fp = dataset_fingerprint(ds)
             _daily_pattern("activity", "Daily Activity Pattern", _ds_fp)
 
-            # CSV download of binned data (grouped: mean, SD, n per condition)
+            # Workbook of binned data (grouped: mean, SD, n per condition)
             try:
                 binned_df = _cached_zt_binned(_ds_fp, ds, "activity", bin_size)
                 _id_to_group = dam_utilities.fly_group_map(ds, default="All")

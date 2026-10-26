@@ -506,18 +506,18 @@ if tab_wave.open:
                 "result across independent experiments.",
                 icon=":material/info:",
             )
-            # Every panel shown, tagged by epoch, so the CSV matches the figure
+            # Every panel shown, tagged by epoch, so the export matches the figure
             # rather than only its left half.
             waveforms = pd.concat(
                 [frame.assign(epoch=name) for name, frame in panels], ignore_index=True
             )
             st.download_button(
-                "Download normalised waveforms (CSV)",
-                waveforms.to_csv(index=False).encode(),
+                "Download normalised waveforms (.xlsx)",
+                ex.excel_bytes([("waveforms", waveforms)]),
                 file_name="sleep_state_waveforms_"
                 + "_".join(name for name, _ in panels)
-                + ".csv",
-                mime="text/csv",
+                + ".xlsx",
+                mime=ex.XLSX_MIME,
                 icon=":material/download:",
             )
 
@@ -587,10 +587,10 @@ if tab_init.open:
 
         if init_stats is not None:
             st.download_button(
-                "Download per-fly initiation probabilities (CSV)",
-                init.to_csv(index=False).encode(),
-                file_name=f"sleep_state_initiation_{phase_used}.csv",
-                mime="text/csv",
+                "Download per-fly initiation probabilities (.xlsx)",
+                ex.excel_bytes([("initiation", init)]),
+                file_name=f"sleep_state_initiation_{phase_used}.xlsx",
+                mime=ex.XLSX_MIME,
                 icon=":material/download:",
             )
 
@@ -668,10 +668,10 @@ if tab_rose.open:
                 )
             st.dataframe(gates, width="stretch", hide_index=True)
             st.download_button(
-                "Download per-fly circular statistics (CSV)",
-                circular.to_csv(index=False).encode(),
-                file_name=f"sleep_state_circular_{phase_used}.csv",
-                mime="text/csv",
+                "Download per-fly circular statistics (.xlsx)",
+                ex.excel_bytes([("circular", circular)]),
+                file_name=f"sleep_state_circular_{phase_used}.xlsx",
+                mime=ex.XLSX_MIME,
                 icon=":material/download:",
             )
 
@@ -1054,27 +1054,26 @@ if tab_ultra.open:
                             "significant at a false-alarm probability below 0.05."
                         )
                         st.dataframe(rows, width="stretch", hide_index=True)
+                        ls_per_fly = pd.DataFrame(
+                            {
+                                "id": ls["id"].values,
+                                **{
+                                    f"{quantity}_{state}": ls[
+                                        f"ultra_ls_{quantity}_{state}"
+                                    ].values
+                                    for state in states_present
+                                    for quantity in ("period", "power", "fap")
+                                    if f"ultra_ls_{quantity}_{state}" in ls.data_vars
+                                },
+                            }
+                        )
                         st.download_button(
-                            "Download per-fly Lomb-Scargle results (CSV)",
-                            pd.DataFrame(
-                                {
-                                    "id": ls["id"].values,
-                                    **{
-                                        f"{quantity}_{state}": ls[
-                                            f"ultra_ls_{quantity}_{state}"
-                                        ].values
-                                        for state in states_present
-                                        for quantity in ("period", "power", "fap")
-                                        if f"ultra_ls_{quantity}_{state}" in ls.data_vars
-                                    },
-                                }
-                            )
-                            .to_csv(index=False)
-                            .encode(),
+                            "Download per-fly Lomb-Scargle results (.xlsx)",
+                            ex.excel_bytes([("lomb_scargle", ls_per_fly)]),
                             file_name=(
-                                f"ultradian_ls_{req_group}_{phase_used}.csv"
+                                f"ultradian_ls_{req_group}_{phase_used}.xlsx"
                             ),
-                            mime="text/csv",
+                            mime=ex.XLSX_MIME,
                             icon=":material/download:",
                         )
                     else:

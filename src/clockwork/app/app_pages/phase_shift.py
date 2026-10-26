@@ -1530,12 +1530,6 @@ if _tab_results.open:
                                 help="per_day (every group), per_day_plotted (only what the figures show), "
                                 "matrix (day x group grid), controls, parameters, notes.",
                             )
-                            st.download_button(
-                                "Download per-day (CSV)",
-                                per_day.to_csv(index=False).encode("utf-8"),
-                                file_name="phase_difference_vs_control_per_day.csv",
-                                mime="text/csv",
-                            )
                             st.markdown("**Reference used**")
                             st.dataframe(
                                 pd.DataFrame(
@@ -1767,10 +1761,10 @@ if _tab_results.open:
             if tab_export.open:
                 with tab_export:
                     st.download_button(
-                        "Download per-fly phase shifts (CSV)",
-                        per_fly.to_csv(index=False).encode("utf-8"),
-                        file_name=f"phase_shift_{results['method']}_per_fly.csv",
-                        mime="text/csv",
+                        "Download per-fly phase shifts (.xlsx)",
+                        export_helpers.excel_bytes([("per_fly", per_fly)]),
+                        file_name=f"phase_shift_{results['method']}_per_fly.xlsx",
+                        mime=export_helpers.XLSX_MIME,
                     )
 
                     marker_rows = [
@@ -1781,10 +1775,10 @@ if _tab_results.open:
                     if marker_rows:
                         markers_df = pd.DataFrame(marker_rows)
                         st.download_button(
-                            "Download daily phase markers (CSV)",
-                            markers_df.to_csv(index=False).encode("utf-8"),
-                            file_name=f"phase_shift_{results['method']}_daily_markers.csv",
-                            mime="text/csv",
+                            "Download daily phase markers (.xlsx)",
+                            export_helpers.excel_bytes([("daily_markers", markers_df)]),
+                            file_name=f"phase_shift_{results['method']}_daily_markers.xlsx",
+                            mime=export_helpers.XLSX_MIME,
                             help="The per-day marker times the fits were built from — useful for checking "
                             "a suspicious result.",
                         )

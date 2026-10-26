@@ -345,3 +345,43 @@ class TestGroupMeansCloseEachSection:
     def test_a_frame_with_no_group_column_is_untouched(self):
         df = pd.DataFrame({"ID": ["a"], "v": [1.0]})
         pd.testing.assert_frame_equal(ex.with_group_means(df), df)
+
+
+class TestDownloadsAreWorkbooks:
+    """The analysis pages hand out .xlsx, not .csv. The Export Data and SCAMP pages
+    keep their own formats."""
+
+    def test_excel_bytes_opens_and_skips_empty_frames(self):
+        import io
+
+        data = ex.excel_bytes(
+            [
+                ("per_fly", pd.DataFrame({"ID": ["a", "b"], "v": [1.0, 2.0]})),
+                ("empty", pd.DataFrame()),
+                ("none", None),
+            ]
+        )
+        book = pd.read_excel(io.BytesIO(data), sheet_name=None)
+        assert set(book) == {"per_fly"}
+        assert list(book["per_fly"]["ID"]) == ["a", "b"]
+
+    def test_a_named_index_is_kept(self):
+        """The curation heatmap's minutes are its index; dropping it would lose the
+        time axis."""
+        import io
+
+        frame = pd.DataFrame({"a": [0, 1]}, index=pd.Index([10, 20], name="time"))
+        book = pd.read_excel(io.BytesIO(ex.excel_bytes([("heat", frame)])), sheet_name=None)
+        assert list(book["heat"]["time"]) == [10, 20]
+
+    def test_no_analysis_page_writes_csv(self):
+        from conftest import PKG_ROOT
+
+        keep_csv = {"export_data.py", "export_scamp.py"}
+        offenders = [
+            str(path.relative_to(PKG_ROOT))
+            for path in (PKG_ROOT / "app").rglob("*.py")
+            if path.name not in keep_csv
+            and ("text/csv" in (src := path.read_text(encoding="utf-8")) or ".to_csv(" in src)
+        ]
+        assert offenders == []

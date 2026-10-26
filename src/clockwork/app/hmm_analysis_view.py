@@ -370,9 +370,9 @@ def render():
                     summary_df = get_advanced_hmm_summary(ds, results, config)
                     st.dataframe(summary_df, width="stretch", height=300)
 
-                    _fn = f"hmm_summary_{_phase_label}.csv" if _phase_label else "hmm_summary.csv"
-                    ex.save_df_button(
-                        "Save HMM Summary to working folder", summary_df, ds, _fn, key="dl_hmm_summary"
+                    _fn = f"hmm_summary_{_phase_label}" if _phase_label else "hmm_summary"
+                    ex.save_excel_button(
+                        "Save HMM Summary to working folder", [("summary", summary_df)], ds, _fn, key="dl_hmm_summary"
                     )
                 except Exception as e:
                     st.warning(f"Could not compute advanced summary: {e}")
@@ -432,9 +432,9 @@ def render():
 
             _occ_df = st.session_state.get("_hmm_occ_df")
             if _occ_df is not None and not _occ_df.empty:
-                _fn = f"hmm_state_occupancy_{_phase_label}.csv" if _phase_label else "hmm_state_occupancy.csv"
-                ex.save_df_button(
-                    "Save State Occupancy data to working folder", _occ_df, ds, _fn, key="dl_hmm_occupancy"
+                _fn = f"hmm_state_occupancy_{_phase_label}" if _phase_label else "hmm_state_occupancy"
+                ex.save_excel_button(
+                    "Save State Occupancy data to working folder", [("occupancy", _occ_df)], ds, _fn, key="dl_hmm_occupancy"
                 )
 
 
@@ -492,9 +492,9 @@ def render():
 
             _tc_df = st.session_state.get("_hmm_tc_df")
             if _tc_df is not None and not _tc_df.empty:
-                _fn = f"hmm_group_timecourse_{_phase_label}.csv" if _phase_label else "hmm_group_timecourse.csv"
-                ex.save_df_button(
-                    "Save Group Time-Course data to working folder", _tc_df, ds, _fn, key="dl_hmm_timecourse"
+                _fn = f"hmm_group_timecourse_{_phase_label}" if _phase_label else "hmm_group_timecourse"
+                ex.save_excel_button(
+                    "Save Group Time-Course data to working folder", [("timecourse", _tc_df)], ds, _fn, key="dl_hmm_timecourse"
                 )
 
 
@@ -549,7 +549,7 @@ def render():
 
             _zt_df = st.session_state.get("_hmm_zt_df")
             if _zt_df is not None and not _zt_df.empty:
-                _fn = f"hmm_zt_fractions_{_phase_label}.csv" if _phase_label else "hmm_zt_fractions.csv"
-                ex.save_df_button(
-                    "Save ZT State Fractions data to working folder", _zt_df, ds, _fn, key="dl_hmm_zt"
+                _fn = f"hmm_zt_fractions_{_phase_label}" if _phase_label else "hmm_zt_fractions"
+                ex.save_excel_button(
+                    "Save ZT State Fractions data to working folder", [("zt_fractions", _zt_df)], ds, _fn, key="dl_hmm_zt"
                 )
