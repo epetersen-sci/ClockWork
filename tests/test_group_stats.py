@@ -10,6 +10,7 @@ correction) with ``p.adjust(method = "holm")``. The script is
 import numpy as np
 import pandas as pd
 import pytest
+import scipy
 
 from clockwork.core import group_stats as gs
 
@@ -39,6 +40,8 @@ R_DUNN_HOLM = {
 }
 R_WELCH_T, R_WELCH_T_DF, R_WELCH_T_P = -5.67325318434, 12.0251932757, 0.000102585207013
 R_MWU_W, R_MWU_P = 0.5, 0.00176337944472
+
+SCIPY = tuple(int(v) for v in scipy.__version__.split(".")[:2])
 
 
 class TestAgainstR:
@@ -180,11 +183,17 @@ class TestProportions:
         assert r.significant
         assert len(r.pairs) == 3
 
+    SMALL = {"a": (2, 5), "b": (1, 7), "c": (4, 5)}
+
+    @pytest.mark.skipif(SCIPY < (1, 15), reason="R x C fisher_exact needs scipy >= 1.15")
     def test_small_counts_use_fisher_freeman_halton_reproducibly(self):
-        counts = {"a": (2, 5), "b": (1, 7), "c": (4, 5)}
-        first = gs.compare_proportions(counts)
+        first = gs.compare_proportions(self.SMALL)
         assert first.test.startswith("Fisher-Freeman-Halton")
-        assert gs.compare_proportions(counts).pvalue == first.pvalue
+        assert gs.compare_proportions(self.SMALL).pvalue == first.pvalue
+
+    @pytest.mark.skipif(SCIPY >= (1, 15), reason="scipy >= 1.15 has R x C fisher_exact")
+    def test_small_counts_report_chi_squared_on_older_scipy(self):
+        assert gs.compare_proportions(self.SMALL).test == "χ² test"
 
     def test_every_fly_alike_is_none(self):
         assert gs.compare_proportions({"a": (5, 5), "b": (7, 7)}) is None
