@@ -482,66 +482,6 @@ def holm(results, label):
     return results
 
 
-TIME_INTERACTION = "Linear mixed model, group × time (likelihood ratio)"
-
-
-def group_by_time(zt_df, value_col, labels, *, time_col="zt_bin_minute", id_col="id",
-                  measure=None, panel=None):
-    """Do the groups' daily profiles differ in shape? A linear mixed model on the
-    per-fly binned values, ``value ~ group * time`` with a random intercept per
-    fly (statsmodels), fitted by maximum likelihood; the group × time interaction
-    is tested by a likelihood-ratio test against ``value ~ group + time``.
-
-    ``labels`` maps fly id to group; flies without one are left out, as are
-    groups with fewer than :data:`MIN_N` flies. None when fewer than two groups
-    remain or a model does not converge.
-    """
-    from scipy.stats import chi2
-    from statsmodels.formula.api import mixedlm
-
-    if zt_df is None or zt_df.empty or value_col not in zt_df.columns:
-        return None
-    df = zt_df[[id_col, time_col, value_col]].copy()
-    df["_id"] = df[id_col].astype(str)
-    df["_group"] = df["_id"].map({str(k): str(v) for k, v in labels.items()})
-    df["_value"] = pd.to_numeric(df[value_col], errors="coerce")
-    df = df.dropna(subset=["_group", "_value"])
-    n_flies = df.groupby("_group")["_id"].nunique()
-    keep = sorted(n_flies[n_flies >= MIN_N].index)
-    df = df[df["_group"].isin(keep)]
-    if len(keep) < 2 or df[time_col].nunique() < 2:
-        return None
-    df["_time"] = df[time_col].astype(str)
-
-    def _fit(formula):
-        """Maximum likelihood; L-BFGS first, Powell if that fails to converge."""
-        for method in ("lbfgs", "powell"):
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    res = mixedlm(formula, df, groups=df["_id"]).fit(reml=False, method=method)
-            except (ValueError, np.linalg.LinAlgError):
-                continue
-            if res.converged and np.isfinite(res.llf):
-                return res
-        return None
-
-    full = _fit("_value ~ C(_group) * C(_time)")
-    reduced = _fit("_value ~ C(_group) + C(_time)") if full is not None else None
-    if reduced is None:
-        return None
-    stat = float(2 * (full.llf - reduced.llf))
-    df_diff = (len(keep) - 1) * (df["_time"].nunique() - 1)
-    p = float(chi2.sf(max(stat, 0.0), df_diff))
-    if not np.isfinite(p):
-        return None
-    return GroupStats(
-        family=WELCH, groups=keep, test=TIME_INTERACTION, statistic=stat,
-        df=(float(df_diff),), pvalue=p, measure=measure, panel=panel,
-        name=TIME_INTERACTION, unit="each fly's binned values, fly as a random effect",
-    )
-
-
 RAYLEIGH = "Rayleigh test"
 
 

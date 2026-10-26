@@ -26,7 +26,6 @@ Other tests:
 | Welch's t-test (Mann-Whitney U under the rank-based setting), each pulsed group vs its unpulsed control, Holm across the pulse times of each series | Phase response curve and per-fly phase response violins. The control is the group with `pulse_duration_min = 0` matched on the other grouping columns (`phase_shift.control_map_from_pulse`). |
 | Paired t-test (Wilcoxon signed-rank under the rank-based setting), Holm across recovery days | Sleep deprivation: each group's baseline vs each recovery day, same flies |
 | Fisher's exact test (2 groups); χ² test (3+ groups), or Fisher-Freeman-Halton by Monte Carlo (99,999 tables, fixed seed) when an expected count is under 5; then pairwise Fisher's exact tests with Holm correction | Share of rhythmic flies per group |
-| Linear mixed model `value ~ group * time` with a random intercept per fly, maximum likelihood; likelihood-ratio test of the group × time interaction | Daily activity and sleep patterns |
 | Rayleigh test | Circadian gating: concentration of each fly's mean phase, per group and state |
 | One-sample t-test vs 0 (Wilcoxon signed-rank vs 0 under the rank-based setting) | `plotting.rebound_bar_plot`, when given results; no page calls it |
 
@@ -42,7 +41,6 @@ Other tests:
 | Paired t / Wilcoxon signed-rank / one-sample t | `scipy.stats.ttest_rel` / `scipy.stats.wilcoxon` / `scipy.stats.ttest_1samp` | scipy |
 | Fisher's exact / χ² / Fisher-Freeman-Halton | `scipy.stats.fisher_exact` / `scipy.stats.chi2_contingency` / `scipy.stats.fisher_exact(method=MonteCarloMethod(...))` (scipy ≥ 1.15; on older scipy the χ² result is reported) | scipy |
 | Holm correction | `statsmodels.stats.multitest.multipletests(method="holm")` | statsmodels |
-| Mixed model | `statsmodels.formula.api.mixedlm` | statsmodels |
 | Rayleigh test | `astropy.stats.rayleightest` | astropy |
 | Compact letter display | `scikit_posthocs.compact_letter_display` | scikit-posthocs |
 
@@ -80,11 +78,10 @@ CLI config for the QC report:
 
    Figures not laid out by group carry their result as text: the phase response
    curve and violins label each pulsed point or column with stars or the
-   p-value; the daily patterns show `Group × time p = …`; the gating figures list
-   the Rayleigh result per state under the title; the bout-duration curves name
-   the omnibus test and p-value. Paired sleep-deprivation tests, the cumulative
-   sleep difference and the rhythmic-fraction tests are tables under their
-   figure.
+   p-value; the gating figures list the Rayleigh result per state under the
+   title; the bout-duration curves name the omnibus test and p-value. Paired
+   sleep-deprivation tests, the cumulative sleep difference and the
+   rhythmic-fraction tests are tables under their figure.
 
 ### In the export
 
@@ -121,7 +118,7 @@ test adjusts) and `Letters` (when letters are shown).
 
 | Figure | Function | Stats | Test |
 |---|---|---|---|
-| Daily activity / sleep pattern | `daily_pattern_line`, `faceted_profiles` | ✅ | Mixed model, group × time |
+| Daily activity / sleep pattern | `daily_pattern_line`, `faceted_profiles` | — | |
 | Activity totals (All day / Day / Night / Custom ZT window) | `group_violins`, `faceted_violins` | ✅ | W, one test per panel |
 | Sleep totals (All day / Day / Night / Custom ZT window) | same | ✅ | R, one test per panel |
 | Sleep bout duration curves | `sleep_bout_duration_lines` | ✅ | R, on per-fly geometric mean bout duration; pairs in an expander |

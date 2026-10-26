@@ -5078,22 +5078,6 @@ def add_group_stats(
     return top
 
 
-def add_time_interaction(fig, stats):
-    """A copy of a daily-profile ``fig`` with ``group_stats.group_by_time``'s
-    result named in its top-right corner (``fig`` itself may be a cached one)."""
-    from clockwork.core import group_stats as gs
-
-    if stats is None:
-        return fig
-    fig = go.Figure(fig)
-    fig.add_annotation(
-        xref="paper", yref="paper", x=1, y=1, xanchor="right", yanchor="bottom",
-        text=f"Group × time {gs.format_p(stats.pvalue)}", showarrow=False,
-        font=dict(size=12, color="#222222"),
-    )
-    return fig
-
-
 def group_violins(
     per_fly,
     value_col,

@@ -325,51 +325,17 @@ _facet_colours = (
 )
 
 
-@st.cache_data(show_spinner=False, max_entries=16)
-def _cached_profile_stats(
-    fp, _ds, variable, bin_size_minutes, selected_genotypes, selected_temperatures, spec_json
-):
-    """The group × time test behind each daily-pattern figure: one per facet panel
-    (spec_json set) or one for the single figure, over the flies it draws."""
-    zt = _cached_zt_binned(fp, _ds, variable, bin_size_minutes)
-    if spec_json:
-        spec = facets.FacetSpec.from_json(spec_json)
-        panels = facets.resolve_panels(facets.fly_factor_table(_ds), spec)
-        return [
-            group_stats.group_by_time(zt, variable, p.labels(), measure=variable, panel=p.title)
-            for p in panels
-        ]
-    labels = dam_utilities.fly_group_map(_ds, default="All")
-    for coord, chosen in (("genotype", selected_genotypes), ("temperature", selected_temperatures)):
-        if chosen and coord in _ds.coords:
-            keep = {str(i) for i, v in zip(_ds["id"].values, _ds[coord].values) if v in chosen}
-            labels = {k: v for k, v in labels.items() if str(k) in keep}
-    return [group_stats.group_by_time(zt, variable, labels, measure=variable)]
-
-
 def _daily_pattern(variable, title, fp):
-    """The daily pattern for ``variable``: one figure, or one per facet panel.
-    Returns the group × time tests drawn on them."""
+    """The daily pattern for ``variable``: one figure, or one per facet panel."""
     phase_label = phase_used or dataset_phase(ds)
-    results = _cached_profile_stats(
-        fp,
-        ds,
-        variable,
-        bin_size,
-        tuple(selected_genotypes) if selected_genotypes else None,
-        tuple(selected_temperatures) if selected_temperatures else None,
-        facet_spec.to_json() if _facet_panels else None,
-    )
     if _facet_panels:
         pairs = _cached_faceted_profiles(
             fp, ds, variable, title, phase_label, bin_size, facet_spec.to_json()
         )
-        pairs = [(p, plotting.add_time_interaction(f, r)) for (p, f), r in zip(pairs, results)]
         facet_panels.render_panels(
             pairs, facet_spec, ds, key=f"{variable}_profile", filename=f"{variable}_profile"
         )
-        stats_ui.notice(results)
-        return results
+        return
     fig = _cached_daily_pattern(
         fp,
         ds,
@@ -382,11 +348,7 @@ def _daily_pattern(variable, title, fp):
     )
     # theme=None: let the figure's own styling (black text, transparent bg) drive both
     # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
-    charts.plotly_chart(
-        plotting.add_time_interaction(fig, results[0]), width="stretch", theme=None
-    )
-    stats_ui.notice(results)
-    return results
+    charts.plotly_chart(fig, width="stretch", theme=None)
 
 # One tab per MEASURE, not per kind of plot. The three old tabs — daily
 # profiles, bouts, day/night totals — each held half an activity answer and half
@@ -613,7 +575,7 @@ if tab_activity.open:
         st.subheader("Daily Activity Pattern")
         if "activity" in ds.data_vars:
             _ds_fp = dataset_fingerprint(ds)
-            _act_profile_stats = _daily_pattern("activity", "Daily Activity Pattern", _ds_fp)
+            _daily_pattern("activity", "Daily Activity Pattern", _ds_fp)
 
             # Workbook of binned data (grouped: mean, SD, n per condition)
             try:
@@ -644,15 +606,14 @@ if tab_activity.open:
                             "per_fly",
                             ex.per_fly_wide(_act_pf, value_col="activity"),
                         ),
-                        stats_ui.sheet(_act_profile_stats),
                     ],
                     ds,
                     "activity_binned",
                     key="dl_act",
-                    help="Group mean ± SD ± N per ZT bin in GraphPad's grouped-table "
-                    "order; the per-fly time course behind it — one row per fly, one "
-                    "column per ZT bin, with a mean row closing each group; and the "
-                    "group × time test shown on the figure.",
+                    help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
+                    "grouped-table order, and the per-fly time course behind it — one "
+                    "row per fly, one column per ZT bin, with a mean row closing each "
+                    "group.",
                 )
             except Exception:
                 pass
@@ -685,7 +646,7 @@ if tab_sleep.open:
         if analyses["sleep"]:
             st.subheader("Daily Sleep Pattern")
             _ds_fp_sl = dataset_fingerprint(ds)
-            _sl_profile_stats = _daily_pattern("sleep", "Daily Sleep Pattern", _ds_fp_sl)
+            _daily_pattern("sleep", "Daily Sleep Pattern", _ds_fp_sl)
 
             try:
                 binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)
@@ -714,15 +675,14 @@ if tab_sleep.open:
                             "per_fly",
                             ex.per_fly_wide(_sl_pf, value_col="sleep"),
                         ),
-                        stats_ui.sheet(_sl_profile_stats),
                     ],
                     ds,
                     "sleep_binned",
                     key="dl_sleep",
-                    help="Group mean ± SD ± N per ZT bin in GraphPad's grouped-table "
-                    "order; the per-fly time course behind it — one row per fly, one "
-                    "column per ZT bin, with a mean row closing each group; and the "
-                    "group × time test shown on the figure.",
+                    help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
+                    "grouped-table order, and the per-fly time course behind it — one "
+                    "row per fly, one column per ZT bin, with a mean row closing each "
+                    "group.",
                 )
             except Exception:
                 pass
