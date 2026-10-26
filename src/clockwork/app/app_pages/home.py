@@ -31,7 +31,7 @@ The sidebar groups the modules into four sections.
   gates downstream group filtering, and tabs for period length, rhythmicity and the
   group-averaged periodograms.
 - **Phase shift** — how far each fly's rhythm shifted after a light pulse
-  (needs a `pulse_time` ZT column in your metadata).
+  (needs a `pulse_time` column in your metadata).
 
 **Activity & Sleep** — sleep structure and state.
 

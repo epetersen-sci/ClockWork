@@ -18,7 +18,9 @@ SCAMP actogram rather than merely actogram-shaped:
 Beyond SCAMP: :func:`group_split_minutes` and :func:`ld_bin_mask` label which plotted
 bins fall before each group's release into DD, so the entrained part of a recording can
 be drawn in its own colour. The label is per bin rather than per row — a double-plotted
-row can straddle the release.
+row can straddle the release. When runs released into DD on different days are combined,
+:func:`align_on_release` lines the flies up on their release first, so one boundary is
+right for every fly in the group.
 
 What is deliberately NOT copied: ``actogram2`` pads a partial final day with zeros.
 Zero means "no activity" while a missing reading means "we do not know" (§2a), so a
@@ -30,6 +32,7 @@ import numpy as np
 MINUTES_PER_DAY = 1440
 DEFAULT_BIN_MINUTES = 30  # SCAMP's s30
 DEFAULT_REPS = 2  # double-plotted, actogram2's default
+DEFAULT_MIN_LD_DAYS = 2.0  # align_on_release drops flies with less LD than this
 
 
 def _bin_sum(values, bins_per_day, bin_len):
@@ -143,19 +146,10 @@ def group_split_minutes(ds, group_by):
         stops at the earliest fly's release).
         ``({}, set())`` when the dataset carries no phase metadata at all.
     """
-    from clockwork.core import dam_utilities
     from clockwork.core.phase_shift import group_labels
 
-    if "split_minute" in ds.coords:
-        split = np.asarray(ds["split_minute"].values, dtype=float)
-    elif "first_DD_day" in ds.coords:
-        try:
-            split = np.asarray(
-                dam_utilities.add_phase_metadata(ds)["split_minute"].values, dtype=float
-            )
-        except Exception:
-            return {}, set()
-    else:
+    split = fly_split_minutes(ds)
+    if split is None:
         return {}, set()
 
     labels, _ = group_labels(ds, group_by)
@@ -170,6 +164,100 @@ def group_split_minutes(ds, group_by):
             disagreeing.add(grp)
         out[grp] = float(vals.min())
     return out, disagreeing
+
+
+def fly_split_minutes(ds):
+    """Per-fly LD→DD boundary in relative minutes (float, NaN where unknown).
+
+    ``None`` when the dataset carries no phase metadata at all.
+    """
+    from clockwork.core import dam_utilities
+
+    if "split_minute" in ds.coords:
+        return np.asarray(ds["split_minute"].values, dtype=float)
+    if "first_DD_day" in ds.coords:
+        try:
+            return np.asarray(
+                dam_utilities.add_phase_metadata(ds)["split_minute"].values, dtype=float
+            )
+        except Exception:
+            return None
+    return None
+
+
+def align_on_release(ds, min_ld_days=DEFAULT_MIN_LD_DAYS, activity_var="activity"):
+    """Line every fly up on its LD→DD transition and trim LD to the shortest.
+
+    A combined dataset holds runs whose flies were released into DD on different
+    days of their own recordings. Averaging them on the raw day index puts LD days
+    of one run on top of DD days of another, so no single colour boundary can be
+    right for the group. Here each fly is shifted earlier by whole days so that
+    every release lands on the same row, then the leading LD is cut back to the
+    shortest LD among the flies kept. Whole days, so each fly's ZT is unchanged —
+    its time axis already starts at its own ZT0.
+
+    Flies with fewer than ``min_ld_days`` of LD are left out instead of setting the
+    trim, so one short run cannot strip everyone else's entrained days. Flies with
+    no boundary at all are left out too: they have nothing to align on.
+
+    Returns
+    -------
+    (xr.Dataset, dict)
+        The aligned dataset (``activity_var`` only, on a fresh ``0..n`` minute axis,
+        with ``split_minute`` rewritten to each fly's aligned boundary), and a
+        summary: ``ld_days`` (the common LD length kept), ``shift_days``
+        ``{fly id: days removed from the front}``, ``too_short`` and
+        ``no_boundary`` (fly ids left out).
+    """
+    import xarray as xr
+
+    split = fly_split_minutes(ds)
+    if split is None:
+        raise ValueError("The dataset has no LD/DD boundary to align on.")
+    ids = np.asarray(ds["id"].values)
+    finite = np.isfinite(split)
+    min_ld_minutes = float(min_ld_days) * MINUTES_PER_DAY
+    keep = finite & (split >= min_ld_minutes)
+    no_boundary = ids[~finite].tolist()
+    too_short = ids[finite & ~keep].tolist()
+    if not keep.any():
+        raise ValueError(
+            f"No fly has at least {float(min_ld_days):g} day(s) of LD before its release "
+            "into DD. Lower the minimum."
+        )
+
+    split_kept = split[keep]
+    target = float(split_kept.min())
+    # Whole-day shifts keep each fly's ZT; a release at a different clock time
+    # than the run's start (rare) still lands within the same day.
+    shift_days = np.floor((split_kept - target) / MINUTES_PER_DAY + 1e-9).astype(int)
+    shift_min = shift_days * MINUTES_PER_DAY
+
+    act = np.asarray(ds[activity_var].transpose("time", "id").values, dtype=float)[:, keep]
+    n_time = act.shape[0]
+    out = np.full_like(act, np.nan)
+    for j, s in enumerate(shift_min):
+        out[: n_time - s, j] = act[s:, j]
+    # Drop the tail that is now NaN in every fly.
+    any_data = np.isfinite(out).any(axis=1)
+    n_keep = int(np.nonzero(any_data)[0][-1] + 1) if any_data.any() else 0
+    out = out[:n_keep]
+
+    sub = ds.isel(id=np.nonzero(keep)[0])
+    id_coords = {c: sub[c] for c in sub.coords if sub[c].dims == ("id",)}
+    id_coords["split_minute"] = ("id", split_kept - shift_min)
+    aligned = xr.Dataset(
+        {activity_var: (("time", "id"), out)},
+        coords={"time": np.arange(n_keep, dtype=np.int64), **id_coords},
+        attrs=dict(ds.attrs),
+    )
+    info = {
+        "ld_days": target / MINUTES_PER_DAY,
+        "shift_days": {str(f): int(d) for f, d in zip(ids[keep], shift_days)},
+        "too_short": [str(f) for f in too_short],
+        "no_boundary": [str(f) for f in no_boundary],
+    }
+    return aligned, info
 
 
 def ld_bin_mask(n_days, bins_per_day, reps, bin_minutes, split_minute):

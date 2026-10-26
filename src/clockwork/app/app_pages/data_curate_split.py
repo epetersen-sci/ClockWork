@@ -8,11 +8,14 @@ import streamlit as st
 from clockwork import pipeline
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts
-from clockwork.app.ui.guards import require_dataset
+from clockwork.app.ui.guards import analyses_done, require_dataset
+from clockwork.app.ui.state import invalidate_derived_caches
 from clockwork.core import dam_utilities, plotting
 from clockwork.core.dataset_meta import PHASE_FULL, dataset_phase, is_split_applied
 
 ds = require_dataset()
+
+_CURATION_NOTE_KEY = "_curation_dropped_note"
 
 # ============================================================
 # Step 1: Curate Dead Animals
@@ -30,6 +33,24 @@ elif "is_alive" in ds.data_vars:
     st.info(
         "This dataset was curated with an older algorithm version. "
         "Re-running curation is recommended for consistency with current settings."
+    )
+
+_dropped_note = st.session_state.pop(_CURATION_NOTE_KEY, None)
+if _dropped_note:
+    st.warning(_dropped_note)
+
+# Results computed before curation describe flies curation trims or removes, so
+# curating drops them. Say so BEFORE the button, not after the work is gone.
+_prior = analyses_done(ds)
+if _prior:
+    st.warning(
+        f"This dataset already has **{', '.join(_prior)}** results. "
+        + (
+            "They were run on uncurated flies, so "
+            if ds.attrs.get("curation_time_window_hours") is None
+            else ""
+        )
+        + "running curation removes them — re-run them afterwards."
     )
 
 col1, col2 = st.columns(2)
@@ -80,9 +101,16 @@ if st.button("Run Curation", key="run_curation"):
                 progress=_curate_cb,
             )
 
+            # Every cache built from the old flies (period tables, HMM, …) is stale.
+            invalidate_derived_caches()
             st.session_state.dataset = result.live
             st.session_state.curated_dead_data = result.dead
             st.session_state.analyses = detect_analyses(result.live)
+            if _prior:
+                st.session_state[_CURATION_NOTE_KEY] = (
+                    f"Curation removed the **{', '.join(_prior)}** results that were on "
+                    "this dataset. Re-run them on the curated flies."
+                )
 
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Before", result.total_before)
@@ -224,6 +252,10 @@ st.subheader("3. Inspect the result")
 # Re-read ds in case split was applied above
 ds = st.session_state.dataset
 
+# `moving` is derived from activity (curation stores it); derive it here when
+# curation has not run yet, so the default view is the same before and after.
+if "activity" in ds.data_vars and "moving" not in ds.data_vars:
+    ds = dam_utilities._compute_moving(ds)
 _heatmap_vars = [v for v in ("moving", "activity") if v in ds.data_vars]
 if not _heatmap_vars:
     st.info("No data variables available for heatmap.")

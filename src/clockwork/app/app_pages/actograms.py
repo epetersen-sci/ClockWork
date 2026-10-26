@@ -14,6 +14,7 @@ import streamlit as st
 from clockwork.app.ui import charts, filters
 from clockwork.app.ui.guards import require_dataset
 from clockwork.core import actograms as act_module
+from clockwork.core import dam_utilities
 from clockwork.core import phase_shift as ps_module
 from clockwork.core.dataset_meta import PHASE_DD, PHASE_LD, dataset_phase
 
@@ -184,6 +185,39 @@ with st.expander("Detection and layout parameters"):
     with h2:
         ld_colour = st.color_picker("LD colour", "#FF8C00", disabled=not mark_ld)
 
+    # A combined dataset whose runs went into DD on different days of their own
+    # recordings: averaged on the raw day index, one run's LD days sit on top of
+    # another's DD days and no single colour boundary is right for the group.
+    _onset_days = (
+        dam_utilities.dd_onset_days(ds) if _phase not in (PHASE_LD, PHASE_DD) else []
+    )
+    _mixed_release = len(_onset_days) > 1
+    if _mixed_release:
+        a1, a2 = st.columns(2)
+        with a1:
+            align_release = st.checkbox(
+                "Align runs on the LD→DD transition",
+                value=True,
+                key="actogram_align_release",
+                help="Shift each fly by whole days so every release into DD lands on "
+                "the same row, then trim the leading LD to the shortest LD among the "
+                "flies drawn. Whole-day shifts leave each fly's ZT unchanged.",
+            )
+        with a2:
+            min_ld_days = st.number_input(
+                "Minimum LD days",
+                min_value=0.0,
+                max_value=30.0,
+                value=float(act_module.DEFAULT_MIN_LD_DAYS),
+                step=1.0,
+                key="actogram_min_ld_days",
+                disabled=not align_release,
+                help="Flies with less LD than this are left out rather than trimming "
+                "every other fly down to them.",
+            )
+    else:
+        align_release, min_ld_days = False, float(act_module.DEFAULT_MIN_LD_DAYS)
+
 selected = st.multiselect(
     "Groups to draw",
     _groups,
@@ -197,8 +231,51 @@ if not selected:
 # ============================================================
 # Section 3: Draw
 # ============================================================
+ds_plot = ds
+if align_release:
+    # Align only the flies being drawn: the LD trim is set by the shortest of them.
+    _drawn = np.isin(_labels, selected)
+    try:
+        ds_plot, _align = act_module.align_on_release(
+            ds.isel(id=np.nonzero(_drawn)[0]), min_ld_days=float(min_ld_days)
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+    _shifted = sum(1 for d in _align["shift_days"].values() if d > 0)
+    st.info(
+        "Runs had different amounts of LD before DD "
+        f"({', '.join(str(d) for d in _onset_days)} days). Each fly is shifted so its "
+        "release into DD lines up, and LD is trimmed to the shortest among the flies "
+        f"drawn: **{_align['ld_days']:g} LD day(s)** kept, {_shifted} of "
+        f"{len(_align['shift_days'])} flies shifted."
+    )
+    _left_out = _align["too_short"] + _align["no_boundary"]
+    if _left_out:
+        st.warning(
+            f"{len(_left_out)} of the flies drawn left out: "
+            + (
+                f"{len(_align['too_short'])} with under {float(min_ld_days):g} LD day(s)"
+                if _align["too_short"]
+                else ""
+            )
+            + ("; " if _align["too_short"] and _align["no_boundary"] else "")
+            + (
+                f"{len(_align['no_boundary'])} with no LD/DD boundary"
+                if _align["no_boundary"]
+                else ""
+            )
+            + "."
+        )
+    _labels_plot, _ = ps_module.group_labels(ds_plot, _label_by)
+    _counts = {g: int((_labels_plot == g).sum()) for g in _groups}
+    selected = [g for g in selected if _counts.get(g, 0) > 0]
+    if not selected:
+        st.info("No fly in the selected groups survived the minimum LD filter.")
+        st.stop()
+
 try:
-    res = act_module.compute_group_actograms(ds, _label_by, bin_minutes=int(bin_minutes))
+    res = act_module.compute_group_actograms(ds_plot, _label_by, bin_minutes=int(bin_minutes))
 except Exception as exc:
     st.error(f"Could not build the actograms: {exc}")
     st.stop()
@@ -224,7 +301,7 @@ if mark_ld:
     elif _phase == PHASE_DD:
         _splits = dict.fromkeys(_groups)
     else:
-        _splits, _split_disagree = act_module.group_split_minutes(ds, _label_by)
+        _splits, _split_disagree = act_module.group_split_minutes(ds_plot, _label_by)
     _no_boundary = [g for g in selected if _splits.get(g) is None]
     if _no_boundary and _phase != PHASE_DD:
         st.warning(

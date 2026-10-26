@@ -140,6 +140,7 @@ def render_period_row():
     AC and MESA bridge. Same widget keys as when they were separate rows, so a
     remembered value carries over.
     """
+    from clockwork.app.ui.changed import flag_if_changed
     from clockwork.core import periodograms
 
     st.subheader("Period range")
@@ -154,6 +155,7 @@ def render_period_row():
             key="period_min_h",
         )
         _remember("period_min_h", min_period)
+        flag_if_changed(min_period, periodograms.DEFAULT_CWT_MIN_PERIOD, fmt="{:g}".format)
     with c2:
         max_period = st.number_input(
             "Max period (h)",
@@ -166,6 +168,7 @@ def render_period_row():
             "a 36 h ceiling. CWT `global_rednoise` stays range-robust when widened.",
         )
         _remember("period_max_h", max_period)
+        flag_if_changed(max_period, periodograms.DEFAULT_CWT_MAX_PERIOD, fmt="{:g}".format)
     with c3:
         floor = st.number_input(
             "Min DD days",
@@ -179,6 +182,7 @@ def render_period_row():
             "graphs). ~4 days is a reasonable floor. 0 keeps every fly.",
         )
         remember_min_days_floor(floor)
+        flag_if_changed(floor, periodograms.DEFAULT_MIN_DD_DAYS_FLOOR, fmt="{:g}".format)
     with c4:
         max_gap = st.number_input(
             "Max gap to bridge (min)",
@@ -193,6 +197,7 @@ def render_period_row():
             "Validated to 60 min; Lomb-Scargle is gap-native and ignores this.",
         )
         _remember("max_bridge_gap", max_gap)
+        flag_if_changed(max_gap, periodograms.DEFAULT_MAX_BRIDGE_GAP_MINUTES, fmt="{:g}".format)
     st.caption(
         "The period range drives both the period search and the classification window."
     )

@@ -77,7 +77,8 @@ def _cached_zt_binned(fp, _ds, value_col, bin_size_minutes):
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_per_fly_summary(
-    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes,
+    custom_window=None,
 ):
     """Per-fly All Day / Day / Night totals — the rows every totals panel draws.
 
@@ -92,6 +93,7 @@ def _cached_per_fly_summary(
         selected_genotypes=list(selected_genotypes) if selected_genotypes else None,
         selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
         bin_size_minutes=bin_size_minutes,
+        custom_window=custom_window,
     )
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -120,7 +122,8 @@ def _cached_daily_pattern(
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_summary_table(
-    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label
+    fp, _ds, variable, selected_genotypes, selected_temperatures, bin_size_minutes, phase_label,
+    custom_window=None,
 ):
     """Per-group summary table (mean + SEM per period) for CSV export — the
     SAME numbers plotting.summary_bars draws (one computation, no drift)."""
@@ -131,6 +134,7 @@ def _cached_summary_table(
         selected_temperatures=list(selected_temperatures) if selected_temperatures else None,
         bin_size_minutes=bin_size_minutes,
         phase_label=phase_label,
+        custom_window=custom_window,
     )
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -197,15 +201,22 @@ def _cached_faceted_profiles(fp, _ds, variable, title, phase_label, bin_size_min
     )
 
 
-def _summary_frame(tbl):
+def _summary_frame(tbl, custom_label=None):
     """The per-group summary table with headers a reader recognises.
 
     A frame rather than the CSV string it used to return, because it is now a
     SHEET in a workbook beside the per-fly rows it is the mean of. Two buttons
     meant choosing twice and then remembering which file was which.
     """
+    custom = {}
+    if custom_label:
+        custom = {
+            plotting.CUSTOM_PERIOD: f"Custom {custom_label} mean (min)",
+            f"{plotting.CUSTOM_PERIOD}_sem": f"Custom {custom_label} SEM (min)",
+        }
     return tbl.rename(
         columns={
+            **custom,
             "group": "Group",
             "n": "n_flies",
             "All Day": "All Day mean (min)",
@@ -363,6 +374,59 @@ _summary_subhead_suffix = (
 )
 
 
+#: The custom ZT window last applied with Update graph, shared by both tabs so the
+#: activity and sleep totals (and their exports) always describe the same hours.
+_CUSTOM_WINDOW_KEY = "_sleep_activity_custom_zt"
+_DEFAULT_CUSTOM_WINDOW = (0.0, 6.0)
+
+
+def _window_label(window):
+    """``ZT 0–6`` (``CT`` under DD, where no light cycle is running)."""
+    prefix = "CT" if _ds_phase_label == PHASE_DD else "ZT"
+    return f"{prefix} {window[0]:g}–{window[1]:g}"
+
+
+def _custom_window_form(key):
+    """The custom window's start/end and an Update graph button, in a form.
+
+    A form so the totals redraw once, when the button is pressed, rather than on
+    every click of a number input. Returns the window last applied.
+    """
+    applied = tuple(st.session_state.get(_CUSTOM_WINDOW_KEY, _DEFAULT_CUSTOM_WINDOW))
+    with st.form(f"{key}_custom_window_form", border=False):
+        c1, c2, c3 = st.columns(3, vertical_alignment="bottom")
+        with c1:
+            start = st.number_input(
+                "Custom window start (ZT h)",
+                min_value=0.0,
+                max_value=24.0,
+                value=float(applied[0]),
+                step=0.5,
+                key=f"{key}_custom_zt_start",
+                help="Totals over [start, end). An end earlier than the start wraps "
+                "past ZT 24 (e.g. 20 to 4). A bin counts when it starts in the window.",
+            )
+        with c2:
+            end = st.number_input(
+                "Custom window end (ZT h)",
+                min_value=0.0,
+                max_value=24.0,
+                value=float(applied[1]),
+                step=0.5,
+                key=f"{key}_custom_zt_end",
+            )
+        with c3:
+            if st.form_submit_button("Update graph"):
+                applied = (float(start), float(end))
+                st.session_state[_CUSTOM_WINDOW_KEY] = applied
+    if any((h * 60) % bin_size for h in applied):
+        st.caption(
+            f"The window's edges are not on the {bin_size}-minute bin grid, so it "
+            "covers the bins that START inside it."
+        )
+    return applied
+
+
 def _totals_violins(variable, y_label, key):
     """Three panels for one measure: total, day and night, groups on the x axis.
 
@@ -376,6 +440,8 @@ def _totals_violins(variable, y_label, key):
     be obviously different. The per-fly values are computed either way — a group
     mean IS their mean — so the distribution costs only the drawing.
     """
+    window = _custom_window_form(key)
+    _custom_label = _window_label(window)
     per_fly = _cached_per_fly_summary(
         dataset_fingerprint(ds),
         ds,
@@ -383,6 +449,7 @@ def _totals_violins(variable, y_label, key):
         tuple(selected_genotypes) if selected_genotypes else None,
         tuple(selected_temperatures) if selected_temperatures else None,
         bin_size,
+        window,
     )
     if per_fly.empty:
         st.info(f"No {variable} data to summarise for the current selection.")
@@ -395,6 +462,7 @@ def _totals_violins(variable, y_label, key):
         ("All Day", "Total"),
         ("Day Only", "Subjective day" if _dd else "Day"),
         ("Night Only", "Subjective night" if _dd else "Night"),
+        (plotting.CUSTOM_PERIOD, f"Custom ({_custom_label})"),
     ]
     if _facet_panels:
         # Faceted, the three periods would be three rows of panels each. One period
@@ -427,10 +495,10 @@ def _totals_violins(variable, y_label, key):
     else:
         # One group order for all three, so the columns line up across the panels.
         _order = sorted(per_fly["Group"].astype(str).unique())
-        # Side by side. Full width each, the three were so broad that comparing a
+        # Side by side. Full width each, the panels were so broad that comparing a
         # group's day against its night meant scrolling between them — which is the
-        # comparison the three-panel split exists to make easy.
-        _cols = st.columns(3)
+        # comparison the split into panels exists to make easy.
+        _cols = st.columns(len(panels))
         for i, (col, name) in enumerate(panels):
             fig, _ = plotting.group_violins(
                 per_fly,
@@ -451,6 +519,7 @@ def _totals_violins(variable, y_label, key):
         tuple(selected_temperatures) if selected_temperatures else None,
         bin_size,
         _ds_phase_label,
+        window,
     )
     # One workbook rather than two buttons. The group summary and the per-fly rows
     # it is the mean of are read together, and two CSVs meant choosing twice and
@@ -458,10 +527,15 @@ def _totals_violins(variable, y_label, key):
     ex.save_excel_button(
         f"Save {variable.capitalize()} totals (.xlsx)",
         [
-            ("summary", None if tbl.empty else _summary_frame(tbl)),
+            ("summary", None if tbl.empty else _summary_frame(tbl, _custom_label)),
             # Group means only on the EXPORTED copy: the violins above are drawn
             # from `per_fly` itself, and a Mean row in there would plot as a fly.
-            ("per_fly", ex.with_group_means(per_fly)),
+            (
+                "per_fly",
+                ex.with_group_means(per_fly).rename(
+                    columns={plotting.CUSTOM_PERIOD: f"Custom {_custom_label}"}
+                ),
+            ),
         ],
         ds,
         f"{variable}_totals",

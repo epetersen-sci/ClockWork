@@ -221,3 +221,75 @@ def test_page_colours_ld_bins_when_asked(app, master_ds):
             colours.update(colour if isinstance(colour, list) else [colour])
     assert "#FF8C00" in colours, "no bin was drawn in the LD colour"
     assert "#0000CD" in colours, "no bin was drawn in the DD colour"
+
+
+# ------------------------------------------------- aligning on the release
+
+
+def _two_runs():
+    """Run A released into DD after 2 LD days, run B after 4; 8 days each."""
+    ds = _ds(
+        n_days=8,
+        n_id=4,
+        genotypes=["a", "a", "a", "a"],
+        first_dd_offsets=[2 * MPD, 2 * MPD, 4 * MPD, 4 * MPD],
+    )
+    # Each fly's own day index as its activity, so where a day lands is visible.
+    day = (np.arange(8 * MPD) // MPD).astype(float)
+    ds["activity"][:] = day[:, None]
+    return ds
+
+
+def test_align_lines_every_release_up_and_trims_ld_to_the_shortest():
+    aligned, info = act.align_on_release(_two_runs(), min_ld_days=1)
+    assert info["ld_days"] == 2
+    assert info["shift_days"] == {"f0": 0, "f1": 0, "f2": 2, "f3": 2}
+    # Every fly's release is now at the same minute...
+    np.testing.assert_array_equal(aligned["split_minute"].values, [2 * MPD] * 4)
+    # ...and run B's first aligned day is its own day 2: two LD days were cut.
+    np.testing.assert_array_equal(aligned["activity"].isel(time=0).values, [0, 0, 2, 2])
+    # The group now has ONE boundary, so the LD colouring is right for every fly.
+    splits, disagree = act.group_split_minutes(aligned, ("genotype",))
+    assert splits == {"a": 2 * MPD} and disagree == set()
+
+
+def test_align_drops_flies_below_the_minimum_ld_instead_of_trimming_to_them():
+    aligned, info = act.align_on_release(_two_runs(), min_ld_days=3)
+    assert info["too_short"] == ["f0", "f1"]
+    assert list(aligned["id"].values) == ["f2", "f3"]
+    assert info["ld_days"] == 4  # the shortest LD among the flies KEPT
+
+
+def test_align_leaves_out_flies_with_no_boundary():
+    ds = _two_runs().assign_coords(split_minute=("id", [2 * MPD, np.nan, 4 * MPD, 4 * MPD]))
+    aligned, info = act.align_on_release(ds, min_ld_days=1)
+    assert info["no_boundary"] == ["f1"]
+    assert "f1" not in aligned["id"].values
+
+
+def test_align_refuses_when_no_fly_meets_the_minimum():
+    with pytest.raises(ValueError, match="Lower the minimum"):
+        act.align_on_release(_two_runs(), min_ld_days=10)
+
+
+def test_page_aligns_runs_released_on_different_days(app, master_ds):
+    """Two cohorts released a day apart: the page offers the alignment, on by
+    default, and says how much LD it kept instead of the old mismatch note."""
+    dd = master_ds["first_DD_day"].values.copy()
+    dd[: len(dd) // 2] = dd[: len(dd) // 2] + np.timedelta64(1, "D")
+    ds = master_ds.assign_coords(first_DD_day=("id", dd))
+    if "split_minute" in ds.coords:
+        ds = ds.drop_vars("split_minute")
+    at = app(ds=ds, page="actograms")
+    assert not at.exception
+    assert at.checkbox(key="actogram_align_release").value is True
+    assert any("lines up" in i.value for i in at.info)
+    assert not any("highlight stops at the earliest" in i.value for i in at.info)
+
+
+def test_aligned_shift_never_reads_a_missing_minute_as_zero():
+    """The tail a shift opens up is NaN: no fly was recorded there."""
+    aligned, _ = act.align_on_release(_two_runs(), min_ld_days=1)
+    # Run B lost 2 days at the front, so its last 2 aligned days are unmeasured.
+    tail = aligned["activity"].sel(id="f2").values[-2 * MPD :]
+    assert np.isnan(tail).all()
