@@ -189,27 +189,56 @@ def _isolate_bare_session_state():
     st.session_state.clear()
 
 
-@pytest.fixture
-def app():
-    """Factory: an AppTest on the real entrypoint, seeded with a dataset.
+@pytest.fixture(scope="module")
+def shared_worker_pool():
+    """One worker pool for every per-fly analysis in a module.
+
+    Each estimator call otherwise spawns its own pool, and on Windows every
+    worker re-imports numpy/scipy/astropy first, which costs more than the
+    compute on a few flies. ``pytestmark = pytest.mark.usefixtures(
+    "shared_worker_pool")`` opts a module in; the analyses see a real pool,
+    only its lifetime changes.
+    """
+    import multiprocessing as mp
+    from contextlib import contextmanager
+
+    from clockwork.core import periodograms
+
+    with mp.Pool(processes=periodograms.get_optimal_workers(mp.cpu_count())) as pool:
+
+        @contextmanager
+        def _shared(given, n_processes):
+            yield pool if given is None else given
+
+        with pytest.MonkeyPatch.context() as mp_patch:
+            mp_patch.setattr(periodograms, "_worker_pool", _shared)
+            yield pool
+
+
+def make_app(ds=None, page=None, **session_state):
+    """An AppTest on the real entrypoint, seeded with a dataset.
 
     Always initialised from the ENTRYPOINT (never a child page) so ``st.navigation``
     resolves page paths the way it does in the running app.
     """
     from streamlit.testing.v1 import AppTest
 
-    def _make(ds=None, page=None, **session_state):
-        at = AppTest.from_file(str(ENTRYPOINT), default_timeout=120)
-        if ds is not None:
-            at.session_state["dataset"] = ds
-            at.session_state["dataset_full"] = ds
-        for key, value in session_state.items():
-            at.session_state[key] = value
-        if page is not None:
-            at.switch_page(f"app_pages/{page}.py")
-        return at.run()
+    at = AppTest.from_file(str(ENTRYPOINT), default_timeout=120)
+    if ds is not None:
+        at.session_state["dataset"] = ds
+        at.session_state["dataset_full"] = ds
+    for key, value in session_state.items():
+        at.session_state[key] = value
+    if page is not None:
+        at.switch_page(f"app_pages/{page}.py")
+    return at.run()
 
-    return _make
+
+@pytest.fixture
+def app():
+    """Factory: :func:`make_app`. A class- or module-scoped fixture that shares one
+    AppTest across tests calls ``make_app`` directly."""
+    return make_app
 
 
 def _build_with_sleep_structure(n_per_group=3, groups=("ctrl", "mut"), seed=1):

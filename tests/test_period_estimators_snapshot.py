@@ -42,7 +42,7 @@ from clockwork.core.preprocessing import (
 from conftest import requires_example_data
 from snapshot_util import check_snapshot
 
-pytestmark = requires_example_data
+pytestmark = [requires_example_data, pytest.mark.usefixtures("shared_worker_pool")]
 
 # The page's defaults: one period range for search and classification, the DD
 # floor as a filter, the one gap-bridge ceiling.

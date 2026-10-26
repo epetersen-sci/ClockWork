@@ -13,7 +13,7 @@ from clockwork import pipeline
 from clockwork.pipeline import PeriodConfig
 from conftest import requires_example_data
 
-pytestmark = requires_example_data
+pytestmark = [requires_example_data, pytest.mark.usefixtures("shared_worker_pool")]
 
 FLIES = ["20250115_17_1", "20250115_17_2", "20250115_18_1", "20250115_18_2"]
 PAGE, TAB = "period_rhythmicity", "period_rhythm_tab"
@@ -47,15 +47,20 @@ def expected():
 
 
 class TestAnalysisTab:
-    def test_a_run_reads_back_as_the_config_its_controls_mean(self, app, page_ds, expected):
-        at = _run(app, page_ds, "ac")
-        ds = at.session_state["dataset"]
+    @pytest.fixture(scope="class")
+    def ac_run(self, page_ds):
+        """One press of Run analysis, shared by both checks on what it left."""
+        from conftest import make_app
+
+        return _run(make_app, page_ds, "ac")
+
+    def test_a_run_reads_back_as_the_config_its_controls_mean(self, ac_run, expected):
+        ds = ac_run.session_state["dataset"]
         assert PeriodConfig.from_attrs(ds.attrs, ds.coords) == expected
         assert ds.attrs["ac_prep_detrend"] == "linear", "preprocessing must reach the master"
 
-    def test_and_it_is_the_pipeline_s_computation(self, app, page_ds, expected):
-        at = _run(app, page_ds, "ac")
-        page = at.session_state["dataset"]
+    def test_and_it_is_the_pipeline_s_computation(self, ac_run, page_ds, expected):
+        page = ac_run.session_state["dataset"]
         direct, _ = pipeline.run_period_method(page_ds, expected, "autocorrelation")
         for v in (v for v in direct.data_vars if v.startswith("ac_")):
             np.testing.assert_array_equal(

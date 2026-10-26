@@ -51,8 +51,8 @@ Dunn, Welch's t and Mann-Whitney U against reference values computed in base R
 
 ### Setting
 
-A **Group statistics** control in the sidebar, and `outputs.group_stats` in the
-CLI config for the QC report:
+`outputs.group_stats` in the CLI config for the QC report. The app always uses
+the recommended families.
 
 - **Recommended per measure** (`recommended`, default): the families above.
 - **Welch ANOVA + Games-Howell for everything** (`welch`).

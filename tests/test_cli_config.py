@@ -29,6 +29,8 @@ from clockwork.pipeline.export import config_from_dataset, settings_yaml
 from clockwork.pipeline.run import RUN_CONFIG_ATTR, OutputsExist, run_experiment
 from conftest import EXAMPLE_DIR, requires_example_data
 
+pytestmark = pytest.mark.usefixtures("shared_worker_pool")
+
 MONITORS = (17, 18)
 
 
