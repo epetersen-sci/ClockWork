@@ -16,6 +16,7 @@ masks next to (time, id) activity, and the per-bout table.
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 from clockwork.core import dam_utilities, sleep_analysis
 from clockwork.core.load_and_save_datasets import load_dataset_from_netcdf, save_dataset_to_netcdf
@@ -112,3 +113,13 @@ def test_a_reloaded_dataset_still_splits_into_the_same_phases(saved_ds, reloaded
         before, _ = dam_utilities.select_phase(saved_ds, phase)
         after, _ = dam_utilities.select_phase(reloaded, phase)
         np.testing.assert_array_equal(after["activity"].values, before["activity"].values)
+
+
+def test_the_file_is_compressed(saved_ds, tmp_path):
+    path = tmp_path / "compressed.nc"
+    save_dataset_to_netcdf(saved_ds, str(path))
+    with xr.open_dataset(path) as back:
+        assert back["activity"].encoding["zlib"] is True
+    plain = tmp_path / "plain.nc"
+    saved_ds.drop_attrs().to_netcdf(plain)
+    assert path.stat().st_size < plain.stat().st_size / 2

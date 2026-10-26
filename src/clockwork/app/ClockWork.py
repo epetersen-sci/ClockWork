@@ -40,7 +40,6 @@ if __name__ == "__main__":
     )
 
     from clockwork.app.ui import charts
-    from clockwork.app.ui import stats as stats_ui
     from clockwork.app.ui.state import init_session_state
 
     init_session_state()
@@ -151,8 +150,6 @@ if __name__ == "__main__":
 
     # The router owns the page title, so pages carry no st.header of their own.
     st.title(page.title, icon=page.icon)
-    # App-wide, so it sits in the same place on every page that draws a test.
-    stats_ui.setting_sidebar()
     page.run()
 
     # After the body, so it has seen every figure the page drew — and so the offer
