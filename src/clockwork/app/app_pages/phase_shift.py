@@ -15,8 +15,9 @@ import streamlit as st
 
 from clockwork.app import export_helpers
 from clockwork.app.ui import charts, status
+from clockwork.app.ui import stats as stats_ui
 from clockwork.app.ui.guards import require_dataset
-from clockwork.core import dam_utilities, plotting
+from clockwork.core import dam_utilities, group_stats, plotting
 from clockwork.core import phase_shift as ps_module
 from clockwork.core.calibrations import (
     DEFAULT_PHASE_SHIFT_FILTER_HOURS,
@@ -864,6 +865,14 @@ if _tab_results.open:
                         else:
                             _gb_prc = list(_rp["group_by"])
                             _zt_coord = "pulse_time"
+                            # Each pulsed group against its own unpulsed control's flies.
+                            _prc_stats = group_stats.vs_control(
+                                _pf,
+                                "response_hours",
+                                stats_ui.family(group_stats.WELCH),
+                                zt_col="zt",
+                                series_cols=[c for c in _gb_prc if c != _zt_coord],
+                            )
 
                             # ---------------------------------------- the curve
                             st.markdown("#### Phase response curve")
@@ -885,11 +894,12 @@ if _tab_results.open:
                                 )
                                 charts.plotly_chart(
                                     plotting.phase_response_curve(
-                                        _summary, series_cols=_series_prc
+                                        _summary, series_cols=_series_prc, stats=_prc_stats
                                     ),
                                     filename="phase_response_curve",
                                     width="stretch",
                                 )
+                                stats_ui.notice(_prc_stats)
                                 st.caption(
                                     "Points are group means of the per-fly responses; bars are "
                                     "±1 SEM over the flies. No bootstrap is needed here — the "
@@ -941,10 +951,12 @@ if _tab_results.open:
                                     for c in _major
                                 ),
                                 split_title=(_split.replace("_", " ") if _split else None),
+                                stats=_prc_stats,
                             )
                             charts.plotly_chart(
                                 _fig_v, filename="phase_response_per_fly", width="stretch"
                             )
+                            stats_ui.notice(_prc_stats)
 
                             # What was left out, said plainly. A fly whose phase cannot be
                             # determined is dropped rather than counted as "no shift" — the
@@ -995,6 +1007,7 @@ if _tab_results.open:
                                     ),
                                     ("controls_per_fly", _pf[_pf["group"].isin(_ctrls)]),
                                     ("left_out", _drop_treated),
+                                    stats_ui.sheet(_prc_stats),
                                     (
                                         "params",
                                         pd.DataFrame(
@@ -1530,12 +1543,6 @@ if _tab_results.open:
                                 help="per_day (every group), per_day_plotted (only what the figures show), "
                                 "matrix (day x group grid), controls, parameters, notes.",
                             )
-                            st.download_button(
-                                "Download per-day (CSV)",
-                                per_day.to_csv(index=False).encode("utf-8"),
-                                file_name="phase_difference_vs_control_per_day.csv",
-                                mime="text/csv",
-                            )
                             st.markdown("**Reference used**")
                             st.dataframe(
                                 pd.DataFrame(
@@ -1650,6 +1657,16 @@ if _tab_results.open:
 
             st.subheader("Results")
 
+            # The by-group test, shared by the figure and the per-fly export.
+            _shift_ok = per_fly[per_fly["status"] == "ok"]
+            _shift_stats = group_stats.compare_frame(
+                _shift_ok,
+                "phase_shift_hours",
+                "group",
+                stats_ui.family(group_stats.WELCH),
+                order=sorted(_shift_ok["group"].dropna().astype(str).unique()),
+                measure="Phase shift (h)",
+            )
             tab_summary, tab_actogram, tab_export = st.tabs(
                 ["Summary", "Per-Fly Actogram", "Data Export"],
                 key="phase_shift_cohort_tab",
@@ -1704,7 +1721,11 @@ if _tab_results.open:
                             showlegend=False,
                             height=460,
                         )
+                        plotting.add_group_stats(
+                            fig, _shift_stats, {str(g): k for k, g in enumerate(groups)}
+                        )
                         charts.plotly_chart(fig, width="stretch")
+                        stats_ui.notice([_shift_stats])
 
                     if len(status_counts) > 1 or "ok" not in status_counts:
                         st.markdown("**Why some flies have no value**")
@@ -1767,10 +1788,12 @@ if _tab_results.open:
             if tab_export.open:
                 with tab_export:
                     st.download_button(
-                        "Download per-fly phase shifts (CSV)",
-                        per_fly.to_csv(index=False).encode("utf-8"),
-                        file_name=f"phase_shift_{results['method']}_per_fly.csv",
-                        mime="text/csv",
+                        "Download per-fly phase shifts (.xlsx)",
+                        export_helpers.excel_bytes(
+                            [("per_fly", per_fly), stats_ui.sheet([_shift_stats])]
+                        ),
+                        file_name=f"phase_shift_{results['method']}_per_fly.xlsx",
+                        mime=export_helpers.XLSX_MIME,
                     )
 
                     marker_rows = [
@@ -1781,10 +1804,10 @@ if _tab_results.open:
                     if marker_rows:
                         markers_df = pd.DataFrame(marker_rows)
                         st.download_button(
-                            "Download daily phase markers (CSV)",
-                            markers_df.to_csv(index=False).encode("utf-8"),
-                            file_name=f"phase_shift_{results['method']}_daily_markers.csv",
-                            mime="text/csv",
+                            "Download daily phase markers (.xlsx)",
+                            export_helpers.excel_bytes([("daily_markers", markers_df)]),
+                            file_name=f"phase_shift_{results['method']}_daily_markers.xlsx",
+                            mime=export_helpers.XLSX_MIME,
                             help="The per-day marker times the fits were built from — useful for checking "
                             "a suspicious result.",
                         )

@@ -51,9 +51,10 @@ from clockwork import pipeline
 from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts, facet_panels, sleep_run
+from clockwork.app.ui import stats as stats_ui
 from clockwork.app.ui.filters import group_filter_sidebar
 from clockwork.app.ui.guards import require_dataset
-from clockwork.core import plotting
+from clockwork.core import group_stats, plotting
 from clockwork.core import sleep_state_metrics as ssm
 from clockwork.core.dam_utilities import select_phase
 from clockwork.core.dataset_meta import dataset_fingerprint, dataset_phase
@@ -375,9 +376,15 @@ if _has_state_masks and st.checkbox(
         # Side by side, so the three states are compared by eye rather than by
         # scrolling — same reasoning as the totals on Activity & Sleep.
         _ss_cols = st.columns(3)
+        _ss_family = stats_ui.family(group_stats.RANK)
+        _ss_stats = []
         for _i, _state in enumerate(("Short", "Intermediate", "Long")):
             if _state not in _ss_per_fly.columns:
                 continue
+            _result = group_stats.compare_frame(
+                _ss_per_fly, _state, "Group", _ss_family, order=_ss_order, measure=f"{_state} sleep"
+            )
+            _ss_stats.append(_result)
             _fig, _ = plotting.group_violins(
                 _ss_per_fly,
                 _state,
@@ -385,9 +392,11 @@ if _has_state_masks and st.checkbox(
                 y_title=_ss_unit,
                 colour=plotting.MEASURE_COLOURS[_i],
                 groups=_ss_order,
+                stats=_result,
             )
             with _ss_cols[_i]:
                 charts.plotly_chart(_fig, width="stretch")
+        stats_ui.notice(_ss_stats)
 
         _ss_group = plotting.sleep_state_totals_bars(phase_ds, as_percent=_ss_pct)[1]
         ex.save_excel_button(
@@ -397,12 +406,13 @@ if _has_state_masks and st.checkbox(
                 # Mean row per genotype on the exported copy only — the violins
                 # above read _ss_per_fly itself.
                 ("per_fly", ex.with_group_means(_ss_per_fly)),
+                stats_ui.sheet(_ss_stats),
             ],
             ds,
             "sleep_state_totals",
             key="dl_sleep_states",
-            help="Two sheets: the group mean ± SEM per state, and the per-fly "
-            "values behind it.",
+            help="The group mean ± SEM per state, the per-fly values behind it, and "
+            "the statistics shown on the figures.",
         )
 
 st.divider()
@@ -506,18 +516,18 @@ if tab_wave.open:
                 "result across independent experiments.",
                 icon=":material/info:",
             )
-            # Every panel shown, tagged by epoch, so the CSV matches the figure
+            # Every panel shown, tagged by epoch, so the export matches the figure
             # rather than only its left half.
             waveforms = pd.concat(
                 [frame.assign(epoch=name) for name, frame in panels], ignore_index=True
             )
             st.download_button(
-                "Download normalised waveforms (CSV)",
-                waveforms.to_csv(index=False).encode(),
+                "Download normalised waveforms (.xlsx)",
+                ex.excel_bytes([("waveforms", waveforms)]),
                 file_name="sleep_state_waveforms_"
                 + "_".join(name for name, _ in panels)
-                + ".csv",
-                mime="text/csv",
+                + ".xlsx",
+                mime=ex.XLSX_MIME,
                 icon=":material/download:",
             )
 
@@ -587,10 +597,10 @@ if tab_init.open:
 
         if init_stats is not None:
             st.download_button(
-                "Download per-fly initiation probabilities (CSV)",
-                init.to_csv(index=False).encode(),
-                file_name=f"sleep_state_initiation_{phase_used}.csv",
-                mime="text/csv",
+                "Download per-fly initiation probabilities (.xlsx)",
+                ex.excel_bytes([("initiation", init)]),
+                file_name=f"sleep_state_initiation_{phase_used}.xlsx",
+                mime=ex.XLSX_MIME,
                 icon=":material/download:",
             )
 
@@ -641,6 +651,14 @@ if tab_rose.open:
             st.info("No circular statistics could be computed.")
         else:
             gates = ssm.group_gates(circular)
+            # Within each group and state: are the flies' mean phases concentrated?
+            _rayleigh = {
+                (group, state): group_stats.rayleigh(
+                    block["mean_phase_h"], group=group, measure=state
+                )
+                for (group, state), block in circular.groupby(["group", "state"], sort=False)
+            }
+
             def _gating_fig(group):
                 g_stats = circular[circular["group"] == group]
                 if g_stats.empty:
@@ -650,6 +668,7 @@ if tab_rose.open:
                     gates[gates["group"] == group],
                     phase_label=phase_used,
                     title=f"Circadian gating — {group}",
+                    rayleigh={st: r for (g, st), r in _rayleigh.items() if g == group},
                 )
 
             _gate_groups = _groups_in(circular)
@@ -660,6 +679,7 @@ if tab_rose.open:
                 facet_spec,
                 facet_panels.arrange_groups(phase_ds, facet_spec, _gate_groups),
             )
+            stats_ui.notice(list(_rayleigh.values()))
             n_doubled = int(circular["doubled"].sum())
             if n_doubled:
                 st.caption(
@@ -668,10 +688,10 @@ if tab_rose.open:
                 )
             st.dataframe(gates, width="stretch", hide_index=True)
             st.download_button(
-                "Download per-fly circular statistics (CSV)",
-                circular.to_csv(index=False).encode(),
-                file_name=f"sleep_state_circular_{phase_used}.csv",
-                mime="text/csv",
+                "Download per-fly circular statistics (.xlsx)",
+                ex.excel_bytes([("circular", circular), stats_ui.sheet(list(_rayleigh.values()))]),
+                file_name=f"sleep_state_circular_{phase_used}.xlsx",
+                mime=ex.XLSX_MIME,
                 icon=":material/download:",
             )
 
@@ -1054,27 +1074,26 @@ if tab_ultra.open:
                             "significant at a false-alarm probability below 0.05."
                         )
                         st.dataframe(rows, width="stretch", hide_index=True)
+                        ls_per_fly = pd.DataFrame(
+                            {
+                                "id": ls["id"].values,
+                                **{
+                                    f"{quantity}_{state}": ls[
+                                        f"ultra_ls_{quantity}_{state}"
+                                    ].values
+                                    for state in states_present
+                                    for quantity in ("period", "power", "fap")
+                                    if f"ultra_ls_{quantity}_{state}" in ls.data_vars
+                                },
+                            }
+                        )
                         st.download_button(
-                            "Download per-fly Lomb-Scargle results (CSV)",
-                            pd.DataFrame(
-                                {
-                                    "id": ls["id"].values,
-                                    **{
-                                        f"{quantity}_{state}": ls[
-                                            f"ultra_ls_{quantity}_{state}"
-                                        ].values
-                                        for state in states_present
-                                        for quantity in ("period", "power", "fap")
-                                        if f"ultra_ls_{quantity}_{state}" in ls.data_vars
-                                    },
-                                }
-                            )
-                            .to_csv(index=False)
-                            .encode(),
+                            "Download per-fly Lomb-Scargle results (.xlsx)",
+                            ex.excel_bytes([("lomb_scargle", ls_per_fly)]),
                             file_name=(
-                                f"ultradian_ls_{req_group}_{phase_used}.csv"
+                                f"ultradian_ls_{req_group}_{phase_used}.xlsx"
                             ),
-                            mime="text/csv",
+                            mime=ex.XLSX_MIME,
                             icon=":material/download:",
                         )
                     else:

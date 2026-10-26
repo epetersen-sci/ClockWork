@@ -140,7 +140,7 @@ def save_figures_button(ds=None, *, key="save_page_figures", subfolder=None):
 
     Rendered by the entry point after the page body, so every page offers it in the
     same place without each one having to remember. Writes into the same
-    ``Graph Exports_<experiment>/`` folder as the CSV buttons, rather than the
+    ``Graph Exports_<experiment>/`` folder as the workbook buttons, rather than the
     browser's download folder, which is the one thing the modebar's camera button
     cannot do.
     """

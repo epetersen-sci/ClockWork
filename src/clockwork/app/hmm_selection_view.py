@@ -13,6 +13,7 @@ import matplotlib
 import numpy as np
 import streamlit as st
 
+from clockwork.app import export_helpers as ex
 from clockwork.app.ui.guards import require_dataset
 
 matplotlib.use("Agg")
@@ -278,12 +279,11 @@ def render():
         width="stretch",
     )
 
-    csv_summary = summary_df.to_csv(index=False)
     st.download_button(
-        "Download Summary CSV",
-        csv_summary,
-        "hmm_model_selection_summary.csv",
-        "text/csv",
+        "Download Summary (.xlsx)",
+        ex.excel_bytes([("summary", summary_df)]),
+        "hmm_model_selection_summary.xlsx",
+        ex.XLSX_MIME,
         key="dl_cv_summary",
     )
 
@@ -389,12 +389,11 @@ def render():
     if fold_df is not None and len(fold_df) > 0:
         with st.expander("Per-fold detail"):
             st.dataframe(fold_df, width="stretch")
-            csv_folds = fold_df.to_csv(index=False)
             st.download_button(
-                "Download Per-fold CSV",
-                csv_folds,
-                "hmm_cv_folds.csv",
-                "text/csv",
+                "Download Per-fold (.xlsx)",
+                ex.excel_bytes([("cv_folds", fold_df)]),
+                "hmm_cv_folds.xlsx",
+                ex.XLSX_MIME,
                 key="dl_cv_folds",
             )
 

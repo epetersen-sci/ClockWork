@@ -178,7 +178,7 @@ def render(ctx):
         except Exception as e:
             st.error(f"Classification error: {e}")
 
-    # One CSV per analysis, each at its current cutoff — the per-fly table behind
+    # One sheet per analysis, each at its current cutoff — the per-fly table behind
     # the figure (ID, group, period, strength, rhythmic at cutoff).
     exports = []
     for a, _ in algos:
@@ -189,11 +189,12 @@ def render(ctx):
             period_ds, a, float(cut), period_window=(ctx.min_period, ctx.max_period)
         )
         if not tbl.empty:
-            exports.append((f"threshold_explorer_{a.upper()}.csv", tbl))
-    ex.save_multi_df_button(
-        "Export explorer data (one CSV per analysis)",
+            exports.append((a.upper(), tbl))
+    ex.save_excel_button(
+        "Export explorer data (one sheet per analysis)",
         exports,
         period_ds,
+        "threshold_explorer",
         key="export_explorer_all",
-        help="One CSV per analysis that has been run, each at its current cutoff.",
+        help="One sheet per analysis that has been run, each at its current cutoff.",
     )

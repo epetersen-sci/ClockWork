@@ -162,17 +162,20 @@ class TestBoutDurationLinesTakesFrames:
         assert not plotting.sleep_bout_duration_lines(None).data
 
     def test_stats_drive_the_annotation(self, curves):
-        without = plotting.sleep_bout_duration_lines(curves)
-        with_stats = plotting.sleep_bout_duration_lines(
-            curves, {"test": "anova", "pvalue": 0.0004}
-        )
-        assert not [a.text for a in without.layout.annotations if a.text]
-        assert "p<0.001" in [a.text for a in with_stats.layout.annotations if a.text][0]
+        from clockwork.core import group_stats
 
-    def test_nan_pvalue_skips_the_annotation(self, curves):
-        fig = plotting.sleep_bout_duration_lines(
-            curves, {"test": "anova", "pvalue": float("nan")}
+        result = group_stats.GroupStats(
+            family=group_stats.RANK, groups=["a", "b", "c"], test="Kruskal-Wallis",
+            statistic=12.0, df=(2.0,), pvalue=0.0004,
         )
+        without = plotting.sleep_bout_duration_lines(curves)
+        with_stats = plotting.sleep_bout_duration_lines(curves, result)
+        assert not [a.text for a in without.layout.annotations if a.text]
+        text = [a.text for a in with_stats.layout.annotations if a.text][0]
+        assert "Kruskal-Wallis" in text and "p < 0.001" in text
+
+    def test_no_result_skips_the_annotation(self, curves):
+        fig = plotting.sleep_bout_duration_lines(curves, None)
         assert not [a.text for a in fig.layout.annotations if a.text]
 
     def test_method_selects_the_axes(self, curves):

@@ -17,6 +17,8 @@ from clockwork import pipeline
 from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import facet_panels
+from clockwork.app.ui import stats as stats_ui
+from clockwork.core import group_stats
 from clockwork.core.hmm_models import (
     STATE_NAMES_4,
     HMMConfig,
@@ -26,6 +28,7 @@ from clockwork.core.hmm_models import (
     plot_hypnogram_heatmap,
     plot_state_occupancy_by_group,
     plot_zt_state_fractions,
+    state_occupancy_table,
 )
 
 #: The preset radio's labels -> the pipeline's preset names.
@@ -370,9 +373,9 @@ def render():
                     summary_df = get_advanced_hmm_summary(ds, results, config)
                     st.dataframe(summary_df, width="stretch", height=300)
 
-                    _fn = f"hmm_summary_{_phase_label}.csv" if _phase_label else "hmm_summary.csv"
-                    ex.save_df_button(
-                        "Save HMM Summary to working folder", summary_df, ds, _fn, key="dl_hmm_summary"
+                    _fn = f"hmm_summary_{_phase_label}" if _phase_label else "hmm_summary"
+                    ex.save_excel_button(
+                        "Save HMM Summary to working folder", [("summary", summary_df)], ds, _fn, key="dl_hmm_summary"
                     )
                 except Exception as e:
                     st.warning(f"Could not compute advanced summary: {e}")
@@ -417,24 +420,43 @@ def render():
             if st.button("Generate State Occupancy Plot", key="gen_occupancy"):
                 with st.spinner("Generating state occupancy..."):
                     try:
+                        _table = state_occupancy_table(
+                            ds, n_states=n_states_display, group_order=_group_order
+                        )
+                        _family = stats_ui.family(group_stats.WELCH)
+                        _order = list(dict.fromkeys(_table["group"]))
+                        _occ_stats = {
+                            state: group_stats.compare_frame(
+                                _table, state, "group", _family, order=_order, measure=state
+                            )
+                            for state in _table.columns
+                            if state not in ("group", "fly_id")
+                        }
                         fig, occ_df = plot_state_occupancy_by_group(
                             ds, n_states=n_states_display, return_data=True,
-                            group_order=_group_order,
+                            group_order=_group_order, stats=_occ_stats,
                         )
                         if fig is not None:
                             st.pyplot(fig)
                             plt.close(fig)
+                            stats_ui.notice(list(_occ_stats.values()))
                             st.session_state["_hmm_occ_df"] = occ_df
+                            st.session_state["_hmm_occ_stats"] = list(_occ_stats.values())
                         else:
                             st.warning("No state data found.")
                     except Exception as e:
                         st.error(f"State occupancy error: {e}")
 
+            _occ_stats = st.session_state.get("_hmm_occ_stats", [])
             _occ_df = st.session_state.get("_hmm_occ_df")
             if _occ_df is not None and not _occ_df.empty:
-                _fn = f"hmm_state_occupancy_{_phase_label}.csv" if _phase_label else "hmm_state_occupancy.csv"
-                ex.save_df_button(
-                    "Save State Occupancy data to working folder", _occ_df, ds, _fn, key="dl_hmm_occupancy"
+                _fn = f"hmm_state_occupancy_{_phase_label}" if _phase_label else "hmm_state_occupancy"
+                ex.save_excel_button(
+                    "Save State Occupancy data to working folder",
+                    [("occupancy", _occ_df), stats_ui.sheet(_occ_stats)],
+                    ds,
+                    _fn,
+                    key="dl_hmm_occupancy",
                 )
 
 
@@ -492,9 +514,9 @@ def render():
 
             _tc_df = st.session_state.get("_hmm_tc_df")
             if _tc_df is not None and not _tc_df.empty:
-                _fn = f"hmm_group_timecourse_{_phase_label}.csv" if _phase_label else "hmm_group_timecourse.csv"
-                ex.save_df_button(
-                    "Save Group Time-Course data to working folder", _tc_df, ds, _fn, key="dl_hmm_timecourse"
+                _fn = f"hmm_group_timecourse_{_phase_label}" if _phase_label else "hmm_group_timecourse"
+                ex.save_excel_button(
+                    "Save Group Time-Course data to working folder", [("timecourse", _tc_df)], ds, _fn, key="dl_hmm_timecourse"
                 )
 
 
@@ -549,7 +571,7 @@ def render():
 
             _zt_df = st.session_state.get("_hmm_zt_df")
             if _zt_df is not None and not _zt_df.empty:
-                _fn = f"hmm_zt_fractions_{_phase_label}.csv" if _phase_label else "hmm_zt_fractions.csv"
-                ex.save_df_button(
-                    "Save ZT State Fractions data to working folder", _zt_df, ds, _fn, key="dl_hmm_zt"
+                _fn = f"hmm_zt_fractions_{_phase_label}" if _phase_label else "hmm_zt_fractions"
+                ex.save_excel_button(
+                    "Save ZT State Fractions data to working folder", [("zt_fractions", _zt_df)], ds, _fn, key="dl_hmm_zt"
                 )

@@ -790,9 +790,9 @@ def bout_duration_summary(ds, selected_genotypes=None, selected_temperatures=Non
     ``log_mean_duration_min`` (geometric mean — the arithmetic mean in
     log10-duration space, back-transformed to minutes; more robust than the
     arithmetic mean for a strongly right-skewed bout-duration distribution).
-    This is the per-fly table behind the group-comparison stats in
-    :func:`bout_duration_group_stats` and the per-fly-summary CSV export —
-    one computation, so the displayed stat and the export can't drift.
+    This is the per-fly table behind the group comparison
+    (``group_stats.compare_frame``) and the per-fly-summary export — one
+    computation, so the displayed stat and the export can't drift.
 
     Empty DataFrame if no fly survives the group filter.
     """
@@ -814,126 +814,3 @@ def bout_duration_summary(ds, selected_genotypes=None, selected_temperatures=Non
             }
         )
     return pd.DataFrame(rows, columns=cols).sort_values(["group", "id"]).reset_index(drop=True)
-
-
-def bout_duration_group_stats(summary_df, value_col="log_mean_duration_min", alpha=0.05):
-    """
-    Omnibus + pairwise group comparison of a per-fly bout-duration summary
-    statistic (from :func:`bout_duration_summary`).
-
-    The comparison runs on log10(value_col) — bout-duration summaries are
-    themselves right-skewed across flies, and testing in log space is what
-    makes ``log_mean_duration_min`` (a geometric mean) the natural pairing:
-    an arithmetic-mean/normality-based test on log10 values is exactly a
-    test on that geometric mean.
-
-    Groups with fewer than 2 flies are dropped from the comparison (a mean
-    of one fly is a data point, not a distribution).
-
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        Output of :func:`bout_duration_summary`; must have ``group`` and
-        ``value_col`` columns.
-    value_col : str
-    alpha : float
-        Significance threshold for the normality/variance pre-checks that
-        decide ANOVA vs. Kruskal-Wallis, and for pairwise significance.
-
-    Returns
-    -------
-    dict
-        ``test`` ('anova'/'kruskal'/'none'), ``statistic``, ``pvalue``,
-        ``pairwise`` (list of {group_a, group_b, pvalue, pvalue_adj,
-        significant, stars}), ``n_per_group``, ``normality_passed``,
-        ``equal_variance_passed``, ``notes``.
-    """
-    from scipy import stats as _stats
-
-    result = {
-        "test": "none",
-        "statistic": float("nan"),
-        "pvalue": float("nan"),
-        "pairwise": [],
-        "n_per_group": {},
-        "normality_passed": False,
-        "equal_variance_passed": False,
-        "notes": "",
-    }
-
-    if summary_df is None or summary_df.empty or value_col not in summary_df.columns:
-        result["notes"] = "No per-fly summary data available."
-        return result
-
-    df = summary_df.dropna(subset=[value_col])
-    df = df[df[value_col] > 0]  # log10 requires positive values
-    n_per_group = df.groupby("group")[value_col].size().to_dict()
-    result["n_per_group"] = n_per_group
-
-    valid_groups = sorted(g for g, n in n_per_group.items() if n >= 2)
-    if len(valid_groups) < 2:
-        result["notes"] = "Fewer than 2 groups with >=2 flies; no test run."
-        return result
-
-    values_by_group = {
-        g: np.log10(df.loc[df["group"] == g, value_col].to_numpy()) for g in valid_groups
-    }
-    samples = [values_by_group[g] for g in valid_groups]
-
-    normal = all(len(s) < 3 or _stats.shapiro(s)[1] > alpha for s in samples)
-    equal_var = _stats.levene(*samples)[1] > alpha
-    result["normality_passed"] = bool(normal)
-    result["equal_variance_passed"] = bool(equal_var)
-
-    if normal and equal_var:
-        stat, p = _stats.f_oneway(*samples)
-        test_name = "anova"
-    else:
-        stat, p = _stats.kruskal(*samples)
-        test_name = "kruskal"
-    result["test"] = test_name
-    result["statistic"] = float(stat)
-    result["pvalue"] = float(p)
-
-    pair_keys, pair_pvals = [], []
-    for i in range(len(valid_groups)):
-        for j in range(i + 1, len(valid_groups)):
-            ga, gb = valid_groups[i], valid_groups[j]
-            if normal:
-                _, p_pair = _stats.ttest_ind(
-                    values_by_group[ga], values_by_group[gb], equal_var=equal_var
-                )
-            else:
-                _, p_pair = _stats.mannwhitneyu(
-                    values_by_group[ga], values_by_group[gb], alternative="two-sided"
-                )
-            pair_keys.append((ga, gb))
-            pair_pvals.append(float(p_pair))
-
-    if pair_pvals:
-        if len(pair_pvals) > 1:
-            from statsmodels.stats.multitest import multipletests
-
-            _, p_adj, _, _ = multipletests(pair_pvals, alpha=alpha, method="holm")
-        else:
-            p_adj = pair_pvals
-        for (ga, gb), p_raw, p_corr in zip(pair_keys, pair_pvals, p_adj):
-            if p_corr < 0.001:
-                stars = "***"
-            elif p_corr < 0.01:
-                stars = "**"
-            elif p_corr < alpha:
-                stars = "*"
-            else:
-                stars = "ns"
-            result["pairwise"].append(
-                {
-                    "group_a": ga,
-                    "group_b": gb,
-                    "pvalue": float(p_raw),
-                    "pvalue_adj": float(p_corr),
-                    "significant": bool(p_corr < alpha),
-                    "stars": stars,
-                }
-            )
-    return result

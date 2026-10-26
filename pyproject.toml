@@ -71,6 +71,10 @@ dependencies = [
     # pandas 3 (a changed pandas helper), and MESA's per-fly error handling
     # turned that into every fly silently having no MESA period.
     "statsmodels>=0.14.6",
+    # Games-Howell, Dunn and the compact letter display behind the figure
+    # statistics (core/group_stats.py). Floor = the release tests/test_group_stats.py
+    # was checked against R with.
+    "scikit-posthocs>=0.17.1",
     "joblib>=1.4",           # Parallel(return_as="generator_unordered") is new in 1.4
     # --- UI & plotting -----------------------------------------------------
     # 1.63: st.title(icon=) (router), persist_state= (1.59), st.tabs(key=,

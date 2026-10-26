@@ -345,6 +345,22 @@ class TestSleepActivityPage:
         # the totals follow: one violin panel per genotype for the chosen period
         assert sum(t.startswith("Activity — Total — ") for t in titles) == 2
 
+    def test_a_new_custom_window_keeps_the_custom_period(self, app, master_ds):
+        """The Custom option's label carries the window's hours. When the options
+        were the labels, applying a new window removed the chosen option and the
+        panels fell back to Total."""
+        at = app(ds=master_ds, page="sleep_activity", facet_compare="temperature")
+        at.segmented_control(key="act_totals_period_col").set_value("Custom").run()
+        assert sum(t.startswith("Activity — Custom (ZT 0–6) — ") for t in _chart_titles(at)) == 2
+        at.number_input(key="act_custom_zt_start").set_value(2.0)
+        at.number_input(key="act_custom_zt_end").set_value(8.0)
+        next(b for b in at.button if b.label == "Update graph").click().run()
+        assert not at.exception, at.exception
+        assert at.segmented_control(key="act_totals_period_col").value == "Custom"
+        titles = _chart_titles(at)
+        assert sum(t.startswith("Activity — Custom (ZT 2–8) — ") for t in titles) == 2
+        assert not any(t.startswith("Activity — Total — ") for t in titles)
+
 
 def _with_periods(ds):
     """``ds`` with a stored AC period per fly: 24 h at 25C, 26 h at 29C."""

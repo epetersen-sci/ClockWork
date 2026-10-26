@@ -5,7 +5,9 @@ import streamlit as st
 
 from clockwork.app import export_helpers as ex
 from clockwork.app.period_views import by_condition
+from clockwork.app.ui import stats as stats_ui
 from clockwork.app.ui.period_context import dd_record_days
+from clockwork.core import group_stats
 from clockwork.core.rhythmicity_classification import (
     compare_thresholds,
     per_fly_classification_df,
@@ -39,7 +41,7 @@ def render(ctx):
         persist_state="session",
     ) or strengths[0][0]
     _, label, col, y_title = next(s for s in strengths if s[0] == algo)
-    by_condition.render(
+    strength_stats = by_condition.render(
         ctx,
         per_fly,
         col,
@@ -56,11 +58,27 @@ def render(ctx):
     else:
         summary = summarize_rhythmicity(period_ds)
         st.dataframe(summary, width="stretch", height=260)
-        ex.save_df_button(
+        # One test per algorithm: does the share of rhythmic flies differ by group?
+        fraction_stats = [
+            group_stats.compare_proportions(
+                {
+                    row["group"]: (row["n_rhythmic"], row["n_total"])
+                    for _, row in block.iterrows()
+                    if row["group"] != "ALL"
+                },
+                measure=f"Rhythmic flies ({algorithm})",
+            )
+            for algorithm, block in summary.groupby("algorithm", sort=False)
+        ]
+        stats_ui.notice(fraction_stats)
+        fraction_table = group_stats.stats_table(fraction_stats)
+        if not fraction_table.empty:
+            st.dataframe(fraction_table, width="stretch", hide_index=True)
+        ex.save_excel_button(
             "Save group summary to working folder",
-            summary,
+            [("group_summary", summary), stats_ui.sheet(fraction_stats)],
             period_ds,
-            "rhythmicity_group_summary.csv",
+            "rhythmicity_group_summary",
             key="dl_rhyth_group_summary",
         )
         with st.expander("Per-fly classification table"):
@@ -73,11 +91,11 @@ def render(ctx):
                 bool(days.get(str(f), 0.0) < ctx.min_days_floor) for f in table["fly_id"]
             ]
             st.dataframe(table, width="stretch", height=300)
-            ex.save_df_button(
+            ex.save_excel_button(
                 "Save per-fly classification to working folder",
-                table,
+                [("per_fly", table), stats_ui.sheet(strength_stats)],
                 period_ds,
-                "rhythmicity_per_fly.csv",
+                "rhythmicity_per_fly",
                 key="dl_rhyth_per_fly",
             )
 
@@ -111,10 +129,10 @@ def render(ctx):
         sens = st.session_state.get("_period_sens_df")
         if sens is not None and not sens.empty:
             st.dataframe(sens, width="stretch")
-            ex.save_df_button(
+            ex.save_excel_button(
                 "Save sensitivity to working folder",
-                sens,
+                [("sensitivity", sens)],
                 period_ds,
-                "rhythmicity_sensitivity.csv",
+                "rhythmicity_sensitivity",
                 key="dl_rhyth_sens",
             )

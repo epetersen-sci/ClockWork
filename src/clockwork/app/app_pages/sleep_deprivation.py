@@ -5,15 +5,18 @@ Requires sleep analysis to be completed first (Sleep and Activity page).
 """
 
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts, facet_panels, status
+from clockwork.app.ui import stats as stats_ui
 from clockwork.app.ui.guards import require_dataset
-from clockwork.core import dam_utilities, facets, plotting
+from clockwork.core import dam_utilities, facets, group_stats, plotting
 from clockwork.core import sleep_deprivation as sd_module
 
 # ============================================================
@@ -475,6 +478,89 @@ def _shared(pairs):
     return pairs
 
 
+# Per-fly tables; a result computed before they existed has none, and gets no tests.
+_empty = pd.DataFrame()
+totals_per_fly = results.get("phase_totals_per_fly", _empty)
+rebound_per_fly = results.get("rebound_per_fly", _empty)
+cumulative_end = results.get("cumulative_end_per_fly", _empty)
+_sd_family = stats_ui.family(group_stats.WELCH)
+_PHASE_COLS = (("light_sleep_min", "Light Phase (ZT0-12)"), ("dark_sleep_min", "Dark Phase (ZT12-24)"))
+_REB_PHASES = sd_module.PHASES
+
+
+def _between(frame, col, groups, title, measure):
+    """The groups of one panel compared on ``col`` of a per-fly frame."""
+    if frame.empty:
+        return None
+    rows = frame[frame["group"].isin(groups)]
+    present = [g for g in groups if g in set(rows["group"])]
+    return group_stats.compare_frame(
+        rows, col, "group", _sd_family, order=present, measure=measure, panel=title or None
+    )
+
+
+def _days(frame, col="day_label"):
+    return list(dict.fromkeys(frame[col])) if not frame.empty else []
+
+
+def _totals_stats(title, groups):
+    """Between groups per (day, phase); then each group's baseline against each
+    recovery day on the same flies, Holm across recovery days."""
+    between = {
+        (day, col): _between(
+            totals_per_fly[totals_per_fly["day_label"] == day], col, groups, title,
+            f"{day} — {name}",
+        )
+        for day in _days(totals_per_fly)
+        for col, name in _PHASE_COLS
+    }
+    paired = []
+    if not totals_per_fly.empty:
+        base = totals_per_fly[totals_per_fly["day_label"] == sd_module.BASELINE_LABEL]
+        for grp in groups:
+            for col, name in _PHASE_COLS:
+                b = base[base["group"] == grp].set_index("id")[col]
+                tests = []
+                for day in _days(totals_per_fly):
+                    if day == sd_module.BASELINE_LABEL:
+                        continue
+                    rec = totals_per_fly[
+                        (totals_per_fly["day_label"] == day) & (totals_per_fly["group"] == grp)
+                    ].set_index("id")[col]
+                    r = group_stats.compare_paired(
+                        b, rec, _sd_family, labels=(sd_module.BASELINE_LABEL, day),
+                        measure=f"{grp} — {name}",
+                    )
+                    if r is not None:
+                        r.panel = title or None
+                    tests.append(r)
+                paired += group_stats.holm(tests, "recovery days")
+    return between, [r for r in paired if r is not None]
+
+
+def _rebound_stats(title, groups):
+    return {
+        (day, phase): _between(
+            rebound_per_fly[
+                (rebound_per_fly["recovery_day"] == day) & (rebound_per_fly["phase"] == phase)
+            ],
+            "rebound_pct", groups, title, f"Recovery Day {day} — {phase}",
+        )
+        for day in _days(rebound_per_fly, "recovery_day")
+        for phase in _REB_PHASES
+    }
+
+
+def _cumulative_stats(title, groups):
+    return [
+        _between(
+            cumulative_end[cumulative_end["recovery_day"] == day], "cumulative_diff_min",
+            groups, title, f"Recovery Day {day} — cumulative difference at ZT24 (min)",
+        )
+        for day in _days(cumulative_end, "recovery_day")
+    ]
+
+
 # ================================================================
 # Tab 1: ZT Time-Course Plots
 # ================================================================
@@ -503,79 +589,106 @@ if tab_timecourse.open:
             _shared([(t, _cumulative_fig(t, *rest)) for t, *rest in _sets()]),
             "sd_cumulative",
         )
+        _cum_stats = [r for t, gs, *_ in _sets() for r in _cumulative_stats(t, gs)]
+        if any(r is not None for r in _cum_stats):
+            st.dataframe(group_stats.stats_table(_cum_stats), width="stretch", hide_index=True)
+            stats_ui.notice(_cum_stats)
+
+
+def _grouped_bars(title, groups, label_of, days, bars, stats, yaxis_title, height):
+    """Bars clustered by day: one category per (day, group), one trace per phase.
+
+    ``bars`` is ``[(trace name, colour, {(day, group): value})]``; ``stats`` maps
+    ``(day, trace index)`` to the between-group result drawn over that day.
+    """
+    cats, x_of_cat = [], {}
+    for day in days:
+        for grp in groups:
+            if any((day, grp) in values for _, _, values in bars):
+                x_of_cat[(day, grp)] = len(cats)
+                cats.append(f"{label_of(grp)}<br>{day}")
+    fig = go.Figure()
+    for name, colour, values in bars:
+        fig.add_trace(
+            go.Bar(
+                name=name,
+                x=cats,
+                y=[values.get(key, np.nan) for key in x_of_cat],
+                marker_color=colour,
+            )
+        )
+    plotting.apply_category_ticks(fig, cats)
+    fig.update_layout(
+        barmode="group",
+        yaxis_title=yaxis_title,
+        height=height,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    # Two phases share each category: barmode="group" puts them at -0.2 and +0.2.
+    offsets = np.linspace(-0.2, 0.2, len(bars)) if len(bars) > 1 else [0.0]
+    every = [v for _, _, values in bars for v in values.values() if np.isfinite(v)]
+    span = (max(every + [0.0]) - min(every + [0.0])) or 1.0
+    for day in days:
+        heights = [values.get((day, g), np.nan) for _, _, values in bars for g in groups]
+        top = max([v for v in heights if np.isfinite(v)] + [0.0])
+        for i in range(len(bars)):
+            result = stats.get((day, i))
+            if result is None:
+                continue
+            x_of = {g: x_of_cat[(day, g)] + offsets[i] for g in groups if (day, g) in x_of_cat}
+            reached = plotting.add_group_stats(
+                fig, result, x_of, n_slots=len(cats) * len(bars), y_base=top, span=span
+            )
+            top = reached if reached is not None else top
+    if title:
+        fig.update_layout(title=_titled(title, yaxis_title))
+    return fig
 
 
 def _totals_fig(title, groups, label_of):
-    fig_bar = go.Figure()
-    bar_x = []
-    light_vals = []
-    dark_vals = []
-
-    for grp in groups:
-        grp_data = phase_totals[phase_totals["group"] == grp]
-        for _, row in grp_data.iterrows():
-            bar_x.append(f"{label_of(grp)}<br>{row['day_label']}")
-            light_vals.append(row["light_sleep_min"])
-            dark_vals.append(row["dark_sleep_min"])
-
-    fig_bar.add_trace(
-        go.Bar(
-            name="Light Phase (ZT0-12)",
-            x=bar_x,
-            y=light_vals,
-            marker_color="gold",
+    between, _ = _totals_stats(title, groups)
+    days = _days(phase_totals)
+    bars = [
+        (
+            name,
+            "gold" if i == 0 else "navy",
+            {
+                (row["day_label"], row["group"]): row[col]
+                for _, row in phase_totals[phase_totals["group"].isin(groups)].iterrows()
+            },
         )
-    )
-    fig_bar.add_trace(
-        go.Bar(
-            name="Dark Phase (ZT12-24)",
-            x=bar_x,
-            y=dark_vals,
-            marker_color="navy",
-        )
-    )
-    plotting.apply_category_ticks(fig_bar, bar_x)
-    fig_bar.update_layout(
-        barmode="group",
-        yaxis_title="Total Sleep (minutes)",
-        height=500,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    if title:
-        fig_bar.update_layout(title=_titled(title, "Sleep totals"))
-    return fig_bar
+        for i, (col, name) in enumerate(_PHASE_COLS)
+    ]
+    stats = {(day, i): between.get((day, col)) for day in days for i, (col, _) in enumerate(_PHASE_COLS)}
+    return _grouped_bars(title, groups, label_of, days, bars, stats, "Total Sleep (minutes)", 500)
 
 
 def _rebound_fig(title, groups, label_of):
-    fig_reb = go.Figure()
-    all_reb_labels = []
-    for phase in rebound_pct["phase"].unique():
-        ph_data = rebound_pct[rebound_pct["phase"] == phase]
-        ph_data = ph_data[ph_data["group"].isin(set(groups))]
-        x_labels = [
-            f"{label_of(row['group'])}<br>Recovery Day {row['recovery_day']}"
-            for _, row in ph_data.iterrows()
-        ]
-        all_reb_labels.extend(x_labels)
-        fig_reb.add_trace(
-            go.Bar(
-                name=phase,
-                x=x_labels,
-                y=ph_data["rebound_pct"],
-                marker_color="gold" if "Light" in phase else "navy",
-            )
+    reb_stats = _rebound_stats(title, groups)
+    rec_days = _days(rebound_pct, "recovery_day")
+    sub = rebound_pct[rebound_pct["group"].isin(groups)]
+    bars = [
+        (
+            phase,
+            "gold" if "Light" in phase else "navy",
+            {
+                (f"Recovery Day {row['recovery_day']}", row["group"]): row["rebound_pct"]
+                for _, row in sub[sub["phase"] == phase].iterrows()
+            },
         )
-    fig_reb.add_hline(y=0, line_dash="dot", line_color="gray")
-    plotting.apply_category_ticks(fig_reb, all_reb_labels)
-    fig_reb.update_layout(
-        barmode="group",
-        yaxis_title="Sleep Rebound (%)",
-        height=450,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        for phase in _REB_PHASES
+    ]
+    stats = {
+        (f"Recovery Day {day}", i): reb_stats.get((day, phase))
+        for day in rec_days
+        for i, phase in enumerate(_REB_PHASES)
+    }
+    fig = _grouped_bars(
+        title, groups, label_of, [f"Recovery Day {d}" for d in rec_days], bars, stats,
+        "Sleep Rebound (%)", 450,
     )
-    if title:
-        fig_reb.update_layout(title=_titled(title, "Sleep rebound"))
-    return fig_reb
+    fig.add_hline(y=0, line_dash="dot", line_color="gray")
+    return fig
 
 
 # ================================================================
@@ -597,6 +710,13 @@ if tab_bars.open:
                 _shared([(t, _totals_fig(t, gs, lab)) for t, gs, lab in _bar_sets if gs]),
                 "sd_totals",
             )
+            _tot = [_totals_stats(t, gs) for t, gs, _ in _bar_sets if gs]
+            stats_ui.notice([r for between, _ in _tot for r in between.values()])
+            _paired = [r for _, paired in _tot for r in paired]
+            if _paired:
+                st.markdown("##### Baseline vs recovery, same flies")
+                st.dataframe(group_stats.stats_table(_paired), width="stretch", hide_index=True)
+                stats_ui.notice(_paired)
 
         # --- Rebound % bar chart ---
         st.markdown("#### Sleep Rebound (%)")
@@ -611,6 +731,7 @@ if tab_bars.open:
                 _shared([(t, _rebound_fig(t, gs, lab)) for t, gs, lab in _reb_sets]),
                 "sd_rebound",
             )
+            stats_ui.notice([r for t, gs, _ in _reb_sets for r in _rebound_stats(t, gs).values()])
 
 # ================================================================
 # Tab 3: Data Export
@@ -620,54 +741,95 @@ if tab_export.open:
         st.markdown("#### Download Analysis Data")
 
         # Baseline profile
-        csv_bl = baseline_prof.to_csv(index=False)
         st.download_button(
-            "Download Baseline ZT Profile", csv_bl, "sd_baseline_profile.csv", "text/csv", key="dl_bl"
+            "Download Baseline ZT Profile",
+            ex.excel_bytes([("baseline_profile", baseline_prof)]),
+            "sd_baseline_profile.xlsx",
+            ex.XLSX_MIME,
+            key="dl_bl",
         )
 
         # Recovery profiles
         for rec_num, rec_df in recovery_profs.items():
-            csv_rec = rec_df.to_csv(index=False)
             st.download_button(
                 f"Download Recovery Day {rec_num} ZT Profile",
-                csv_rec,
-                f"sd_recovery_day{rec_num}_profile.csv",
-                "text/csv",
+                ex.excel_bytes([(f"recovery_day{rec_num}_profile", rec_df)]),
+                f"sd_recovery_day{rec_num}_profile.xlsx",
+                ex.XLSX_MIME,
                 key=f"dl_rec_{rec_num}",
             )
 
         # Difference profiles
         for rec_num, diff_df in diff_profs.items():
-            csv_diff = diff_df.to_csv(index=False)
             st.download_button(
                 f"Download Difference Day {rec_num}",
-                csv_diff,
-                f"sd_difference_day{rec_num}.csv",
-                "text/csv",
+                ex.excel_bytes([(f"difference_day{rec_num}", diff_df)]),
+                f"sd_difference_day{rec_num}.xlsx",
+                ex.XLSX_MIME,
                 key=f"dl_diff_{rec_num}",
             )
 
         # Cumulative difference
         for rec_num, cum_df in cum_diffs.items():
-            csv_cum = cum_df.to_csv(index=False)
+            _end = (
+                cumulative_end[cumulative_end["recovery_day"] == rec_num]
+                if not cumulative_end.empty
+                else cumulative_end
+            )
+            _cum_day_stats = [
+                _between(
+                    _end, "cumulative_diff_min", gs, t,
+                    f"Recovery Day {rec_num} — cumulative difference at ZT24 (min)",
+                )
+                for t, gs, *_ in _sets()
+            ]
             st.download_button(
                 f"Download Cumulative Diff Day {rec_num}",
-                csv_cum,
-                f"sd_cumulative_diff_day{rec_num}.csv",
-                "text/csv",
+                ex.excel_bytes(
+                    [
+                        (f"cumulative_diff_day{rec_num}", cum_df),
+                        ("per_fly_end_of_day", _end),
+                        stats_ui.sheet(_cum_day_stats),
+                    ]
+                ),
+                f"sd_cumulative_diff_day{rec_num}.xlsx",
+                ex.XLSX_MIME,
                 key=f"dl_cum_{rec_num}",
             )
 
         # Phase totals
         if not phase_totals.empty:
-            csv_phase = phase_totals.to_csv(index=False)
+            _tot_all = [_totals_stats(t, gs) for t, gs, *_ in _sets()]
             st.download_button(
-                "Download Phase Totals", csv_phase, "sd_phase_totals.csv", "text/csv", key="dl_phase"
+                "Download Phase Totals",
+                ex.excel_bytes(
+                    [
+                        ("phase_totals", phase_totals),
+                        ("per_fly", totals_per_fly),
+                        stats_ui.sheet(
+                            [r for between, paired in _tot_all for r in [*between.values(), *paired]]
+                        ),
+                    ]
+                ),
+                "sd_phase_totals.xlsx",
+                ex.XLSX_MIME,
+                key="dl_phase",
             )
 
         # Rebound %
         if not rebound_pct.empty:
-            csv_reb = rebound_pct.to_csv(index=False)
             st.download_button(
-                "Download Rebound %", csv_reb, "sd_rebound_pct.csv", "text/csv", key="dl_reb"
+                "Download Rebound %",
+                ex.excel_bytes(
+                    [
+                        ("rebound_pct", rebound_pct),
+                        ("per_fly", rebound_per_fly),
+                        stats_ui.sheet(
+                            [r for t, gs, *_ in _sets() for r in _rebound_stats(t, gs).values()]
+                        ),
+                    ]
+                ),
+                "sd_rebound_pct.xlsx",
+                ex.XLSX_MIME,
+                key="dl_reb",
             )

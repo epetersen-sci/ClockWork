@@ -78,6 +78,23 @@ clockwork run my_experiment.yaml
   it carries into exported settings.
 - Each period method's preprocessing is recorded on the dataset (before, it was
   never saved), and the subset you chose is recorded by column value.
+- **Group statistics on the figures.** Group comparisons run on one value per
+  fly and are drawn on the figure: brackets with stars or the p-value for two or
+  three groups, a compact letter display for four or more, and the omnibus
+  p-value when it is not significant. Sleep architecture uses Kruskal-Wallis +
+  Dunn (Holm); everything else uses Welch ANOVA + Games-Howell. A **Group
+  statistics** setting in the sidebar can apply one family everywhere, and the
+  QC report reads `outputs.group_stats`. A line under each tested figure names
+  the test. The full list is in `docs/stats-inventory.md`.
+- **Exports are Excel workbooks.** The analysis pages' CSV exports are `.xlsx`,
+  and a figure with statistics adds a `Stats` sheet. The Export Data page, the
+  SCAMP export and the CLI tables are unchanged.
+- **Sleep deprivation keeps each fly's numbers.** The per-fly phase totals,
+  rebound and end-of-day cumulative difference are returned with the group
+  tables and exported beside them; the bar charts group the bars by day.
+- **The QC report's sleep and HMM figures are per-measure violins**, the same
+  figures the pages draw, with their statistics.
+- The HMM state-occupancy chart groups bars by state, one bar per group.
 
 ### Install
 

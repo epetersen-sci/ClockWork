@@ -693,7 +693,7 @@ def sleep_state_totals_bars(
 
 def sleep_bout_duration_lines(
     curves_df: pd.DataFrame,
-    stats_result: dict | None = None,
+    stats_result=None,
     method: str = "kde",
     show_individual: bool = True,
     stat_col: str = "log_mean_duration_min",
@@ -722,9 +722,9 @@ def sleep_bout_duration_lines(
         Tidy ``(id, group, x, y)`` from
         ``sleep_analysis.per_fly_bout_duration_curves``. Empty or None renders
         the "no data" placeholder.
-    stats_result : dict, optional
-        From ``sleep_analysis.bout_duration_group_stats``. Only used for the
-        significance annotation; omit it and the annotation is skipped.
+    stats_result : group_stats.GroupStats, optional
+        The group comparison of the per-fly summary in ``stat_col``, named with
+        its p-value above the plot; omit it and the annotation is skipped.
     method : {'kde', 'survival'}
         Which curve ``curves_df`` holds — chooses the axis labels and scales.
         'kde': density of log10(bout duration) per fly, log-x.
@@ -777,10 +777,9 @@ def sleep_bout_duration_lines(
         show_individual=show_individual,
     )
 
-    p_val = (stats_result or {}).get("pvalue", float("nan"))
-    if np.isfinite(p_val):
-        p_str = "p<0.001" if p_val < 0.001 else f"p={p_val:.3f}"
-        label = "ANOVA" if stats_result["test"] == "anova" else "Kruskal-Wallis"
+    if stats_result is not None:
+        from clockwork.core import group_stats as gs
+
         fig.add_annotation(
             xref="paper",
             yref="paper",
@@ -788,7 +787,7 @@ def sleep_bout_duration_lines(
             y=1.06,
             xanchor="right",
             yanchor="bottom",
-            text=f"{label} on {stat_col}: {p_str}",
+            text=f"{stats_result.test} on {stat_col}: {gs.format_p(stats_result.pvalue)}",
             showarrow=False,
             font=dict(size=11, color="gray"),
         )
@@ -1769,12 +1768,12 @@ def initiation_probability_plot(
     return fig
 
 
-def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
+def rebound_bar_plot(rebound_df, title="Sleep Rebound per State", stats=None):
     """
     Bar chart of sleep rebound per sleep state, with individual fly points.
 
-    Matches Abhilash et al. 2026 Figure 4.  Single-sample t-test vs 0 is
-    computed inside this function and annotated above each bar.
+    Matches Abhilash et al. 2026 Figure 4. ``stats`` maps ``(group, state)`` to a
+    ``group_stats.compare_to_zero`` result, labelled above that bar.
 
     Parameters
     ----------
@@ -1787,7 +1786,7 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
     -------
     go.Figure
     """
-    from scipy import stats as _stats
+    from clockwork.core import group_stats as gs
 
     STATE_ORDER = ["standard", "short", "intermediate", "long"]
     # Paper colours, shared with every other Abhilash-figure renderer. The
@@ -1851,22 +1850,16 @@ def rebound_bar_plot(rebound_df, title="Sleep Rebound per State"):
                 )
             )
 
-            # t-test annotation
-            if len(sdf) >= 2:
-                t_stat, p_val = _stats.ttest_1samp(sdf, popmean=0.0, nan_policy="omit")
-                if p_val < 0.001:
-                    p_str = "p<0.001"
-                elif p_val < 0.01:
-                    p_str = f"p={p_val:.3f}"
-                else:
-                    p_str = f"p={p_val:.2f}"
+            result = (stats or {}).get((group, state))
+            if result is not None:
                 annotations.append(
                     dict(
                         x=label,
-                        y=mean_val + sem_val + 1,
-                        text=p_str,
+                        y=mean_val + sem_val,
+                        yanchor="bottom",
+                        text=gs.pair_label(result.pvalue),
                         showarrow=False,
-                        font=dict(size=10),
+                        font=dict(size=11),
                     )
                 )
 
@@ -2953,6 +2946,7 @@ def polar_gating_plot(
     phase_label="DD",
     states=("activity", "short", "intermediate", "long"),
     title="Circadian gating of sleep states",
+    rayleigh=None,
 ):
     """Concentric per-fly gate arcs with the mean gate outermost — Figure 3C.
 
@@ -2983,6 +2977,8 @@ def polar_gating_plot(
         filtered to one group.
     gates_df : pd.DataFrame or None
         ``group_gates`` output for the same group. Omit to skip the mean ring.
+    rayleigh : dict, optional
+        ``{state: group_stats.rayleigh result}``, listed under the title.
     """
     colors, labels = _state_palette()
     if stats_df is None or stats_df.empty:
@@ -3046,6 +3042,16 @@ def polar_gating_plot(
     domain_x = (0.0, 1.0)
     domain_y = (0.14, 1.0)
     layout["domain"] = dict(x=list(domain_x), y=list(domain_y))
+    if rayleigh:
+        from clockwork.core import group_stats as gs
+
+        parts = [
+            f"{STATE_SHORT_LABELS.get(st, labels.get(st, st))} {gs.pair_label(r.pvalue)}"
+            for st, r in rayleigh.items()
+            if r is not None and st in present
+        ]
+        if parts:
+            title = f"{title}<br><sup>{gs.RAYLEIGH}: {' · '.join(parts)}</sup>"
     fig.update_layout(
         title=title,
         polar=layout,
@@ -4624,6 +4630,7 @@ def phase_response_curve(
     error="sem",
     title="Phase response curve",
     y_title="Phase shift (h)",
+    stats=None,
 ):
     """The PRC itself: mean phase shift against the circadian time of the pulse.
 
@@ -4642,6 +4649,9 @@ def phase_response_curve(
         figure needs no bootstrap: the response is measured once per fly, so the
         flies ARE the replicates. (The group-level "phase over time" comparison
         has no per-fly values to average and does need one.)
+    stats : list of group_stats.GroupStats, optional
+        :func:`group_stats.vs_control` results; each point's label (stars, or
+        the p-value) is drawn above its error bar.
 
     Notes
     -----
@@ -4705,6 +4715,32 @@ def phase_response_curve(
             )
         )
 
+    if stats:
+        from clockwork.core import group_stats as gs
+
+        tops = np.asarray(summary["mean"], float) + np.nan_to_num(
+            np.asarray(summary[error], float) if error and error in summary.columns else 0.0
+        )
+        span = float(np.nanmax(tops) - np.nanmin(summary["mean"])) or 1.0
+        for r in stats:
+            match = np.isclose(np.asarray(summary[zt_col], float), float(r.key.get(zt_col, np.nan)))
+            for col in series_cols:
+                match &= (summary[col].astype(str) == str(r.key.get(col))).to_numpy()
+            if not match.any():
+                continue
+            i = int(np.flatnonzero(match)[0])
+            key = tuple(summary[c].iloc[i] for c in series_cols)
+            fig.add_annotation(
+                x=float(summary[zt_col].iloc[i]), y=float(tops[i]) + 0.03 * span,
+                text=gs.pair_label(r.pvalue), showarrow=False, yanchor="bottom",
+                font=dict(size=12, color=colour_of.get(str(key[0]) if key else "", "#222222")),
+            )
+        fig.add_trace(
+            go.Scatter(
+                x=[zts[0]], y=[float(np.nanmax(tops)) + 0.12 * span], mode="markers",
+                marker=dict(opacity=0, size=1), hoverinfo="skip", showlegend=False,
+            )
+        )
     # Zero is where an unpulsed fly sits by construction, so it is the line the
     # whole figure is read against rather than decoration.
     fig.add_hline(y=0, line=dict(color="#999999", width=1, dash="dash"))
@@ -4753,6 +4789,7 @@ def phase_response_violins(
     y_title="Phase shift (h)",
     x_title=None,
     split_title=None,
+    stats=None,
 ):
     """Every fly's own phase response, as one violin per treated group.
 
@@ -4781,6 +4818,9 @@ def phase_response_violins(
         What to CALL the axis and the legend, when the caller wants something
         other than the column names. Defaults to the column names, which are the
         metadata's own (every metadata column is stored under its own name).
+    stats : list of group_stats.GroupStats, optional
+        :func:`group_stats.vs_control` results, labelled above each column
+        (prefixed with the ``split_col`` value when a column holds several).
 
     Returns
     -------
@@ -4880,6 +4920,34 @@ def phase_response_violins(
         text="advance positive / delay negative", showarrow=False,
         font=dict(size=11, color="#666666"),
     )
+    if stats:
+        from clockwork.core import group_stats as gs
+
+        vals = np.asarray(drawn[value_col], float)
+        hi, span = float(vals.max()), float(vals.max() - vals.min()) or 1.0
+        labels = {}
+        for r in stats:
+            if not all(c in r.key for c in major_cols):
+                continue
+            col = _prc_join(tuple(r.key[c] for c in major_cols))
+            text = gs.pair_label(r.pvalue)
+            if split_col and split_col in r.key and len(split_vals) > 1:
+                text = f"{_prc_join((r.key[split_col],))}: {text}"
+            labels.setdefault(col, []).append(text)
+        for col, texts in labels.items():
+            if col in order:
+                fig.add_annotation(
+                    x=col, y=hi + 0.05 * span, text="<br>".join(texts), showarrow=False,
+                    yanchor="bottom", font=dict(size=11, color="#222222"),
+                )
+        if labels:
+            fig.add_trace(
+                go.Scatter(
+                    x=[order[0]], y=[hi + (0.12 + 0.07 * max(map(len, labels.values()))) * span],
+                    mode="markers", marker=dict(opacity=0, size=1), hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
     return fig, drawn
 
 
@@ -4916,6 +4984,100 @@ def framed_axes(fig):
 MEASURE_COLOURS = ("#3B76AF", "#E8722C", "#2C3E50", "#16A085", "#8E6BBF", "#B5892B")
 
 
+def _figure_y_extent(fig):
+    vals = [v for t in fig.data for v in [_trace_y_values(t)] if v.size]
+    if not vals:
+        return None
+    allv = np.concatenate(vals)
+    return float(allv.min()), float(allv.max())
+
+
+def add_group_stats(
+    fig, stats, x_of, *, n_slots=None, row=None, col=None, y_base=None, span=None
+):
+    """Draw one :class:`group_stats.GroupStats` result on ``fig``; returns the y
+    its marks reach (None when nothing was drawn).
+
+    ``x_of`` maps each tested group to its x position: a category's index on a
+    categorical axis, or its value on a numeric one. ``n_slots`` is the number of
+    x positions the axis has, which sizes the letters to the width of one group.
+    Brackets, letters or the omnibus p-value go above the data (see
+    :mod:`group_stats` for which) — or above ``y_base``, spaced by ``span``, when
+    several results share one figure — and an invisible marker at the top of
+    them keeps them inside the y-range, autoranged or shared.
+    """
+    from clockwork.core import group_stats as gs
+
+    if stats is None:
+        return None
+    extent = _figure_y_extent(fig)
+    if extent is None:
+        return None
+    lo, hi = extent
+    span = span or (hi - lo) or abs(hi) or 1.0
+    if y_base is not None:
+        hi = y_base
+    sub = {} if row is None else {"row": row, "col": col}
+    line = dict(color="#333333", width=1.1)
+    top = hi + 0.06 * span
+
+    if stats.marks == "brackets":
+        idx = {g: i for i, g in enumerate(stats.groups)}
+        pairs = sorted(stats.pairs, key=lambda pr: abs(idx[pr[0]] - idx[pr[1]]))
+        tick = 0.025 * span
+        for level, (a, b, p) in enumerate(pairs):
+            if a not in x_of or b not in x_of:
+                continue
+            xa, xb = sorted((x_of[a], x_of[b]))
+            y = hi + span * (0.08 + 0.16 * level)
+            for x0, y0, x1, y1 in ((xa, y - tick, xa, y), (xa, y, xb, y), (xb, y, xb, y - tick)):
+                fig.add_shape(type="line", x0=x0, y0=y0, x1=x1, y1=y1, line=line, **sub)
+            fig.add_annotation(
+                x=(xa + xb) / 2, y=y, text=gs.pair_label(p), showarrow=False,
+                yanchor="bottom", font=dict(size=12, color="#222222"), **sub,
+            )
+            top = y + 0.1 * span
+    elif stats.marks == "letters":
+        slots = n_slots or len(x_of) or 1
+        longest = max((len(v) for v in stats.letters.values()), default=1)
+        size = int(np.clip(round(260 / (slots * max(longest, 1))), 9, 16))
+        y = hi + 0.06 * span
+        for g in stats.groups:
+            if g in x_of and stats.letters.get(g):
+                fig.add_annotation(
+                    x=x_of[g], y=y, text=stats.letters[g], showarrow=False,
+                    yanchor="bottom", font=dict(size=size, color="#222222"), **sub,
+                )
+        top = y + 0.08 * span
+    else:
+        y = hi + 0.06 * span
+        fig.add_annotation(
+            x=float(np.mean(list(x_of.values()))) if x_of else 0, y=y,
+            text=stats.omnibus_label, showarrow=False, yanchor="bottom",
+            font=dict(size=12, color="#222222"), **sub,
+        )
+        top = y + 0.08 * span
+
+    anchor = next(
+        (
+            t.x[0] if getattr(t, "x", None) is not None and len(t.x) else t.name
+            for t in fig.data
+            if (getattr(t, "x", None) is not None and len(t.x))
+            or (t.type in ("box", "violin") and t.name)
+        ),
+        None,
+    )
+    if anchor is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=[anchor], y=[top], mode="markers", marker=dict(opacity=0, size=1),
+                hoverinfo="skip", showlegend=False,
+            ),
+            **sub,
+        )
+    return top
+
+
 def group_violins(
     per_fly,
     value_col,
@@ -4931,6 +5093,7 @@ def group_violins(
     reference=None,
     reference_label=None,
     x_title="group",
+    stats=None,
 ):
     """One violin per group, for ONE measure. The distribution behind a group bar.
 
@@ -4965,6 +5128,8 @@ def group_violins(
     reference : pd.DataFrame, optional
         Control flies (same ``group_col``/``value_col``), drawn as grey violins
         at the same x, behind the coloured ones.
+    stats : group_stats.GroupStats, optional
+        Drawn above the violins with :func:`add_group_stats`.
 
     Returns
     -------
@@ -5033,6 +5198,7 @@ def group_violins(
             tickangle=-25,
             showgrid=False,
         )
+        x_of = {str(g): i for i, g in enumerate(order)}
     else:
         # One trace per level so each can take its own colour. Overlay mode puts a
         # level's reference violin exactly behind it instead of beside it.
@@ -5102,6 +5268,7 @@ def group_violins(
             )
 
         fig.update_layout(violinmode="overlay", showlegend=ref is not None and not ref.empty)
+        x_of = {str(g): (float(pos[g]) if x_numeric else i) for i, g in enumerate(order)}
         if x_numeric:
             fig.update_xaxes(
                 title=x_title,
@@ -5130,6 +5297,7 @@ def group_violins(
     )
     fig.update_yaxes(title=y_title, showgrid=True, gridcolor="#eeeeee", rangemode="tozero")
     framed_axes(fig)
+    add_group_stats(fig, stats, x_of, n_slots=len(order))
     return fig, drawn
 
 
@@ -5249,6 +5417,7 @@ def faceted_violins(
     shared_y=True,
     show_points=True,
     y_from_zero=True,
+    stats=None,
 ):
     """Per-fly distributions, one figure per panel, one violin per compare level.
 
@@ -5256,6 +5425,8 @@ def faceted_violins(
     (:func:`per_fly_summary_table`, the rhythmicity per-fly table, …).
     ``x_numeric=None`` places the violins by value whenever every level is a
     number (the 18/22/25/27/29 °C spacing); pass False for even spacing.
+    ``stats`` is one ``GroupStats`` (or None) per panel, in ``panels`` order —
+    :func:`group_stats.per_panel` builds it from the same flies.
     """
     out = []
     if per_fly is None or per_fly.empty or value_col not in per_fly.columns:
@@ -5264,7 +5435,7 @@ def faceted_violins(
     levels = facets.layout_levels(panels)
     if x_numeric is None:
         x_numeric = facets.is_numeric_levels(levels)
-    for p in panels:
+    for i, p in enumerate(panels):
         lab = p.labels()
         sub = per_fly[ids.isin(lab)].assign(_level=ids[ids.isin(lab)].map(lab))
         ref = None
@@ -5284,6 +5455,7 @@ def faceted_violins(
             reference=ref,
             reference_label=p.reference_label,
             x_title=x_title or "",
+            stats=stats[i] if stats else None,
         )
         if not y_from_zero:
             fig.update_yaxes(rangemode="normal")

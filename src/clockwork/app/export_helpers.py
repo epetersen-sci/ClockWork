@@ -2,7 +2,7 @@
 canonical layout for the wide ZT summary table.
 
 Every line/bar graph's underlying data (the numbers actually plotted) is written
-as a CSV into the working folder — ``dam_utilities.resolve_export_dir`` (the
+as an Excel workbook into the working folder — ``dam_utilities.resolve_export_dir`` (the
 metadata file's directory on a raw load, or the ``.nc``'s directory on a reload,
 so exports land next to the user's experiment files and survive a ``.nc`` reload)
 — under a ``Graph Exports_<experiment>/`` subfolder, instead of a browser download.
@@ -23,7 +23,7 @@ streamlit through ``st.testing.v1.AppTest``, which needs no stub: under AppTest 
 button is False until a test clicks it, so no file is written by accident.)
 
 :func:`zt_group_summary_table` lives here for the same reason: Export data and
-Sleep & activity both ship a group Mean/SD/N-per-ZT-bin CSV, and they had drifted
+Sleep & activity both ship a group Mean/SD/N-per-ZT-bin table, and they had drifted
 apart on both the casing and the column order of that header (see below). One
 builder means they cannot drift again.
 """
@@ -145,61 +145,9 @@ def _export_dir(ds, subfolder=None):
     return out
 
 
-def save_df_button(label, df, ds, filename, key, *, index=False, help=None, subfolder=None):
-    """Render a 'Save to working folder' button. On click, write ``df`` as CSV into
-    the working data folder's ``Graph Exports/`` and confirm the path. Returns the
-    written path, or None (not clicked / empty df)."""
-    import streamlit as st
-
-    disabled = df is None or (hasattr(df, "empty") and df.empty)
-    if st.button(label, key=key, help=help, disabled=disabled):
-        try:
-            path = os.path.join(_export_dir(ds, subfolder), filename)
-            df.to_csv(path, index=index)
-            st.success(f"Saved to `{path}`")
-            return path
-        except Exception as e:
-            st.error(f"Export failed: {e}")
-    return None
-
-
-def save_multi_df_button(label, items, ds, key, *, index=False, help=None, subfolder=None):
-    """Render ONE button that writes SEVERAL CSVs into the working folder's
-    ``Graph Exports/`` in a single click. ``items`` is an iterable of
-    ``(filename, df)``; empty/None dataframes are skipped (e.g. an analysis that
-    was not run, so no file is written for it). On success a confirmation lists
-    every written path. Returns the list of written paths, or None (not clicked)."""
-    import streamlit as st
-
-    items = [
-        (fn, df) for fn, df in items if df is not None and not (hasattr(df, "empty") and df.empty)
-    ]
-    disabled = not items
-    if st.button(label, key=key, help=help, disabled=disabled):
-        try:
-            out = _export_dir(ds, subfolder)
-            written = []
-            for fn, df in items:
-                path = os.path.join(out, fn)
-                df.to_csv(path, index=index)
-                written.append(path)
-            if written:
-                st.success(
-                    "Saved {} file(s):\n{}".format(
-                        len(written), "\n".join(f"- `{p}`" for p in written)
-                    )
-                )
-            else:
-                st.info("Nothing to export (no analyses run).")
-            return written
-        except Exception as e:
-            st.error(f"Export failed: {e}")
-    return None
-
-
 def save_csv_button(label, csv_text, ds, filename, key, *, help=None, subfolder=None):
-    """Same as :func:`save_df_button` but for pre-rendered CSV text (a ``to_csv()``
-    string). Returns the written path, or None."""
+    """Write pre-rendered text (a figure layout's JSON, say) into the working
+    folder's ``Graph Exports/``. Returns the written path, or None."""
     import streamlit as st
 
     disabled = not csv_text
@@ -219,7 +167,7 @@ def _remember(key, message):
     """Keep a "saved" confirmation alive past the rerun that follows the click.
 
     ``st.success`` inside a button branch is drawn once and gone on the next
-    rerun — and a rerun is exactly what a Streamlit button causes. For a CSV the
+    rerun — and a rerun is exactly what a Streamlit button causes. For a workbook the
     message is a nicety; for a button that writes a dozen PNGs it is the only
     report of where they went, so it has to survive.
     """
@@ -288,6 +236,49 @@ def save_figures_png_button(label, figures, ds, key, *, scale=2, subfolder=None,
     return None
 
 
+#: The MIME type of an ``.xlsx`` handed to ``st.download_button``.
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _write_workbook(target, sheets):
+    """Write ``(sheet_name, df)`` pairs to ``target``, a path or a binary buffer."""
+    import pandas as pd
+
+    with pd.ExcelWriter(target, engine="openpyxl") as xl:
+        for name, df in sheets:
+            # Keep the index when it carries something. A ZT table is indexed by
+            # the bin and has (group, stat) MultiIndex columns — pandas REFUSES
+            # index=False for those outright — while a per-fly table is a plain
+            # RangeIndex whose numbers are noise in a spreadsheet.
+            keep_index = (
+                isinstance(df.columns, pd.MultiIndex)
+                or isinstance(df.index, pd.MultiIndex)
+                or df.index.name is not None
+            )
+            # Excel's own limit, which openpyxl raises on rather than trimming.
+            # Callers here pass short names, so this is a guard against a crash,
+            # not a naming policy.
+            df.to_excel(xl, sheet_name=str(name)[:31], index=keep_index)
+
+
+def excel_bytes(sheets):
+    """``(sheet_name, df)`` pairs as the bytes of an ``.xlsx``, for
+    ``st.download_button``. Empty or None frames are skipped, as in
+    :func:`save_excel_button`."""
+    import io
+
+    buf = io.BytesIO()
+    _write_workbook(
+        buf,
+        [
+            (name, df)
+            for name, df in sheets
+            if df is not None and not (hasattr(df, "empty") and df.empty)
+        ],
+    )
+    return buf.getvalue()
+
+
 def save_excel_button(label, sheets, ds, filename, key, *, help=None, subfolder=None):
     """Write a multi-sheet ``.xlsx`` into the working folder, in one click.
 
@@ -314,7 +305,6 @@ def save_excel_button(label, sheets, ds, filename, key, *, help=None, subfolder=
     Needs ``openpyxl``, which is a declared dependency: a missing one is a broken
     environment, not an optional extra, so the error names the package.
     """
-    import pandas as pd
     import streamlit as st
 
     def _resolve():
@@ -342,22 +332,7 @@ def save_excel_button(label, sheets, ds, filename, key, *, help=None, subfolder=
             # went.
             if not os.path.splitext(path)[1]:
                 path += ".xlsx"
-            with pd.ExcelWriter(path, engine="openpyxl") as xl:
-                for name, df in resolved:
-                    # Keep the index when it carries something. A ZT table is
-                    # indexed by the bin and has (group, stat) MultiIndex columns
-                    # — pandas REFUSES index=False for those outright — while a
-                    # per-fly table is a plain RangeIndex whose numbers are noise
-                    # in a spreadsheet.
-                    keep_index = (
-                        isinstance(df.columns, pd.MultiIndex)
-                        or isinstance(df.index, pd.MultiIndex)
-                        or df.index.name is not None
-                    )
-                    # Excel's own limit, which openpyxl raises on rather than
-                    # trimming. Callers here pass short names, so this is a guard
-                    # against a crash, not a naming policy.
-                    df.to_excel(xl, sheet_name=str(name)[:31], index=keep_index)
+            _write_workbook(path, resolved)
             _remember(key, f"Saved {len(resolved)} sheet(s) to `{path}`")
             _show_remembered(key)
             return path

@@ -125,6 +125,9 @@ class OutputsConfig(_Section):
     #: CSV tables to write. None = every table the analyses that ran can make.
     tables: list[TableName] | None = None
     qc_report: bool = True
+    #: Tests on the QC report's figures: each measure's recommended family, or one
+    #: family for everything (see docs/stats-inventory.md).
+    group_stats: Literal["recommended", "welch", "rank"] = "recommended"
 
 
 class ExperimentConfig(_Section):

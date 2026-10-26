@@ -16,6 +16,7 @@ netCDF4==1.7.1.post1
 openpyxl==3.1.5
 hmmlearn==0.3.3
 statsmodels==0.14.6
+scikit-posthocs==0.17.1
 joblib==1.4.0
 streamlit==1.63.0
 plotly==6.1.0
