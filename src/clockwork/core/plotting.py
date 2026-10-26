@@ -4631,6 +4631,9 @@ def phase_response_curve(
     title="Phase response curve",
     y_title="Phase shift (h)",
     stats=None,
+    controls=None,
+    smoothing=0.6,
+    dodge=0.0,
 ):
     """The PRC itself: mean phase shift against the circadian time of the pulse.
 
@@ -4652,6 +4655,17 @@ def phase_response_curve(
     stats : list of group_stats.GroupStats, optional
         :func:`group_stats.vs_control` results; each point's label (stars, or
         the p-value) is drawn above its error bar.
+    controls : pd.DataFrame, optional
+        The unpulsed controls summarised the same way (``mean``, ``sem``, ``n``
+        per series, no pulse time). Drawn one step right of the last pulse time
+        under a "no pulse" tick, in each series' colour and not joined to its line.
+    smoothing : float
+        Plotly spline smoothing for the line through the means (0 draws straight
+        segments). The line passes through every mean.
+    dodge : float
+        Horizontal offset between series, as a fraction of the spacing between
+        pulse times (0 overlays them at the pulse time). Hover shows the true
+        pulse time.
 
     Notes
     -----
@@ -4681,39 +4695,76 @@ def phase_response_curve(
     dash_keys = sorted({tuple(str(v) for v in k[1:]) for k in keys}) if series_cols else [()]
     dash_of = {v: _PRC_DASHES[i % len(_PRC_DASHES)] for i, v in enumerate(dash_keys)}
 
-    for key in keys:
-        sub = summary
+    step = float(np.median(np.diff(zts))) if len(zts) > 1 else 3.0
+    control_x = (zts[-1] + step) if zts else 0.0
+    offset_of = {
+        k: (i - (len(keys) - 1) / 2.0) * float(dodge) * step for i, k in enumerate(keys)
+    }
+
+    def _err(frame):
+        if error and error in frame.columns:
+            vals = np.asarray(frame[error], dtype=float)
+            if np.isfinite(vals).any():
+                return dict(type="data", array=vals, visible=True, thickness=1.2, width=4)
+        return None
+
+    def _rows(frame, key):
         for col, val in zip(series_cols, key):
-            sub = sub[sub[col] == val]
-        sub = sub.sort_values(zt_col)
+            if col not in frame.columns:
+                return frame.iloc[0:0]
+            frame = frame[frame[col].astype(str) == str(val)]
+        return frame
+
+    for key in keys:
+        sub = _rows(summary, key).sort_values(zt_col)
         if sub.empty:
             continue
-        err = None
-        if error and error in sub.columns:
-            vals = np.asarray(sub[error], dtype=float)
-            if np.isfinite(vals).any():
-                err = dict(type="data", array=vals, visible=True, thickness=1.2, width=4)
         name = _prc_join(key) if key else "all flies"
+        colour = colour_of.get(str(key[0]) if key else "", _PRC_PALETTE[0])
+        zt_true = np.asarray(sub[zt_col], dtype=float)
         fig.add_trace(
             go.Scatter(
-                x=np.asarray(sub[zt_col], dtype=float),
+                x=zt_true + offset_of[key],
                 y=np.asarray(sub["mean"], dtype=float),
-                error_y=err,
+                error_y=_err(sub),
                 mode="lines+markers",
                 name=name,
+                legendgroup=name,
                 line=dict(
-                    color=colour_of.get(str(key[0]) if key else "", _PRC_PALETTE[0]),
+                    color=colour,
                     width=2,
                     dash=dash_of.get(tuple(str(v) for v in key[1:]), "solid"),
+                    shape="spline" if smoothing else "linear",
+                    smoothing=float(smoothing) if smoothing else None,
                 ),
                 marker=dict(size=9),
-                customdata=np.asarray(sub["n"], dtype=float).reshape(-1, 1),
+                customdata=np.column_stack([np.asarray(sub["n"], dtype=float), zt_true]),
                 hovertemplate=(
-                    f"<b>{name}</b><br>ZT%{{x}}<br>"
+                    f"<b>{name}</b><br>ZT%{{customdata[1]:g}}<br>"
                     "shift %{y:.2f} h<br>n = %{customdata[0]:.0f}<extra></extra>"
                 ),
             )
         )
+        if controls is not None and len(controls):
+            ctrl = _rows(controls, key)
+            if not ctrl.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=np.full(len(ctrl), control_x + offset_of[key]),
+                        y=np.asarray(ctrl["mean"], dtype=float),
+                        error_y=_err(ctrl),
+                        mode="markers",
+                        name=f"{name} (no pulse)",
+                        legendgroup=name,
+                        showlegend=False,
+                        marker=dict(size=9, color="white", line=dict(color=colour, width=2)),
+                        customdata=np.asarray(ctrl["n"], dtype=float).reshape(-1, 1),
+                        hovertemplate=(
+                            f"<b>{name}</b><br>no pulse<br>"
+                            "shift %{y:.2f} h<br>n = %{customdata[0]:.0f}<extra></extra>"
+                        ),
+                    )
+                )
 
     if stats:
         from clockwork.core import group_stats as gs
@@ -4731,7 +4782,8 @@ def phase_response_curve(
             i = int(np.flatnonzero(match)[0])
             key = tuple(summary[c].iloc[i] for c in series_cols)
             fig.add_annotation(
-                x=float(summary[zt_col].iloc[i]), y=float(tops[i]) + 0.03 * span,
+                x=float(summary[zt_col].iloc[i]) + offset_of.get(key, 0.0),
+                y=float(tops[i]) + 0.03 * span,
                 text=gs.pair_label(r.pvalue), showarrow=False, yanchor="bottom",
                 font=dict(size=12, color=colour_of.get(str(key[0]) if key else "", "#222222")),
             )
@@ -4746,6 +4798,11 @@ def phase_response_curve(
     fig.add_hline(y=0, line=dict(color="#999999", width=1, dash="dash"))
 
     tickvals, ticktext = _zt_ticks(zts)
+    if controls is not None and len(controls):
+        tickvals, ticktext = [*tickvals, control_x], [*ticktext, "no pulse"]
+        fig.add_vline(
+            x=(zts[-1] + control_x) / 2.0, line=dict(color="#cccccc", width=1, dash="dot")
+        )
     fig.update_layout(
         title=title,
         height=430,

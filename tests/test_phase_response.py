@@ -148,8 +148,9 @@ class TestTheResponseItself:
         # np.array, not asarray: asarray would hand back a view into the fixture.
         act = np.array(ds["activity"].transpose("time", "id").values, dtype=float)
         zt = dam_utilities.pulse_zt_hours(ds)
-        # Roll the pulsed flies' post-pulse activity EARLIER by two hours.
-        start = (PULSE_DD_DAY + 1) * 1440
+        # Roll the pulsed flies' post-pulse activity EARLIER by two hours, from the
+        # first DD day on: the designed 1.5 h delay becomes a 0.5 h advance.
+        start = PULSE_DD_DAY * 1440
         for j in np.flatnonzero(np.isfinite(zt)):
             act[start:, j] = np.roll(act[start:, j], -120)
         ds["activity"] = xr.DataArray(act, dims=("time", "id"), coords=ds["activity"].coords)
@@ -183,7 +184,7 @@ class TestTheResponseItself:
         assert (orphan["n_dropped"] == orphan["n_total"]).all()
 
     def test_the_response_days_skip_the_transient(self, prc_ds):
-        res = ps.compute_phase_response(prc_ds, group_by=GROUP_BY)
+        res = ps.compute_phase_response(prc_ds, group_by=GROUP_BY, method="daily")
         assert res["params"]["response_days"] == [2, 3, 4], "DD day 1 is the transient"
         assert 1 not in res["params"]["response_days"]
 
@@ -213,7 +214,11 @@ class TestBaselineCorrection:
         pf = res["per_fly"]
         assert "response_hours_raw" in pf.columns
 
-    def test_it_removes_a_pre_pulse_offset(self, prc_ds):
+    @pytest.mark.parametrize(
+        "method, off_kwargs",
+        [("regression", {"baseline": "none"}), ("daily", {"baseline_days": ()})],
+    )
+    def test_it_removes_a_pre_pulse_offset(self, prc_ds, method, off_kwargs):
         """What the correction is FOR. Give the pulsed arm a constant one-hour offset
         from its control — a flybox difference present before the pulse as much as
         after — and the corrected answer should return to the designed shift while
@@ -232,10 +237,12 @@ class TestBaselineCorrection:
         ds["activity"] = xr.DataArray(act, dims=("time", "id"), coords=ds["activity"].coords)
 
         on = ps.summarize_phase_response(
-            ps.compute_phase_response(ds, group_by=GROUP_BY)["per_fly"]
+            ps.compute_phase_response(ds, group_by=GROUP_BY, method=method)["per_fly"]
         )
         off = ps.summarize_phase_response(
-            ps.compute_phase_response(ds, group_by=GROUP_BY, baseline_days=())["per_fly"]
+            ps.compute_phase_response(ds, group_by=GROUP_BY, method=method, **off_kwargs)[
+                "per_fly"
+            ]
         )
         on_p = on[on["zt"].notna()]["mean"].mean()
         off_p = off[off["zt"].notna()]["mean"].mean()

@@ -27,6 +27,23 @@ command that runs the GUI or runs a whole analysis from a YAML file.
   returning no period for anybody. One fly's failed fit still just skips that fly.
 - **A period run no longer reorders the flies** in the dataset or adds a
   `split_minute` coordinate to an unsplit one (BACKLOG 23).
+- **Phase response curve values are different.** `compute_phase_response` now
+  defaults to `method="regression"`: a line through each fly's post-pulse daily
+  peaks, read on the day after the pulse, minus its control's mean, less the
+  group's pre-pulse offset from its control (`baseline="group"`; `"fly"` and
+  `"none"` are the alternatives). The earlier per-day estimator is
+  `method="daily"`. Both methods now count each fly's days from its own pulse,
+  and an unpulsed fly's from the same point on its own last LD day; before, every
+  fly used the cohort's median pulse day counted from its recording start, so a
+  cohort released into DD a day earlier or later than its control was compared
+  on a different DD day. On known shifts (−5 to +5 h injected into 609 unpulsed
+  flies of a six-genotype experiment) median / 90th-percentile error: regression
+  with group baseline 0.86 / 2.1 h, regression with per-fly baseline 0.71 /
+  2.3 h, daily 0.84 / 2.4 h.
+- **The phase response curve** joins each line's means with a spline, plots the
+  unpulsed controls at a "no pulse" tick, and drops grouping columns that only
+  re-label the pulse time from the line definition. The per-fly violins take the
+  sidebar's "Compare within panels" layout.
 
 Nothing published was computed with the earlier CWT numbers, which is why the
 change was made rather than kept behind a switch.
