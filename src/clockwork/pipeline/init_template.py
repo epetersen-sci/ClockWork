@@ -127,6 +127,7 @@ def init_text(out: Path, metadata=None, monitors=None) -> str:
         "  # tables: [period_summary, sleep_summary]   # default: every table there is",
         "  # dataset: true",
         "  # qc_report: true",
+        "  # group_stats: recommended   # recommended | welch | rank",
         "",
     ]
     return "\n".join(lines)

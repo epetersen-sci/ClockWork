@@ -93,6 +93,7 @@ outputs:
   dataset: true
   tables: [period_summary, sleep_summary]   # default: every table there is
   qc_report: true
+  group_stats: recommended          # tests on the QC report's figures: recommended | welch | rank
 ```
 
 ### Rules

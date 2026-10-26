@@ -1545,20 +1545,9 @@ def plot_hypnogram_heatmap(ds, group_name=None, n_states=4, ax=None):
     return fig
 
 
-def plot_state_occupancy_by_group(ds, n_states=4, return_data=False, group_order=None):
-    """Grouped bar chart of % time in each state per genotype.
-
-    Parameters
-    ----------
-    return_data : bool
-        When True, return ``(fig, DataFrame)`` where the DataFrame is the per-fly
-        %-time-in-state records the bars aggregate (the export payload). Default
-        False → just ``fig``.
-
-    Returns
-    -------
-    fig : matplotlib Figure (or ``(fig, DataFrame)`` if return_data).
-    """
+def state_occupancy_table(ds, n_states=4, group_order=None):
+    """Per fly: % of the fitted minutes in each state — ``group``, ``fly_id`` and
+    one column per state. Empty when no fly has a decoded state."""
     if "hmm_state" not in ds.data_vars:
         raise KeyError("'hmm_state' not found. Run the workflow first.")
 
@@ -1577,32 +1566,110 @@ def plot_state_occupancy_by_group(ds, n_states=4, return_data=False, group_order
             for s in range(n_states):
                 row[state_names[s]] = (valid == s).mean() * 100
             records.append(row)
+    return pd.DataFrame(records, columns=["group", "fly_id", *state_names])
 
-    if not records:
+
+def _draw_group_stats(ax, stats, x_of, hi, span, slot_width):
+    """Brackets, letters or the omnibus p-value for one ``GroupStats`` on ``ax``,
+    above ``hi``. Returns the y the marks reach. Matplotlib counterpart of
+    :func:`clockwork.core.plotting.add_group_stats`."""
+    from clockwork.core import group_stats as gs
+
+    if stats.marks == "brackets":
+        idx = {g: i for i, g in enumerate(stats.groups)}
+        pairs = sorted(stats.pairs, key=lambda pr: abs(idx[pr[0]] - idx[pr[1]]))
+        top = hi
+        tick = 0.015 * span
+        for level, (a, b, p) in enumerate(pairs):
+            xa, xb = sorted((x_of[a], x_of[b]))
+            y = hi + span * (0.05 + 0.1 * level)
+            ax.plot([xa, xa, xb, xb], [y - tick, y, y, y - tick], color="#333333", lw=1)
+            ax.text((xa + xb) / 2, y, gs.pair_label(p), ha="center", va="bottom", fontsize=9)
+            top = y + 0.07 * span
+        return top
+    if stats.marks == "letters":
+        x0, x1 = ax.transData.transform([(0, 0), (slot_width, 0)])[:, 0]
+        points = abs(x1 - x0) * 72 / ax.figure.dpi
+        longest = max((len(v) for v in stats.letters.values()), default=1)
+        size = float(np.clip(points / (0.65 * longest), 6, 12))
+        y = hi + 0.04 * span
+        for g in stats.groups:
+            if stats.letters.get(g):
+                ax.text(x_of[g], y, stats.letters[g], ha="center", va="bottom", fontsize=size)
+        return y + 0.07 * span
+    y = hi + 0.04 * span
+    ax.text(
+        float(np.mean([x_of[g] for g in stats.groups])), y, stats.omnibus_label,
+        ha="center", va="bottom", fontsize=8,
+    )
+    return y + 0.07 * span
+
+
+def plot_state_occupancy_by_group(
+    ds, n_states=4, return_data=False, group_order=None, stats=None
+):
+    """Grouped bar chart of % time in each state: one cluster per state, one bar
+    per group (mean ± SEM across flies).
+
+    Parameters
+    ----------
+    return_data : bool
+        When True, return ``(fig, DataFrame)`` where the DataFrame is the per-fly
+        %-time-in-state records the bars aggregate (the export payload). Default
+        False → just ``fig``.
+    stats : dict, optional
+        ``{state: group_stats.GroupStats}``, drawn above each state's cluster.
+
+    Returns
+    -------
+    fig : matplotlib Figure (or ``(fig, DataFrame)`` if return_data).
+    """
+    from clockwork.core import facets
+
+    df = state_occupancy_table(ds, n_states, group_order)
+    if df.empty:
         print("No valid state data found.")
         return (None, None) if return_data else None
-
-    df = pd.DataFrame(records)
+    state_names = [c for c in df.columns if c not in ("group", "fly_id")]
+    groups = list(dict.fromkeys(df["group"]))
 
     # Melt for seaborn
     df_melt = df.melt(
         id_vars=["group", "fly_id"], value_vars=state_names, var_name="State", value_name="% Time"
     )
 
-    fig, ax = plt.subplots(figsize=(max(8, len(groups) * 1.5), 6))
-    colors = STATE_COLORS_4[:n_states] if n_states <= 4 else None
-    palette = dict(zip(state_names, colors)) if colors else None
-
+    fig, ax = plt.subplots(figsize=(max(8, len(state_names) * len(groups) * 0.6), 6))
+    palette = {
+        g: facets.CATEGORICAL_PALETTE[i % len(facets.CATEGORICAL_PALETTE)]
+        for i, g in enumerate(groups)
+    }
     sns.barplot(
-        data=df_melt, x="group", y="% Time", hue="State", palette=palette, ax=ax, errorbar="se"
+        data=df_melt, x="State", y="% Time", hue="group", order=state_names,
+        hue_order=groups, palette=palette, ax=ax, errorbar="se",
     )
 
-    ax.set_xlabel("Group")
+    ax.set_xlabel("State")
     ax.set_ylabel("% Time in State")
     ax.set_title("State Occupancy by Group")
-    ax.tick_params(axis="x", rotation=45)
-    ax.legend(title="State")
+    ax.legend(title="Group")
     plt.tight_layout()
+
+    if stats:
+        # seaborn dodges the hue levels across 0.8 of each category slot.
+        slot = 0.8 / len(groups)
+        offset = {g: -0.4 + slot * (j + 0.5) for j, g in enumerate(groups)}
+        agg = df_melt.groupby(["State", "group"])["% Time"].agg(["mean", "sem"]).fillna(0)
+        tops = agg["mean"] + agg["sem"]
+        span = float(tops.max()) or 1.0
+        reach = span
+        for i, state in enumerate(state_names):
+            result = stats.get(state)
+            if result is None:
+                continue
+            hi = float(tops.loc[state].max())
+            x_of = {g: i + offset[g] for g in groups}
+            reach = max(reach, _draw_group_stats(ax, result, x_of, hi, span, slot))
+        ax.set_ylim(top=reach * 1.03)
     if return_data:
         return fig, df
     return fig

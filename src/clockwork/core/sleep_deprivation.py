@@ -37,6 +37,12 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 
+#: The baseline row of the phase-totals tables.
+BASELINE_LABEL = "Baseline (avg)"
+#: The rebound tables' phase names, in order.
+PHASES = ("Light (ZT0-12)", "Dark (ZT12-24)")
+
+
 def _get_fly_group(ds, fly_id):
     """Return the group label for a fly (genotype-temperature or 'All')."""
     fly_ds = ds.sel(id=fly_id)
@@ -260,6 +266,11 @@ def compute_sd_analysis(
         cumulative_diff     — dict[int, DataFrame] (running sum of difference)
         phase_totals        — DataFrame (group, day_label, light_sleep_min, dark_sleep_min, total_sleep_min)
         rebound_pct         — DataFrame (group, recovery_day, phase, rebound_pct)
+        phase_totals_per_fly — DataFrame (id, group, day_label, light/dark/total_sleep_min):
+                              the per-fly rows phase_totals is the group mean of
+        rebound_per_fly     — DataFrame (id, group, recovery_day, phase, rebound_pct)
+        cumulative_end_per_fly — DataFrame (id, group, recovery_day, cumulative_diff_min):
+                              each fly's cumulative difference at ZT24
         sd_params           — dict of the SD parameters used
         n_baseline_days     — int
         n_recovery_days     — int
@@ -390,110 +401,113 @@ def compute_sd_analysis(
         cumulative_diffs[rec_num] = _group_profile(fly_cum)
 
     # ------------------------------------------------------------------
-    # 4. Phase totals (light ZT0-12, dark ZT12-24) in minutes of sleep
+    # 4. Phase totals (light ZT0-12, dark ZT12-24) in minutes of sleep, per fly;
+    #    the group table is their mean.
     # ------------------------------------------------------------------
     light_mask = zt_bins < 720
     dark_mask = zt_bins >= 720
 
+    def _phase_minutes(arr):
+        return (
+            np.nansum(arr[light_mask]) * bin_size_minutes,
+            np.nansum(arr[dark_mask]) * bin_size_minutes,
+        )
+
+    fly_records = []
+    for fid in fly_ids:
+        if fid in fly_baseline:
+            light, dark = _phase_minutes(fly_baseline[fid])
+            fly_records.append(
+                {"id": fid, "group": fly_groups[fid], "day_label": BASELINE_LABEL,
+                 "light_sleep_min": light, "dark_sleep_min": dark,
+                 "total_sleep_min": light + dark}
+            )
+        for rec_num, rec_day_idx in enumerate(recovery_day_indices, start=1):
+            if rec_day_idx not in fly_day_bins.get(fid, {}):
+                continue
+            light, dark = _phase_minutes(fly_day_bins[fid][rec_day_idx])
+            fly_records.append(
+                {"id": fid, "group": fly_groups[fid], "day_label": f"Recovery Day {rec_num}",
+                 "light_sleep_min": light, "dark_sleep_min": dark,
+                 "total_sleep_min": light + dark}
+            )
+    phase_totals_per_fly = pd.DataFrame(
+        fly_records,
+        columns=["id", "group", "day_label", "light_sleep_min", "dark_sleep_min", "total_sleep_min"],
+    )
+
+    day_order = [BASELINE_LABEL] + [
+        f"Recovery Day {n}" for n in range(1, len(recovery_day_indices) + 1)
+    ]
     phase_records = []
     for grp in groups:
-        grp_flies = [fid for fid in fly_ids if fly_groups[fid] == grp]
-
-        # Baseline phase totals (per fly, then average)
-        bl_light, bl_dark = [], []
-        for fid in grp_flies:
-            if fid not in fly_baseline:
+        for day in day_order:
+            rows = phase_totals_per_fly[
+                (phase_totals_per_fly["group"] == grp) & (phase_totals_per_fly["day_label"] == day)
+            ]
+            if rows.empty:
                 continue
-            arr = fly_baseline[fid]
-            bl_light.append(np.nansum(arr[light_mask]) * bin_size_minutes)
-            bl_dark.append(np.nansum(arr[dark_mask]) * bin_size_minutes)
-        if bl_light:
+            light, dark = rows["light_sleep_min"].mean(), rows["dark_sleep_min"].mean()
             phase_records.append(
-                {
-                    "group": grp,
-                    "day_label": "Baseline (avg)",
-                    "light_sleep_min": np.mean(bl_light),
-                    "dark_sleep_min": np.mean(bl_dark),
-                    "total_sleep_min": np.mean(bl_light) + np.mean(bl_dark),
-                }
+                {"group": grp, "day_label": day, "light_sleep_min": light,
+                 "dark_sleep_min": dark, "total_sleep_min": light + dark}
             )
-
-        # Recovery phase totals
-        for rec_num, rec_day_idx in enumerate(recovery_day_indices, start=1):
-            rec_light, rec_dark = [], []
-            for fid in grp_flies:
-                if rec_day_idx not in fly_day_bins.get(fid, {}):
-                    continue
-                arr = fly_day_bins[fid][rec_day_idx]
-                rec_light.append(np.nansum(arr[light_mask]) * bin_size_minutes)
-                rec_dark.append(np.nansum(arr[dark_mask]) * bin_size_minutes)
-            if rec_light:
-                phase_records.append(
-                    {
-                        "group": grp,
-                        "day_label": f"Recovery Day {rec_num}",
-                        "light_sleep_min": np.mean(rec_light),
-                        "dark_sleep_min": np.mean(rec_dark),
-                        "total_sleep_min": np.mean(rec_light) + np.mean(rec_dark),
-                    }
-                )
-
     phase_totals = pd.DataFrame(phase_records)
 
     # ------------------------------------------------------------------
     # 5. Sleep rebound % = (recovery − baseline) / baseline × 100
-    #    (Shaw et al. 2002 metric, computed per phase per recovery day)
+    #    (Shaw et al. 2002 metric, computed per phase per recovery day), per fly;
+    #    the group table is their mean. A fly with no baseline sleep in a phase
+    #    has no rebound for it.
     # ------------------------------------------------------------------
-    rebound_records = []
-    for grp in groups:
-        grp_flies = [fid for fid in fly_ids if fly_groups[fid] == grp]
-
-        # Baseline phase totals per fly
-        bl_light_vals = {}
-        bl_dark_vals = {}
-        for fid in grp_flies:
-            if fid not in fly_baseline:
-                continue
-            arr = fly_baseline[fid]
-            bl_light_vals[fid] = np.nansum(arr[light_mask]) * bin_size_minutes
-            bl_dark_vals[fid] = np.nansum(arr[dark_mask]) * bin_size_minutes
-
+    rebound_fly_records = []
+    for fid in fly_ids:
+        if fid not in fly_baseline:
+            continue
+        bl = dict(zip(PHASES, _phase_minutes(fly_baseline[fid])))
         for rec_num, rec_day_idx in enumerate(recovery_day_indices, start=1):
-            fly_rebound_light = []
-            fly_rebound_dark = []
-            for fid in grp_flies:
-                if rec_day_idx not in fly_day_bins.get(fid, {}) or fid not in bl_light_vals:
-                    continue
-                arr = fly_day_bins[fid][rec_day_idx]
-                rec_l = np.nansum(arr[light_mask]) * bin_size_minutes
-                rec_d = np.nansum(arr[dark_mask]) * bin_size_minutes
-                if bl_light_vals[fid] > 0:
-                    fly_rebound_light.append(
-                        (rec_l - bl_light_vals[fid]) / bl_light_vals[fid] * 100
+            if rec_day_idx not in fly_day_bins.get(fid, {}):
+                continue
+            rec = dict(zip(PHASES, _phase_minutes(fly_day_bins[fid][rec_day_idx])))
+            for phase_name in PHASES:
+                if bl[phase_name] > 0:
+                    rebound_fly_records.append(
+                        {"id": fid, "group": fly_groups[fid], "recovery_day": rec_num,
+                         "phase": phase_name,
+                         "rebound_pct": (rec[phase_name] - bl[phase_name]) / bl[phase_name] * 100}
                     )
-                if bl_dark_vals[fid] > 0:
-                    fly_rebound_dark.append((rec_d - bl_dark_vals[fid]) / bl_dark_vals[fid] * 100)
+    rebound_per_fly = pd.DataFrame(
+        rebound_fly_records, columns=["id", "group", "recovery_day", "phase", "rebound_pct"]
+    )
+    rebound_pct = (
+        rebound_per_fly.groupby(["group", "recovery_day", "phase"], sort=False)["rebound_pct"]
+        .mean()
+        .reset_index()
+        if not rebound_per_fly.empty
+        else pd.DataFrame(columns=["group", "recovery_day", "phase", "rebound_pct"])
+    )
+    if not rebound_pct.empty:
+        rebound_pct["_g"] = rebound_pct["group"].map({g: i for i, g in enumerate(groups)})
+        rebound_pct["_p"] = rebound_pct["phase"].map({p: i for i, p in enumerate(PHASES)})
+        rebound_pct = (
+            rebound_pct.sort_values(["_g", "recovery_day", "_p"])
+            .drop(columns=["_g", "_p"])
+            .reset_index(drop=True)
+        )
 
-            if fly_rebound_light:
-                rebound_records.append(
-                    {
-                        "group": grp,
-                        "recovery_day": rec_num,
-                        "phase": "Light (ZT0-12)",
-                        "rebound_pct": np.mean(fly_rebound_light),
-                    }
-                )
-            if fly_rebound_dark:
-                rebound_records.append(
-                    {
-                        "group": grp,
-                        "recovery_day": rec_num,
-                        "phase": "Dark (ZT12-24)",
-                        "rebound_pct": np.mean(fly_rebound_dark),
-                    }
-                )
-
-    rebound_pct = pd.DataFrame(rebound_records)
+    # Each fly's cumulative difference at the end of each recovery day (ZT24).
+    cumulative_end_per_fly = pd.DataFrame(
+        [
+            {"id": fid, "group": fly_groups[fid], "recovery_day": rec_num,
+             "cumulative_diff_min": float(
+                 np.nancumsum((fly_day_bins[fid][rec_day_idx] - fly_baseline[fid]) * bin_size_minutes)[-1]
+             )}
+            for rec_num, rec_day_idx in enumerate(recovery_day_indices, start=1)
+            for fid in fly_ids
+            if fid in fly_baseline and rec_day_idx in fly_day_bins.get(fid, {})
+        ],
+        columns=["id", "group", "recovery_day", "cumulative_diff_min"],
+    )
 
     # ------------------------------------------------------------------
     # Package results
@@ -505,6 +519,9 @@ def compute_sd_analysis(
         "cumulative_diff": cumulative_diffs,
         "phase_totals": phase_totals,
         "rebound_pct": rebound_pct,
+        "phase_totals_per_fly": phase_totals_per_fly,
+        "rebound_per_fly": rebound_per_fly,
+        "cumulative_end_per_fly": cumulative_end_per_fly,
         "sd_params": {
             "sd_start_zt_minutes": sd_start_zt_minutes,
             "sd_duration_minutes": sd_duration_minutes,

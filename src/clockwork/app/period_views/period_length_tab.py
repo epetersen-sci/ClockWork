@@ -5,6 +5,7 @@ import streamlit as st
 
 from clockwork.app import export_helpers as ex
 from clockwork.app.period_views import by_condition
+from clockwork.app.ui import stats as stats_ui
 from clockwork.core.dataset_meta import dataset_fingerprint
 from clockwork.core.rhythmicity_classification import per_fly_classification_df
 
@@ -86,7 +87,7 @@ def render(ctx):
             "Needs a classification (Rhythmicity cutoff tab).",
         )
     shown = per_fly[per_fly[flag].astype(bool)] if rhythmic_only and flag in per_fly else per_fly
-    by_condition.render(
+    period_stats = by_condition.render(
         ctx,
         shown,
         f"{algo}_period",
@@ -101,7 +102,7 @@ def render(ctx):
     st.dataframe(summary, width="stretch", height=300)
     ex.save_excel_button(
         "Save period summary to working folder",
-        [("period_summary", summary)],
+        [("period_summary", summary), stats_ui.sheet(period_stats)],
         period_ds,
         "period_summary",
         key="download_period_csv",

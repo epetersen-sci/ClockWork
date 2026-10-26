@@ -23,7 +23,7 @@ from typing import Any
 import pandas as pd
 import xarray as xr
 
-from clockwork.core import dam_utilities, plotting
+from clockwork.core import dam_utilities, group_stats, plotting
 from clockwork.pipeline import tables
 from clockwork.pipeline.period import METHOD_KEYS, _Classified
 
@@ -66,8 +66,8 @@ def build_report(ds: xr.Dataset, record: RunRecord, config) -> str:
         ("LD/DD split", lambda: _split_section(record)),
         ("Period & rhythmicity", lambda: _period_section(ds, config)),
         ("CWT group-averaged scalograms", lambda: _scalogram_section(record)),
-        ("Sleep", lambda: _sleep_section(ds)),
-        ("HMM sleep states", lambda: _hmm_section(ds)),
+        ("Sleep", lambda: _sleep_section(ds, _stats_setting(config))),
+        ("HMM sleep states", lambda: _hmm_section(ds, _stats_setting(config))),
     ):
         try:
             content = section()
@@ -218,47 +218,86 @@ def _scalogram_section(record) -> str:
     return "".join(out)
 
 
-def _sleep_section(ds) -> str:
-    if "sleep" not in ds.data_vars:
-        return ""
-    out = []
-    for label, view in tables.epochs(ds):
-        phase_label = None if label == "full" else label
-        out.append(f"<h3>{'Whole recording' if label == 'full' else label}</h3>")
-        out.append(_figure(plotting.summary_bars(view, "sleep", phase_label=phase_label)))
-        if "sleep_long" in view.data_vars:
-            fig, _ = plotting.sleep_state_totals_bars(view)
-            out.append(_figure(fig))
+def _stats_setting(config) -> str:
+    outputs = getattr(config, "outputs", None)
+    return getattr(outputs, "group_stats", group_stats.RECOMMENDED)
+
+
+def _violins_with_stats(per_fly, measures, family, *, y_title) -> str:
+    """One violin figure per ``(column, name)`` measure, groups on the x axis, each
+    with its group test; then the notice line and the statistics shown."""
+    order = sorted(per_fly["Group"].astype(str).unique())
+    results, out = [], []
+    for i, (col, name) in enumerate(measures):
+        if col not in per_fly.columns:
+            continue
+        result = group_stats.compare_frame(per_fly, col, "Group", family, order=order, measure=name)
+        results.append(result)
+        fig, _ = plotting.group_violins(
+            per_fly,
+            col,
+            title=name,
+            y_title=y_title,
+            colour=plotting.MEASURE_COLOURS[i % len(plotting.MEASURE_COLOURS)],
+            groups=order,
+            stats=result,
+        )
+        out.append(_figure(fig))
+    notice = group_stats.combined_notice(results)
+    if notice:
+        out.append(f"<p class='note'>{html.escape(notice)}</p>")
+        out.append(_table(group_stats.stats_table(results)))
     return "".join(out)
 
 
-def _hmm_section(ds) -> str:
+def _sleep_section(ds, setting=group_stats.RECOMMENDED) -> str:
+    if "sleep" not in ds.data_vars:
+        return ""
+    family = group_stats.resolve_family(group_stats.RANK, setting)
+    out = []
+    for label, view in tables.epochs(ds):
+        out.append(f"<h3>{'Whole recording' if label == 'full' else label}</h3>")
+        per_fly = plotting.per_fly_summary_table(view, "sleep")
+        if not per_fly.empty:
+            dd = label == "DD"
+            out.append(
+                _violins_with_stats(
+                    per_fly,
+                    [
+                        ("All Day", "Sleep — Total"),
+                        ("Day Only", "Sleep — Subjective day" if dd else "Sleep — Day"),
+                        ("Night Only", "Sleep — Subjective night" if dd else "Sleep — Night"),
+                    ],
+                    family,
+                    y_title="minutes",
+                )
+            )
+        if "sleep_long" in view.data_vars:
+            states = plotting.per_fly_sleep_state_totals(view)
+            if not states.empty:
+                out.append(
+                    _violins_with_stats(
+                        states,
+                        [(s, f"{s} sleep") for s in ("Short", "Intermediate", "Long")],
+                        family,
+                        y_title="minutes",
+                    )
+                )
+    return "".join(out)
+
+
+def _hmm_section(ds, setting=group_stats.RECOMMENDED) -> str:
     if "hmm_state" not in ds.data_vars:
         return ""
-    import plotly.graph_objects as go
-
     occ = tables.hmm_occupancy(ds)
     if occ.empty:
         return "<p class='warn'>No fly has a decoded state.</p>"
     states = [c for c in occ.columns if c not in ("ID", "Group")]
-    grouped = occ.groupby("Group")[states]
-    mean, sem = grouped.mean(), grouped.sem()
-    fig = go.Figure(
-        [
-            go.Bar(
-                name=s,
-                x=list(mean.index),
-                y=mean[s],
-                error_y={"type": "data", "array": sem[s].fillna(0)},
-            )
-            for s in states
-        ]
-    )
-    fig.update_layout(
-        barmode="group",
-        title="Time in each state (mean ± SEM across flies)",
-        yaxis_title="% of fitted time",
-        template="plotly_white",
+    figures = _violins_with_stats(
+        occ,
+        [(s, f"Time in {s}") for s in states],
+        group_stats.resolve_family(group_stats.WELCH, setting),
+        y_title="% of fitted time",
     )
     attrs = ds.attrs
     rows = [
@@ -271,7 +310,7 @@ def _hmm_section(ds) -> str:
         )
         if a in attrs
     ]
-    return _kv(rows) + _figure(fig)
+    return _kv(rows) + figures
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +356,7 @@ table.kv th {{ font-weight: 600; color: #4a5560; }}
 table.data th {{ background: #f3f5f7; }}
 pre {{ background: #f6f8fa; padding: 10px; overflow-x: auto; font-size: 13px; }}
 .warn {{ background: #fff6e0; border-left: 4px solid #e0a000; padding: 6px 12px; }}
+.note {{ color: #4a5560; font-size: 13px; margin: .2em 0; }}
 </style></head>
 <body>
 {body}

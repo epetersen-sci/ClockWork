@@ -32,16 +32,16 @@ There is deliberately no pooled option. The epoch is a viewing choice, and
 """
 
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 from clockwork.app import export_helpers as ex
 from clockwork.app.analysis_detection import detect_analyses
 from clockwork.app.ui import charts, facet_panels, sleep_run
+from clockwork.app.ui import stats as stats_ui
 from clockwork.app.ui.filters import DISPLAY_GROUPS_KEY, bin_size_sidebar, group_filter_sidebar
 from clockwork.app.ui.guards import require_dataset
-from clockwork.core import dam_utilities, facets, plotting, sleep_analysis
+from clockwork.core import dam_utilities, facets, group_stats, plotting, sleep_analysis
 from clockwork.core.dam_utilities import select_phase
 from clockwork.core.dataset_meta import (
     PHASE_DD,
@@ -139,7 +139,7 @@ def _cached_summary_table(
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_bout_duration_lines(
-    fp, _ds, method, selected_genotypes, selected_temperatures, show_individual
+    fp, _ds, method, selected_genotypes, selected_temperatures, show_individual, family
 ):
     """Compute the per-fly bout-duration curves, the per-fly summary and the
     group-comparison test, then render them — the same numbers drive the plot and
@@ -172,7 +172,15 @@ def _cached_bout_duration_lines(
         _ds, selected_genotypes=_genos, selected_temperatures=_temps
     )
     stats_result = (
-        sleep_analysis.bout_duration_group_stats(summary_df) if not curves_df.empty else None
+        group_stats.compare_frame(
+            summary_df,
+            "log_mean_duration_min",
+            "group",
+            family,
+            measure="Geometric mean bout duration (min)",
+        )
+        if not curves_df.empty
+        else None
     )
     fig = plotting.sleep_bout_duration_lines(
         curves_df,
@@ -317,17 +325,51 @@ _facet_colours = (
 )
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_profile_stats(
+    fp, _ds, variable, bin_size_minutes, selected_genotypes, selected_temperatures, spec_json
+):
+    """The group × time test behind each daily-pattern figure: one per facet panel
+    (spec_json set) or one for the single figure, over the flies it draws."""
+    zt = _cached_zt_binned(fp, _ds, variable, bin_size_minutes)
+    if spec_json:
+        spec = facets.FacetSpec.from_json(spec_json)
+        panels = facets.resolve_panels(facets.fly_factor_table(_ds), spec)
+        return [
+            group_stats.group_by_time(zt, variable, p.labels(), measure=variable, panel=p.title)
+            for p in panels
+        ]
+    labels = dam_utilities.fly_group_map(_ds, default="All")
+    for coord, chosen in (("genotype", selected_genotypes), ("temperature", selected_temperatures)):
+        if chosen and coord in _ds.coords:
+            keep = {str(i) for i, v in zip(_ds["id"].values, _ds[coord].values) if v in chosen}
+            labels = {k: v for k, v in labels.items() if str(k) in keep}
+    return [group_stats.group_by_time(zt, variable, labels, measure=variable)]
+
+
 def _daily_pattern(variable, title, fp):
-    """The daily pattern for ``variable``: one figure, or one per facet panel."""
+    """The daily pattern for ``variable``: one figure, or one per facet panel.
+    Returns the group × time tests drawn on them."""
     phase_label = phase_used or dataset_phase(ds)
+    results = _cached_profile_stats(
+        fp,
+        ds,
+        variable,
+        bin_size,
+        tuple(selected_genotypes) if selected_genotypes else None,
+        tuple(selected_temperatures) if selected_temperatures else None,
+        facet_spec.to_json() if _facet_panels else None,
+    )
     if _facet_panels:
         pairs = _cached_faceted_profiles(
             fp, ds, variable, title, phase_label, bin_size, facet_spec.to_json()
         )
+        pairs = [(p, plotting.add_time_interaction(f, r)) for (p, f), r in zip(pairs, results)]
         facet_panels.render_panels(
             pairs, facet_spec, ds, key=f"{variable}_profile", filename=f"{variable}_profile"
         )
-        return
+        stats_ui.notice(results)
+        return results
     fig = _cached_daily_pattern(
         fp,
         ds,
@@ -340,7 +382,11 @@ def _daily_pattern(variable, title, fp):
     )
     # theme=None: let the figure's own styling (black text, transparent bg) drive both
     # the on-screen chart and the "Download plot as PNG" export (see daily_pattern_line).
-    charts.plotly_chart(fig, width="stretch", theme=None)
+    charts.plotly_chart(
+        plotting.add_time_interaction(fig, results[0]), width="stretch", theme=None
+    )
+    stats_ui.notice(results)
+    return results
 
 # One tab per MEASURE, not per kind of plot. The three old tabs — daily
 # profiles, bouts, day/night totals — each held half an activity answer and half
@@ -454,6 +500,8 @@ def _totals_violins(variable, y_label, key):
     if per_fly.empty:
         st.info(f"No {variable} data to summarise for the current selection.")
         return
+    # Sleep minutes are bounded and pile up at the ends; activity counts are not.
+    _family = stats_ui.family(group_stats.RANK if variable == "sleep" else group_stats.WELCH)
 
     # Under DD both halves are subjective, so they are named for the subjective
     # cycle rather than for a light cycle that was not running.
@@ -475,6 +523,9 @@ def _totals_violins(variable, y_label, key):
             key=f"{key}_totals_period",
             persist_state="session",
         ) or list(_names)[0]
+        results = group_stats.per_panel(
+            per_fly, _names[pick], _facet_panels, _family, measure=pick
+        )
         pairs = plotting.faceted_violins(
             per_fly,
             _names[pick],
@@ -484,6 +535,7 @@ def _totals_violins(variable, y_label, key):
             y_title=y_label,
             x_title=facet_spec.compare_by,
             shared_y=facet_spec.shared_y,
+            stats=results,
         )
         facet_panels.render_panels(
             pairs,
@@ -499,7 +551,12 @@ def _totals_violins(variable, y_label, key):
         # group's day against its night meant scrolling between them — which is the
         # comparison the split into panels exists to make easy.
         _cols = st.columns(len(panels))
+        results = []
         for i, (col, name) in enumerate(panels):
+            result = group_stats.compare_frame(
+                per_fly, col, "Group", _family, order=_order, measure=name
+            )
+            results.append(result)
             fig, _ = plotting.group_violins(
                 per_fly,
                 col,
@@ -507,9 +564,11 @@ def _totals_violins(variable, y_label, key):
                 y_title=y_label,
                 colour=plotting.MEASURE_COLOURS[i],
                 groups=_order,
+                stats=result,
             )
             with _cols[i]:
                 charts.plotly_chart(fig, width="stretch", theme=None)
+    stats_ui.notice(results)
 
     tbl = _cached_summary_table(
         dataset_fingerprint(ds),
@@ -536,12 +595,13 @@ def _totals_violins(variable, y_label, key):
                     columns={plotting.CUSTOM_PERIOD: f"Custom {_custom_label}"}
                 ),
             ),
+            stats_ui.sheet(results),
         ],
         ds,
         f"{variable}_totals",
         key=f"dl_{key}_totals",
-        help="Two sheets: the group mean ± SEM per period, and the per-fly values "
-        "behind it.",
+        help="The group mean ± SEM per period, the per-fly values behind it, and "
+        "the statistics shown on the figures.",
     )
 
 
@@ -553,7 +613,7 @@ if tab_activity.open:
         st.subheader("Daily Activity Pattern")
         if "activity" in ds.data_vars:
             _ds_fp = dataset_fingerprint(ds)
-            _daily_pattern("activity", "Daily Activity Pattern", _ds_fp)
+            _act_profile_stats = _daily_pattern("activity", "Daily Activity Pattern", _ds_fp)
 
             # Workbook of binned data (grouped: mean, SD, n per condition)
             try:
@@ -584,14 +644,15 @@ if tab_activity.open:
                             "per_fly",
                             ex.per_fly_wide(_act_pf, value_col="activity"),
                         ),
+                        stats_ui.sheet(_act_profile_stats),
                     ],
                     ds,
                     "activity_binned",
                     key="dl_act",
-                    help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
-                    "grouped-table order, and the per-fly time course behind it — one "
-                    "row per fly, one column per ZT bin, with a mean row closing each "
-                    "group.",
+                    help="Group mean ± SD ± N per ZT bin in GraphPad's grouped-table "
+                    "order; the per-fly time course behind it — one row per fly, one "
+                    "column per ZT bin, with a mean row closing each group; and the "
+                    "group × time test shown on the figure.",
                 )
             except Exception:
                 pass
@@ -624,7 +685,7 @@ if tab_sleep.open:
         if analyses["sleep"]:
             st.subheader("Daily Sleep Pattern")
             _ds_fp_sl = dataset_fingerprint(ds)
-            _daily_pattern("sleep", "Daily Sleep Pattern", _ds_fp_sl)
+            _sl_profile_stats = _daily_pattern("sleep", "Daily Sleep Pattern", _ds_fp_sl)
 
             try:
                 binned_sleep = _cached_zt_binned(_ds_fp_sl, ds, "sleep", bin_size)
@@ -653,14 +714,15 @@ if tab_sleep.open:
                             "per_fly",
                             ex.per_fly_wide(_sl_pf, value_col="sleep"),
                         ),
+                        stats_ui.sheet(_sl_profile_stats),
                     ],
                     ds,
                     "sleep_binned",
                     key="dl_sleep",
-                    help="Two sheets: group mean ± SD ± N per ZT bin in GraphPad's "
-                    "grouped-table order, and the per-fly time course behind it — one "
-                    "row per fly, one column per ZT bin, with a mean row closing each "
-                    "group.",
+                    help="Group mean ± SD ± N per ZT bin in GraphPad's grouped-table "
+                    "order; the per-fly time course behind it — one row per fly, one "
+                    "column per ZT bin, with a mean row closing each group; and the "
+                    "group × time test shown on the figure.",
                 )
             except Exception:
                 pass
@@ -709,23 +771,17 @@ if tab_sleep.open:
                     tuple(selected_genotypes) if selected_genotypes else None,
                     tuple(selected_temperatures) if selected_temperatures else None,
                     bout_show_individual,
+                    stats_ui.family(group_stats.RANK),
                 )
                 charts.plotly_chart(bout_fig, width="stretch", theme=None)
-
-                if bout_stats and np.isfinite(bout_stats.get("pvalue", float("nan"))):
-                    st.caption(
-                        f"{bout_stats['test'].upper()} across groups on per-fly "
-                        f"log-mean bout duration: p={bout_stats['pvalue']:.4f} "
-                        f"(normality {'passed' if bout_stats['normality_passed'] else 'failed'}, "
-                        f"equal variance {'passed' if bout_stats['equal_variance_passed'] else 'failed'})."
-                    )
-                    if bout_stats["pairwise"]:
-                        # Folded: the p-value above is the answer most people came for,
-                        # and the pairwise grid is what you open when it is interesting.
-                        with st.expander("Pairwise comparisons"):
-                            st.dataframe(
-                                pd.DataFrame(bout_stats["pairwise"]), width="stretch"
-                            )
+                stats_ui.notice([bout_stats])
+                if bout_stats is not None and bout_stats.k >= 3 and bout_stats.pairs:
+                    with st.expander("Pairwise comparisons"):
+                        st.dataframe(
+                            group_stats.stats_table([bout_stats]),
+                            width="stretch",
+                            hide_index=True,
+                        )
 
                 raw_bout_df = sleep_analysis.raw_bout_dataframe(
                     ds, selected_genotypes=selected_genotypes, selected_temperatures=selected_temperatures
@@ -739,12 +795,13 @@ if tab_sleep.open:
                     [
                         ("per_fly_summary", bout_summary_df),
                         ("bouts", raw_bout_df),
+                        stats_ui.sheet([bout_stats]),
                     ],
                     ds,
                     "sleep_bouts_filtered",
                     key="dl_bouts",
-                    help="Two sheets: one row per fly with its bout-duration summary, and "
-                    "every individual bout behind it. Named apart from the Export page's "
+                    help="One row per fly with its bout-duration summary, every individual "
+                    "bout behind it, and the statistics shown. Named apart from the Export page's "
                     "sleep_bouts on purpose — this one is filtered to the sidebar group "
                     "selection and that one is every fly.",
                 )
