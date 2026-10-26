@@ -363,3 +363,37 @@ class TestTooFewPulseTimes:
         assert list(fig.layout.xaxis.tickvals) == [21.0]
         for tr in fig.data:
             assert len(tr.x) == 1
+
+
+class TestTheControlsOnTheCurve:
+    @pytest.fixture(scope="class")
+    def fig(self, response):
+        pf = response["per_fly"]
+        treated = pf[~pf["group"].isin(set(response["controls"]))]
+        ctrl = pf[pf["group"].isin(set(response["controls"]))]
+        summ = ps.summarize_phase_response(treated, by=("zt", *SERIES))
+        csum = ps.summarize_phase_response(ctrl, by=("genotype",))
+        return plotting.phase_response_curve(
+            summ, series_cols=("genotype",), controls=csum
+        )
+
+    def test_they_get_a_no_pulse_tick_after_the_last_pulse_time(self, fig):
+        assert list(fig.layout.xaxis.ticktext)[-1] == "no pulse"
+        assert fig.layout.xaxis.tickvals[-1] > 21.0
+
+    def test_they_sit_at_zero_and_are_not_joined_to_a_line(self, fig):
+        ctrl = [tr for tr in fig.data if tr.name.endswith("(no pulse)")]
+        assert len(ctrl) == 2, "one per genotype"
+        for tr in ctrl:
+            assert tr.mode == "markers"
+            assert abs(float(tr.y[0])) < 1e-9
+
+    def test_the_line_is_a_spline_through_the_means(self, fig):
+        lines = [tr for tr in fig.data if tr.mode == "lines+markers"]
+        assert lines and all(tr.line.shape == "spline" for tr in lines)
+
+
+def test_smoothing_zero_draws_straight_segments(treated):
+    summ = ps.summarize_phase_response(treated, by=("zt", *SERIES))
+    fig = plotting.phase_response_curve(summ, series_cols=SERIES, smoothing=0)
+    assert all(tr.line.shape == "linear" for tr in fig.data)

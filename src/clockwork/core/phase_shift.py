@@ -926,6 +926,15 @@ RESPONSE_DAYS_AFTER_PULSE = (2, 3, 4)
 #: Set to ``()`` to leave the offset in deliberately.
 BASELINE_DAYS_AFTER_PULSE = (-1,)
 
+#: How :func:`compute_phase_response` reads each fly's response: ``regression``
+#: (a line through the post-pulse peaks, read on the day after the pulse) or
+#: ``daily`` (per-day differences from the control on the response days).
+PRC_METHODS = ("regression", "daily")
+
+#: What the regression method subtracts as the pre-pulse offset between a group
+#: and its control — see :func:`compute_phase_response`.
+PRC_BASELINES = ("group", "fly", "none")
+
 #: Coord names that describe the light pulse itself rather than the animal. Groups
 #: differ in these BECAUSE of the treatment, so they are the columns a control is
 #: matched ACROSS rather than on — see :func:`control_map_from_pulse`.
@@ -1012,10 +1021,64 @@ def grouping_suggestion(ds):
     return [c for c in wanted if c in available]
 
 
-def _per_fly_day_phase_hours(
+def _wrap_hours(hours):
+    """Wrap a phase difference into [-12, 12) h: a shift is only defined modulo a day."""
+    return (np.asarray(hours, dtype=float) + 12.0) % 24.0 - 12.0
+
+
+def _centred_mean_hours(hours):
+    """Mean of clock-time phases that may straddle midnight, in hours.
+
+    The circular mean picks the centre; the arithmetic mean of each value's wrapped
+    distance from it is then added back, so for a cluster that does not span half a
+    day this equals the ordinary mean — which is what lets every control fly's
+    response average to exactly zero against its own group.
+    """
+    h = np.asarray(hours, dtype=float)
+    h = h[np.isfinite(h)]
+    if not h.size:
+        return np.nan
+    centre = np.angle(np.mean(np.exp(2j * np.pi * h / 24.0))) * 24.0 / (2 * np.pi)
+    return float(centre + np.mean(_wrap_hours(h - centre)))
+
+
+def _reference_pulse_minutes(ds, pulse_minutes):
+    """Each fly's pulse minute, with one assigned to the unpulsed flies.
+
+    The marker tracker splits a record at the pulse, so a control fly needs a split
+    point too, and the right one is the moment ITS OWN rhythm would have been
+    pulsed: the same position on its own last entrained day as the pulsed flies'
+    pulse on theirs. Taking the cohort's median pulse minute instead, counted from
+    each fly's recording start, is only right when every cohort was released into
+    DD on the same day of its recording — a control from a run with one more LD day
+    then lands a day off, and the comparison picks up a day of free-running drift.
+    """
+    out = np.asarray(pulse_minutes, dtype=float).copy()
+    pulsed = np.isfinite(out)
+    if pulsed.all():
+        return out
+    split = (
+        np.asarray(ds["split_minute"].values, dtype=float)
+        if "split_minute" in ds.coords
+        else np.full(out.size, np.nan)
+    )
+    have_split = pulsed & np.isfinite(split)
+    if have_split.any():
+        # Where in the last entrained day the pulses fell.
+        offset = float(np.median(out[have_split] - (split[have_split] - MINUTES_PER_DAY)))
+        fill = split - MINUTES_PER_DAY + offset
+        use = ~pulsed & np.isfinite(fill)
+        out[use] = fill[use]
+    rest = ~np.isfinite(out)
+    if rest.any():
+        out[rest] = float(np.median(np.asarray(pulse_minutes, dtype=float)[pulsed]))
+    return out
+
+
+def _per_fly_markers(
     ds,
+    ref_pulse_minutes,
     *,
-    fallback_pulse_minute=None,
     progress_callback=None,
     activity_var="activity",
     filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
@@ -1023,30 +1086,15 @@ def _per_fly_day_phase_hours(
     peak_distance_hours=DEFAULT_PHASE_SHIFT_PEAK_DISTANCE_HOURS,
     search_half_width_hours=DEFAULT_PHASE_SHIFT_MARKER_SEARCH_HALF_WIDTH_HOURS,
 ):
-    """``{fly id: {absolute day index: peak time in hours past that day's start}}``.
+    """``{fly id: {absolute day index: peak minute from the recording start}}``.
 
     The same detection the per-fly page uses — one Butterworth pass over the whole
     cohort, then :func:`detect_peak_markers` per fly — so a number here and a number
-    there come from one algorithm rather than two that drifted.
-
-    Hours **within the day**, not from the recording start, because that is what a
-    phase is: two flies whose peaks are 24 h apart in absolute time are at the same
-    phase.
-
-    ``fallback_pulse_minute`` is used for flies that had no pulse. The marker tracker
-    splits a record into pre- and post-pulse runs and seeds each independently, so it
-    needs a split point even for a control fly — and the right one is the cohort's,
-    since a control exists precisely to say what the pulsed flies would have done on
-    those same days. Without it the controls raise, which is how this was found.
+    there come from one algorithm rather than two that drifted. The pulse itself is
+    masked out of a pulsed fly's trace first, so the startle it provokes cannot be
+    read as that night's phase.
     """
-    from clockwork.core.dam_utilities import add_phase_metadata, add_pulse_metadata
     from clockwork.core.preprocessing import PreprocessConfig, preprocess_activity
-
-    if "pulse_minute" not in ds.coords:
-        ds = add_pulse_metadata(ds)
-    if "split_minute" not in ds.coords and "first_DD_day" in ds.coords:
-        with contextlib.suppress(ValueError):
-            ds = add_phase_metadata(ds)
 
     source = (
         preprocess_activity(
@@ -1059,7 +1107,12 @@ def _per_fly_day_phase_hours(
     minutes = np.asarray(ds["time"].values, dtype=float)
 
     fly_ids = [str(i) for i in ds["id"].values]
-    pulse_minutes = np.asarray(ds["pulse_minute"].values, dtype=float)
+    own_pulse = np.asarray(ds["pulse_minute"].values, dtype=float)
+    durations = (
+        np.asarray(ds["pulse_duration_min"].values, dtype=float)
+        if "pulse_duration_min" in ds.coords
+        else np.full(len(fly_ids), np.nan)
+    )
     split_minutes = (
         np.asarray(ds["split_minute"].values, dtype=float)
         if "split_minute" in ds.coords
@@ -1075,29 +1128,71 @@ def _per_fly_day_phase_hours(
         # is not a bar.
         if progress_callback is not None:
             progress_callback(i / n if n else 1.0)
-        own_pulse = pulse_minutes[i]
-        if not np.isfinite(own_pulse):
-            own_pulse = fallback_pulse_minute
-        if own_pulse is None or not np.isfinite(own_pulse):
+        pulse = ref_pulse_minutes[i]
+        if not np.isfinite(pulse):
             out[fly_id] = {}
             continue
+        vals = values_2d[:, i]
+        if np.isfinite(own_pulse[i]):
+            vals = _mask_pulse_window(vals, minutes, own_pulse[i], durations[i])
         markers = detect_peak_markers(
             minutes,
-            values_2d[:, i],
-            own_pulse,
+            vals,
+            pulse,
             prominence_frac=peak_prominence_frac,
             distance_hours=peak_distance_hours,
             search_half_width_hours=search_half_width_hours,
             split_minute=split_minutes[i] if np.isfinite(split_minutes[i]) else None,
         )
-        out[fly_id] = {
-            int(day): (float(m) - int(day) * MINUTES_PER_DAY) / 60.0
-            for day, m in markers.items()
-            if np.isfinite(m)
-        }
+        out[fly_id] = {int(d): float(m) for d, m in markers.items() if np.isfinite(m)}
     if progress_callback is not None:
         progress_callback(1.0)
     return out
+
+
+def _fly_phases_regression(
+    markers, pulse_day, *, skip_days, min_post_days, min_period_hours, max_period_hours
+):
+    """One fly's phase before and after the pulse, both read on the day after it.
+
+    Returns ``(pre_hours, post_hours, period_hours, status)``; the hours are clock
+    time within the reference day (``pulse_day + 1``, the first DD day in the usual
+    protocol), so the two are directly comparable.
+
+    * **After**: a least-squares line through the post-pulse peaks (from
+      ``pulse_day + 1 + skip_days`` on), evaluated at the reference day. Its slope is
+      the free-running period. Reading the line at the reference day rather than
+      averaging days further out is what keeps a fly whose period differs from its
+      control's from collecting ``(tau - tau_control)`` of apparent shift per day.
+    * **Before**: on entrained days every peak sits at the same clock time, so it is
+      their circular mean. When the pre-pulse days are free-running instead (a pulse
+      given in DD), it is their line, extrapolated forward to the reference day.
+    """
+    ref = pulse_day + 1
+    post = sorted(d for d in markers if d >= ref + int(skip_days))
+    pre = sorted(d for d in markers if d < pulse_day)
+    if len(post) < max(2, int(min_post_days)):
+        return np.nan, np.nan, np.nan, "insufficient_post"
+    if not pre:
+        return np.nan, np.nan, np.nan, "insufficient_pre"
+
+    post_fit = _fit_line(post, [markers[d] for d in post])
+    period = post_fit["slope"] / 60.0
+    if not (float(min_period_hours) <= period <= float(max_period_hours)):
+        return np.nan, np.nan, period, "implausible_period"
+    post_h = ((post_fit["intercept"] + post_fit["slope"] * ref) - ref * MINUTES_PER_DAY) / 60.0
+
+    pre_hours = [(markers[d] - d * MINUTES_PER_DAY) / 60.0 for d in pre]
+    pre_h = _centred_mean_hours(pre_hours)
+    if len(pre) >= 2:
+        pre_fit = _fit_line(pre, [markers[d] for d in pre])
+        # Entrained days advance a whole day per day; anything clearly off that is a
+        # free-running epoch, whose phase on the reference day is its line's.
+        if abs(pre_fit["slope"] - MINUTES_PER_DAY) > 30.0:
+            pre_h = (
+                (pre_fit["intercept"] + pre_fit["slope"] * ref) - ref * MINUTES_PER_DAY
+            ) / 60.0
+    return float(pre_h) % 24.0, float(post_h) % 24.0, float(period), "ok"
 
 
 def compute_phase_response(
@@ -1105,6 +1200,12 @@ def compute_phase_response(
     *,
     group_by=("genotype", "pulse_time", "pulse_duration_min"),
     control_map=None,
+    method="regression",
+    baseline="group",
+    skip_days=DEFAULT_PHASE_SHIFT_TRANSIENT_SKIP_DAYS,
+    min_post_days=DEFAULT_PHASE_SHIFT_MIN_POST_DAYS,
+    min_period_hours=DEFAULT_CWT_MIN_PERIOD,
+    max_period_hours=DEFAULT_CWT_MAX_PERIOD,
     response_days=RESPONSE_DAYS_AFTER_PULSE,
     baseline_days=BASELINE_DAYS_AFTER_PULSE,
     duration_coord="pulse_duration_min",
@@ -1118,40 +1219,71 @@ def compute_phase_response(
 ):
     """One phase response per FLY, for a phase response curve.
 
-    The quantity, stated once so the graphs cannot disagree about it::
-
-        response(fly) = mean over the response days of
-                        (that day's control-group mean peak time - this fly's peak time)
-
     **Sign.** Control minus fly, so an ADVANCE — the fly peaking earlier than its
     control — is POSITIVE, and a delay is negative. That is the convention a PRC is
     normally drawn in.
 
+    **Days.** Every fly's days are counted from its OWN pulse, and an unpulsed fly's
+    from the same point on its own last entrained day
+    (:func:`_reference_pulse_minutes`). Cohorts released into DD on different days of
+    their recordings are therefore still compared on the same DD day.
+
+    Two methods
+    -----------
+    ``method="regression"`` (default)::
+
+        response(fly) = -( post(fly) - mean post(control) - baseline offset )
+
+    where ``post`` is the fly's phase on the first day after the pulse, read off a
+    line fitted through all its post-pulse daily peaks (the Aschoff / Daan-Pittendrigh
+    convention: extrapolate the new steady state back to the pulse), and the
+    ``baseline`` offset removes any phase difference the two cohorts already had
+    before the pulse:
+
+    * ``"group"`` (default) — the group's mean pre-pulse phase minus its control's.
+      Corrects a box-to-box offset without adding each fly's own pre-pulse noise.
+    * ``"fly"`` — the fly's own pre-pulse phase minus its control's mean. Sensitive
+      to a pre-pulse peak picked off the morning or lights-on spike.
+    * ``"none"`` — no correction.
+
+    Using every post-pulse day in one line is also what keeps the response
+    independent of the fly's period: averaging days further from the pulse adds
+    ``(tau - tau_control)`` of apparent shift per day to a fly whose period differs
+    from its control's.
+
+    Accuracy on known shifts — half of each genotype's unpulsed flies from a real
+    10-genotype-day light-pulse experiment, shifted by -5 to +5 h at release and
+    measured against the other half (609 shifted flies):
+
+    ================================  =============  ============
+    method                            median error   90th pct
+    ================================  =============  ============
+    ``regression``, ``group``         0.86 h         2.1 h
+    ``regression``, ``fly``           0.71 h         2.3 h
+    ``daily``                         0.84 h         2.4 h
+    ================================  =============  ============
+
+    On the real experiment the ``fly`` baseline sent ~5 % of flies to |shift| > 6 h
+    by reading their pre-pulse peak at ZT0-3 rather than the evening; ``group``
+    removed those, which is why it is the default.
+
+    ``method="daily"`` is the earlier per-day estimator::
+
+        response(fly) = mean over the response days of
+                        (that day's control-group mean peak time - this fly's peak time)
+                        - the same difference on the baseline days
+
+    ``response_days`` / ``baseline_days`` are offsets from the fly's pulse day and
+    apply to this method only.
+
     **Per fly, against a group mean.** Every fly in a genotype has the same control
-    mean subtracted, which has two consequences worth knowing. The mean of a group's
-    per-fly responses is exactly (group mean - control mean), so a violin's centre is
-    the group-level phase response and its spread is the real between-fly variation —
-    one computation gives both. And because the subtracted constant is shared, it
-    cancels when two groups are compared, so comparing genotypes to each other, or to
-    the control's own distribution, is sound. What is NOT sound is testing one group
-    against zero and reading it as a test against the control: that ignores the
-    uncertainty in the control mean itself.
+    mean subtracted, so the mean of a group's per-fly responses is the group-level
+    response and its spread is the real between-fly variation. What is NOT sound is
+    testing one group against zero and reading it as a test against the control: that
+    ignores the uncertainty in the control mean itself.
 
-    **Days.** ``response_days`` are offsets from the fly's pulse day. The default
-    skips ``+1``, the first full DD day, because it carries the transient.
-
-    **Baseline.** ``baseline_days`` are subtracted from the response, per fly, so
-    what is reported is the change the pulse produced rather than the change plus a
-    constant. Two cohorts are rarely at exactly the same phase beforehand — the
-    pulsed arm and its control usually sit in different boxes — and that offset is
-    present on the response days as much as before them. The default is the pulse
-    day itself, the last clean reading. Pass ``()`` to leave it in; the controls
-    still centre on zero either way, since each is measured against its own mean.
-
-    A fly with no usable peak on any response day gets NaN and is counted in
-    ``n_dropped`` rather than silently thinning its group — per-fly peak detection
-    is markedly noisier than the group-mean detection ``peakphaseplot.m`` was built
-    around, and an arrhythmic fly has no peak to find at all.
+    A fly with no usable response gets no row and is counted in ``dropped`` rather
+    than silently thinning its group.
 
     **Pairing.** ``control_map`` is derived from the pulse itself
     (:func:`control_map_from_pulse`) unless one is passed in, which is how a caller
@@ -1163,16 +1295,25 @@ def compute_phase_response(
     -------
     dict
         ``per_fly`` (DataFrame: ``id``, ``group``, ``control_group``, ``zt``,
-        ``response_hours``, ``n_days_used``, plus one column per grouping coord),
-        ``control_map``, ``controls``, ``dropped`` (DataFrame: ``group``,
+        ``response_hours``, ``response_hours_raw``, ``n_days_used``,
+        ``baseline_used``, plus ``pre_phase_hours`` / ``post_phase_hours`` /
+        ``period_hours`` for the regression method and one column per grouping
+        coord), ``control_map``, ``controls``, ``dropped`` (DataFrame: ``group``,
         ``n_dropped``, ``n_total``), and ``params``.
     """
-    from clockwork.core.dam_utilities import add_pulse_metadata
+    from clockwork.core.dam_utilities import add_phase_metadata, add_pulse_metadata
 
+    if method not in PRC_METHODS:
+        raise ValueError(f"method must be one of {PRC_METHODS}, got {method!r}")
+    if baseline not in PRC_BASELINES:
+        raise ValueError(f"baseline must be one of {PRC_BASELINES}, got {baseline!r}")
     if zt_coord not in ds.coords:
         raise ValueError(f"No {zt_coord!r} coordinate; a PRC needs the pulse time.")
     if "pulse_minute" not in ds.coords:
         ds = add_pulse_metadata(ds)
+    if "split_minute" not in ds.coords and "first_DD_day" in ds.coords:
+        with contextlib.suppress(ValueError):
+            ds = add_phase_metadata(ds)
 
     labels, cols = group_labels(ds, group_by)
     meta = _group_meta(ds, cols, labels)
@@ -1196,21 +1337,17 @@ def compute_phase_response(
     # the one place the PRC needs the number (BACKLOG 21).
     zt_vals = np.array([_parse_zt_hour(v) for v in np.asarray(ds[zt_coord].values)], dtype=float)
 
-    # The pulse day, resolved before detection because the control flies need it too.
-    pulsed = pulse_minutes[np.isfinite(pulse_minutes)]
-    if not pulsed.size:
+    if not np.isfinite(pulse_minutes).any():
         raise ValueError(
             "No fly in this dataset has a light pulse, so there is no phase response "
             "to measure. Check that pulse_time is set for the treated arm."
         )
-    median_pulse = float(np.median(pulsed))
-    pulse_day = int(np.floor(median_pulse / MINUTES_PER_DAY))
-    days = [pulse_day + int(d) for d in response_days]
-    base_days = [pulse_day + int(d) for d in (baseline_days or ())]
+    ref_pulse = _reference_pulse_minutes(ds, pulse_minutes)
+    pulse_days = np.floor(ref_pulse / MINUTES_PER_DAY).astype(int)
 
-    phases = _per_fly_day_phase_hours(
+    markers = _per_fly_markers(
         ds,
-        fallback_pulse_minute=median_pulse,
+        ref_pulse,
         progress_callback=progress_callback,
         activity_var=activity_var,
         filter_hours=filter_hours,
@@ -1219,53 +1356,32 @@ def compute_phase_response(
         search_half_width_hours=search_half_width_hours,
     )
 
-    # The control mean per day, over the control flies that HAVE a peak that day.
-    control_day_mean = {}
-    for ctrl in controls:
-        members = [f for f, lab in zip(fly_ids, labels) if lab == ctrl]
-        for day in [*days, *base_days]:
-            vals = [phases[f][day] for f in members if day in phases.get(f, {})]
-            if vals:
-                control_day_mean[(ctrl, day)] = float(np.mean(vals))
+    if method == "regression":
+        per_fly_rows = _regression_rows(
+            fly_ids, labels, markers, pulse_days, controls, control_map,
+            baseline=baseline, skip_days=skip_days, min_post_days=min_post_days,
+            min_period_hours=min_period_hours, max_period_hours=max_period_hours,
+        )
+    else:
+        per_fly_rows = _daily_rows(
+            fly_ids, labels, markers, pulse_days, controls, control_map,
+            response_days=response_days, baseline_days=baseline_days,
+        )
 
     rows, dropped = [], {}
     for fly_id, lab, zt in zip(fly_ids, labels, zt_vals):
-        ctrl = control_map.get(lab)
         dropped.setdefault(lab, [0, 0])
         dropped[lab][1] += 1
-        if ctrl is None:
+        row = per_fly_rows.get(fly_id)
+        if row is None:
             dropped[lab][0] += 1
             continue
-        # ctrl/fly_id bound as defaults: a closure over the loop variables would
-        # read whichever fly the loop had reached by the time it was called.
-        def _diff(day_list, *, ctrl=ctrl, fly_id=fly_id):
-            out = []
-            for day in day_list:
-                ref = control_day_mean.get((ctrl, day))
-                own = phases.get(fly_id, {}).get(day)
-                if ref is not None and own is not None:
-                    # Control minus fly: an advance reads positive.
-                    out.append(ref - own)
-            return out
-
-        per_day = _diff(days)
-        if not per_day:
-            dropped[lab][0] += 1
-            continue
-        base = _diff(base_days) if base_days else []
-        # A fly with no usable baseline keeps its raw response rather than being
-        # dropped: the offset is a correction, and losing the measurement to fix a
-        # correction is the worse trade. base_used records which it was.
-        offset = float(np.mean(base)) if base else 0.0
         row = {
             "id": fly_id,
             "group": lab,
-            "control_group": ctrl,
+            "control_group": control_map.get(lab),
             "zt": float(zt) if np.isfinite(zt) else np.nan,
-            "response_hours": float(np.mean(per_day)) - offset,
-            "response_hours_raw": float(np.mean(per_day)),
-            "n_days_used": len(per_day),
-            "baseline_used": bool(base),
+            **row,
         }
         row.update(meta.get(lab, {}))
         rows.append(row)
@@ -1277,23 +1393,154 @@ def compute_phase_response(
             for g, (d, t) in sorted(dropped.items())
         ]
     )
+    params = {
+        "method": method,
+        "group_by": list(cols),
+        "filter_hours": float(filter_hours),
+        "peak_prominence_frac": float(peak_prominence_frac),
+        "peak_distance_hours": float(peak_distance_hours),
+        "search_half_width_hours": float(search_half_width_hours),
+        "sign": "control_minus_fly (advance positive, delay negative)",
+    }
+    if method == "regression":
+        params.update(
+            baseline=baseline,
+            skip_days=int(skip_days),
+            min_post_days=int(min_post_days),
+            min_period_hours=float(min_period_hours),
+            max_period_hours=float(max_period_hours),
+        )
+    else:
+        params.update(
+            response_days=[int(d) for d in response_days],
+            baseline_days=[int(d) for d in (baseline_days or ())],
+        )
     return {
         "per_fly": per_fly,
         "control_map": control_map,
         "controls": controls,
         "dropped": drop_df,
-        "params": {
-            "group_by": list(cols),
-            "response_days": [int(d) for d in response_days],
-            "baseline_days": [int(d) for d in (baseline_days or ())],
-            "pulse_day": pulse_day,
-            "filter_hours": float(filter_hours),
-            "peak_prominence_frac": float(peak_prominence_frac),
-            "peak_distance_hours": float(peak_distance_hours),
-            "search_half_width_hours": float(search_half_width_hours),
-            "sign": "control_minus_fly (advance positive, delay negative)",
-        },
+        "params": params,
     }
+
+
+def _regression_rows(
+    fly_ids, labels, markers, pulse_days, controls, control_map, *,
+    baseline, skip_days, min_post_days, min_period_hours, max_period_hours,
+):
+    """``{fly id: row}`` for the regression method; flies with no answer are absent."""
+    phases = {}
+    for fly_id, day in zip(fly_ids, pulse_days):
+        pre_h, post_h, period, status = _fly_phases_regression(
+            markers.get(fly_id, {}),
+            int(day),
+            skip_days=skip_days,
+            min_post_days=min_post_days,
+            min_period_hours=min_period_hours,
+            max_period_hours=max_period_hours,
+        )
+        phases[fly_id] = (pre_h, post_h, period, status)
+
+    by_group = {}
+    for fly_id, lab in zip(fly_ids, labels):
+        if phases[fly_id][3] == "ok":
+            by_group.setdefault(lab, []).append(phases[fly_id])
+    # Each group's mean phase before and after, and each fly's own before-to-after
+    # change — the three things the baseline options subtract.
+    pre_mean = {g: _centred_mean_hours([p[0] for p in v]) for g, v in by_group.items()}
+    post_mean = {g: _centred_mean_hours([p[1] for p in v]) for g, v in by_group.items()}
+    delta_mean = {
+        g: _centred_mean_hours(_wrap_hours([p[1] - p[0] for p in v]))
+        for g, v in by_group.items()
+    }
+
+    out = {}
+    for fly_id, lab, day in zip(fly_ids, labels, pulse_days):
+        pre_h, post_h, period, status = phases[fly_id]
+        ctrl = control_map.get(lab)
+        if status != "ok" or ctrl is None or ctrl not in post_mean:
+            continue
+        if baseline == "fly":
+            change = float(_wrap_hours(post_h - pre_h))
+            raw = -float(_wrap_hours(post_h - post_mean[ctrl]))
+            response = -float(change - delta_mean[ctrl])
+        else:
+            raw = -float(_wrap_hours(post_h - post_mean[ctrl]))
+            offset = (
+                float(_wrap_hours(pre_mean[lab] - pre_mean[ctrl])) if baseline == "group" else 0.0
+            )
+            response = raw + offset
+        out[fly_id] = {
+            "response_hours": response,
+            "response_hours_raw": raw,
+            "n_days_used": sum(
+                1 for d in markers.get(fly_id, {}) if d >= int(day) + 1 + int(skip_days)
+            ),
+            "baseline_used": baseline != "none",
+            "pre_phase_hours": pre_h,
+            "post_phase_hours": post_h,
+            "period_hours": period,
+        }
+    return out
+
+
+def _daily_rows(
+    fly_ids, labels, markers, pulse_days, controls, control_map, *,
+    response_days, baseline_days,
+):
+    """``{fly id: row}`` for the per-day method, days counted from each fly's pulse."""
+    # Peak time in hours within the day, keyed by the day's offset from the fly's
+    # own pulse day — hours within the day because that is what a phase is: two
+    # flies whose peaks are 24 h apart in absolute time are at the same phase.
+    phases = {}
+    for fly_id, day0 in zip(fly_ids, pulse_days):
+        phases[fly_id] = {
+            int(d) - int(day0): (m - int(d) * MINUTES_PER_DAY) / 60.0
+            for d, m in markers.get(fly_id, {}).items()
+        }
+    offsets = [int(d) for d in response_days]
+    base_offsets = [int(d) for d in (baseline_days or ())]
+
+    # The control mean per day, over the control flies that HAVE a peak that day.
+    control_day_mean = {}
+    for ctrl in controls:
+        members = [f for f, lab in zip(fly_ids, labels) if lab == ctrl]
+        for off in [*offsets, *base_offsets]:
+            vals = [phases[f][off] for f in members if off in phases.get(f, {})]
+            if vals:
+                control_day_mean[(ctrl, off)] = float(np.mean(vals))
+
+    out = {}
+    for fly_id, lab in zip(fly_ids, labels):
+        ctrl = control_map.get(lab)
+        if ctrl is None:
+            continue
+
+        def _diff(off_list, *, ctrl=ctrl, fly_id=fly_id):
+            vals = []
+            for off in off_list:
+                ref = control_day_mean.get((ctrl, off))
+                own = phases.get(fly_id, {}).get(off)
+                if ref is not None and own is not None:
+                    # Control minus fly: an advance reads positive.
+                    vals.append(ref - own)
+            return vals
+
+        per_day = _diff(offsets)
+        if not per_day:
+            continue
+        base = _diff(base_offsets) if base_offsets else []
+        # A fly with no usable baseline keeps its raw response rather than being
+        # dropped: the offset is a correction, and losing the measurement to fix a
+        # correction is the worse trade. baseline_used records which it was.
+        offset = float(np.mean(base)) if base else 0.0
+        out[fly_id] = {
+            "response_hours": float(np.mean(per_day)) - offset,
+            "response_hours_raw": float(np.mean(per_day)),
+            "n_days_used": len(per_day),
+            "baseline_used": bool(base),
+        }
+    return out
 
 
 def summarize_phase_response(per_fly, by=("zt", "group")):

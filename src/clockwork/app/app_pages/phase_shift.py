@@ -14,10 +14,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from clockwork.app import export_helpers
-from clockwork.app.ui import charts, status
+from clockwork.app.ui import charts, facet_panels, status
 from clockwork.app.ui import stats as stats_ui
 from clockwork.app.ui.guards import require_dataset
-from clockwork.core import dam_utilities, group_stats, plotting
+from clockwork.core import dam_utilities, facets, group_stats, plotting
 from clockwork.core import phase_shift as ps_module
 from clockwork.core.calibrations import (
     DEFAULT_PHASE_SHIFT_FILTER_HOURS,
@@ -250,6 +250,23 @@ with _tab_setup:
         )
         if _cond_like and _cond_like not in _grp_default:
             _grp_default = _grp_default + [_cond_like]
+        # The phase response curve's x axis is the pulse time, so pulses given at
+        # different times must be different groups.
+        _pulse_times = (
+            {
+                str(v)
+                for v, m in zip(np.asarray(ds_pulse["pulse_time"].values), pulse_minutes)
+                if np.isfinite(m)
+            }
+            if "pulse_time" in ds_pulse.coords
+            else set()
+        )
+        if (
+            "pulse_time" in _coord_opts
+            and len(_pulse_times) > 1
+            and "pulse_time" not in _grp_default
+        ):
+            _grp_default = _grp_default + ["pulse_time"]
         if not _grp_default:
             _grp_default = [c for c in ("genotype", "condition") if c in _coord_opts]
         group_by = st.multiselect(
@@ -584,6 +601,44 @@ with _tab_setup:
                 )
             st.divider()
 
+            st.markdown("**Phase response curve**")
+            PRC_METHOD_LABELS = {
+                "Line through each fly's post-pulse peaks": "regression",
+                "Per-day difference from the control": "daily",
+            }
+            prc_method = PRC_METHOD_LABELS[
+                st.radio(
+                    "How each fly's response is read",
+                    list(PRC_METHOD_LABELS),
+                    index=0,
+                    key="ps_prc_method",
+                    help="The line is fitted through every post-pulse daily peak and read "
+                    "on the day after the pulse, so a fly whose period differs from its "
+                    "control's is not credited with the drift between them. The per-day "
+                    "version averages the fly's difference from the control mean on days "
+                    "+2 to +4 after the pulse.",
+                )
+            ]
+            PRC_BASELINE_LABELS = {
+                "Group's pre-pulse phase vs its control's": "group",
+                "Each fly's own pre-pulse phase": "fly",
+                "None": "none",
+            }
+            prc_baseline = "group"
+            if prc_method == "regression":
+                prc_baseline = PRC_BASELINE_LABELS[
+                    st.selectbox(
+                        "Pre-pulse offset to subtract",
+                        list(PRC_BASELINE_LABELS),
+                        index=0,
+                        key="ps_prc_baseline",
+                        help="Removes a phase difference the pulsed group and its control "
+                        "already had in LD. Per fly, a pre-pulse peak read off the "
+                        "morning or lights-on spike becomes a shift of 6-12 h.",
+                    )
+                ]
+            st.divider()
+
         pc1, pc2 = st.columns(2)
         with pc1:
             st.markdown("**Fitting**")
@@ -760,6 +815,10 @@ with _tab_setup:
                 progress_callback=lambda f: _bar.progress(
                     min(1.0, f), text="Measuring each fly's own phase…"
                 ),
+                method=prc_method,
+                baseline=prc_baseline,
+                skip_days=int(transient_skip_days),
+                min_post_days=int(min_post_days),
                 filter_hours=float(filter_hours),
                 peak_prominence_frac=float(peak_prominence_frac),
                 peak_distance_hours=float(peak_distance_hours),
@@ -814,6 +873,9 @@ if _tab_results.open:
             )
 
             if _tab_prc.open:
+                # The sidebar layout the other per-fly pages offer; it arranges the
+                # per-fly violins below and nothing else.
+                _facet_spec, _facet_table = facet_panels.facet_controls(ds_pulse)
                 with _tab_prc:
                     _pres = st.session_state.get("phase_shift_response")
                     if not _pres:
@@ -831,19 +893,40 @@ if _tab_results.open:
                     else:
                         _rp = _pres["params"]
                         _pf = _pres["per_fly"]
-                        _base = _rp["baseline_days"]
-                        st.caption(
-                            "One number per fly: the mean over days "
-                            + ", ".join(f"+{d}" for d in _rp["response_days"])
-                            + " after the pulse of **its own control group's mean peak time "
-                            "minus its own**"
-                            + (
-                                f", less the same difference on day {_base[0]:+d} as a baseline"
-                                if _base
-                                else ""
+                        if _rp.get("method", "daily") == "regression":
+                            _base_text = {
+                                "group": ", less the group's pre-pulse offset from its control",
+                                "fly": ", less the fly's own pre-pulse offset from its control",
+                                "none": "",
+                            }[_rp["baseline"]]
+                            st.caption(
+                                "One number per fly: **its control group's mean phase minus "
+                                "its own**, both read on the day after the pulse from a line "
+                                "through the post-pulse daily peaks"
+                                + (
+                                    f" (from day +{1 + _rp['skip_days']})"
+                                    if _rp["skip_days"]
+                                    else ""
+                                )
+                                + _base_text
+                                + ". Days are counted from each fly's own pulse. "
+                                "**An advance reads positive, a delay negative.**"
                             )
-                            + ". **An advance reads positive, a delay negative.**"
-                        )
+                        else:
+                            _base = _rp["baseline_days"]
+                            st.caption(
+                                "One number per fly: the mean over days "
+                                + ", ".join(f"+{d}" for d in _rp["response_days"])
+                                + " after the pulse of **its own control group's mean peak time "
+                                "minus its own**"
+                                + (
+                                    f", less the same difference on day {_base[0]:+d} as a "
+                                    "baseline"
+                                    if _base
+                                    else ""
+                                )
+                                + ". **An advance reads positive, a delay negative.**"
+                            )
 
                         # Controls are the reference, not a result: every other group's
                         # response is measured against their mean, so drawing them would be
@@ -865,22 +948,66 @@ if _tab_results.open:
                         else:
                             _gb_prc = list(_rp["group_by"])
                             _zt_coord = "pulse_time"
-                            # Each pulsed group against its own unpulsed control's flies.
-                            _prc_stats = group_stats.vs_control(
-                                _pf,
-                                "response_hours",
-                                stats_ui.family(group_stats.WELCH),
-                                zt_col="zt",
-                                series_cols=[c for c in _gb_prc if c != _zt_coord],
-                            )
-
                             # ---------------------------------------- the curve
                             st.markdown("#### Phase response curve")
                             _zts = sorted({float(z) for z in _treated["zt"] if np.isfinite(z)})
                             MIN_ZT_FOR_A_CURVE = 3
                             # The pulse time is the x axis, so it is not also a line; every
-                            # other grouping factor separates the lines.
-                            _series_prc = [c for c in _gb_prc if c != _zt_coord]
+                            # other grouping factor that varies among the pulsed flies
+                            # separates the lines. A column that only re-labels the pulse
+                            # time (a `pulse_ZT` beside `pulse_time`) would make every
+                            # point its own one-point line, so it is left out too.
+                            def _aliases_zt(col):
+                                sub = _treated[[col, "zt"]].astype(str)
+                                return (
+                                    sub.groupby(col)["zt"].nunique().max() == 1
+                                    and sub.groupby("zt")[col].nunique().max() == 1
+                                )
+
+                            _series_prc = [
+                                c
+                                for c in _gb_prc
+                                if c != _zt_coord
+                                and c in _treated.columns
+                                and _treated[c].astype(str).nunique() > 1
+                                and not _aliases_zt(c)
+                            ]
+                            # Each pulsed group against its own unpulsed control's flies,
+                            # Holm-adjusted across the pulse times of each line.
+                            _prc_stats = group_stats.vs_control(
+                                _pf,
+                                "response_hours",
+                                stats_ui.family(group_stats.WELCH),
+                                zt_col="zt",
+                                series_cols=_series_prc,
+                            )
+                            # The violins label their columns with every grouping column,
+                            # the pulse-time aliases included, so each result carries
+                            # those values too.
+                            _alias_cols = [
+                                c for c in _gb_prc
+                                if c not in _series_prc and c in _treated.columns
+                            ]
+                            for _r in _prc_stats:
+                                _hit = np.isclose(
+                                    _treated["zt"].astype(float), float(_r.key.get("zt", np.nan))
+                                )
+                                for _c in _series_prc:
+                                    _hit &= (
+                                        _treated[_c].astype(str) == str(_r.key.get(_c))
+                                    ).to_numpy()
+                                if _hit.any():
+                                    _first = _treated[_hit].iloc[0]
+                                    for _c in _alias_cols:
+                                        _r.key.setdefault(_c, _first[_c])
+                            _ctrl_rows = _pf[_pf["group"].isin(_ctrls)]
+                            _ctrl_summary = (
+                                ps_module.summarize_phase_response(
+                                    _ctrl_rows, by=tuple(_series_prc) or ("group",)
+                                )
+                                if len(_ctrl_rows)
+                                else None
+                            )
                             if len(_zts) < MIN_ZT_FOR_A_CURVE:
                                 st.info(
                                     f"This experiment only contains {len(_zts)} timepoint"
@@ -894,7 +1021,10 @@ if _tab_results.open:
                                 )
                                 charts.plotly_chart(
                                     plotting.phase_response_curve(
-                                        _summary, series_cols=_series_prc, stats=_prc_stats
+                                        _summary,
+                                        series_cols=_series_prc,
+                                        stats=_prc_stats,
+                                        controls=_ctrl_summary,
                                     ),
                                     filename="phase_response_curve",
                                     width="stretch",
@@ -902,7 +1032,9 @@ if _tab_results.open:
                                 stats_ui.notice(_prc_stats)
                                 st.caption(
                                     "Points are group means of the per-fly responses; bars are "
-                                    "±1 SEM over the flies. No bootstrap is needed here — the "
+                                    "±1 SEM over the flies. Open points at **no pulse** are the "
+                                    "unpulsed controls, each measured against its own group's "
+                                    "mean. No bootstrap is needed here — the "
                                     "response is measured once per fly, so the flies are the "
                                     "replicates. (The group-level comparison on the next tab "
                                     "has no per-fly values to average, which is why that one "
@@ -927,7 +1059,12 @@ if _tab_results.open:
                             for _c in _gb_prc:
                                 if _c == _zt_coord:
                                     _major.append("zt")
-                                elif _c != _split:
+                                elif (
+                                    _c != _split
+                                    and _treated[_c].astype(str).nunique() > 1
+                                ):
+                                    # A column with one value among the pulsed flies
+                                    # (every pulse 10 min long) only lengthens labels.
                                     _major.append(_c)
 
                             _show_pts = st.checkbox(
@@ -939,24 +1076,72 @@ if _tab_results.open:
                                 "their distribution and its line is the mean — the same "
                                 "number the curve above plots.",
                             )
-                            # Named the way Import named them: the coords carry the
-                            # metadata's own column names.
-                            _fig_v, _drawn_v = plotting.phase_response_violins(
-                                _treated,
-                                major_cols=_major,
-                                split_col=_split,
-                                show_points=_show_pts,
-                                x_title=" x ".join(
-                                    (_zt_coord if c == "zt" else c).replace("_", " ")
-                                    for c in _major
-                                ),
-                                split_title=(_split.replace("_", " ") if _split else None),
-                                stats=_prc_stats,
-                            )
-                            charts.plotly_chart(
-                                _fig_v, filename="phase_response_per_fly", width="stretch"
-                            )
-                            stats_ui.notice(_prc_stats)
+                            if _facet_spec.active:
+                                # Panels from the sidebar: the controls are drawn as a
+                                # level of their own, so each panel shows its noise floor.
+                                _measured = _pf[np.isfinite(_pf["response_hours"].astype(float))]
+                                _panels_v = facets.resolve_panels(_facet_table, _facet_spec)
+                                _panel_stats = group_stats.per_panel(
+                                    _measured,
+                                    "response_hours",
+                                    _panels_v,
+                                    stats_ui.family(group_stats.WELCH),
+                                    id_col="id",
+                                    measure="Phase shift",
+                                )
+                                _pairs_v = plotting.faceted_violins(
+                                    _measured,
+                                    "response_hours",
+                                    _panels_v,
+                                    facets.facet_colours(facets.layout_levels(_panels_v)),
+                                    id_col="id",
+                                    title="Phase response per fly",
+                                    y_title="Phase shift (h)",
+                                    x_title=_facet_spec.compare_by,
+                                    shared_y=_facet_spec.shared_y,
+                                    show_points=_show_pts,
+                                    y_from_zero=False,
+                                    stats=_panel_stats,
+                                )
+                                for _, _f in _pairs_v:
+                                    _f.add_hline(
+                                        y=0, line=dict(color="#999999", width=1, dash="dash")
+                                    )
+                                facet_panels.render_panels(
+                                    _pairs_v,
+                                    _facet_spec,
+                                    ds,
+                                    key="ps_prc_violin_panels",
+                                    filename="phase_response_per_fly",
+                                )
+                                stats_ui.notice(_panel_stats)
+                                _drawn_v = _treated[
+                                    np.isfinite(_treated["response_hours"].astype(float))
+                                ]
+                            else:
+                                # Named the way Import named them: the coords carry the
+                                # metadata's own column names.
+                                _fig_v, _drawn_v = plotting.phase_response_violins(
+                                    _treated,
+                                    major_cols=_major,
+                                    split_col=_split,
+                                    show_points=_show_pts,
+                                    x_title=" x ".join(
+                                        (_zt_coord if c == "zt" else c).replace("_", " ")
+                                        for c in _major
+                                    ),
+                                    split_title=(_split.replace("_", " ") if _split else None),
+                                    stats=_prc_stats,
+                                )
+                                charts.plotly_chart(
+                                    _fig_v, filename="phase_response_per_fly", width="stretch"
+                                )
+                                stats_ui.notice(_prc_stats)
+                                st.caption(
+                                    "Use **Compare within panels** in the sidebar to draw one "
+                                    "panel per genotype (or any other column) with the pulse "
+                                    "times side by side."
+                                )
 
                             # What was left out, said plainly. A fly whose phase cannot be
                             # determined is dropped rather than counted as "no shift" — the
