@@ -160,11 +160,11 @@ with _tab_setup:
 
     if reference == "control":
         st.caption(
-            "This is the lab's `peakphaseplot.m` comparison: average each group's activity, "
-            "smooth it, take one peak per day, and report the pulsed group's peak time minus "
-            "the unpulsed control's on the same day. Validated against the lab's own SCAMP "
-            "exports — from day 1 on, the two agree to a median of 2 min (worst 12 min). "
-            "Results are per group per day, not per fly."
+            "Each group's daily peak time minus its unpulsed control's on the same day. By "
+            "default a group's peak is the median of its flies' own daily peaks; the lab's "
+            "`peakphaseplot.m` version (the peak of the group's averaged activity) is under "
+            "Advanced Parameters, and agrees with the lab's SCAMP exports to a median of "
+            "2 min (worst 12 min) from day 1 on. Results are per group per day."
         )
         if _pre_pulse_days < int(DEFAULT_PHASE_SHIFT_MIN_PRE_DAYS):
             st.info(
@@ -601,6 +601,25 @@ with _tab_setup:
                 )
             st.divider()
 
+            st.markdown("**Group peak per day**")
+            GROUP_ESTIMATOR_LABELS = {
+                "Median of the flies' own daily peaks": "fly_median",
+                "Peak of the group's averaged activity (peakphaseplot.m)": "mean_trace",
+            }
+            group_estimator = GROUP_ESTIMATOR_LABELS[
+                st.radio(
+                    "How each group's daily peak is found",
+                    list(GROUP_ESTIMATOR_LABELS),
+                    index=0,
+                    key="ps_group_estimator",
+                    help="Used by Phase over Time. The two agree while the flies are in "
+                    "step. Later in DD, flies with different periods drift apart, the "
+                    "averaged trace can have two humps, and its peak can move between "
+                    "them from one day to the next.",
+                )
+            ]
+            st.divider()
+
             st.markdown("**Phase response curve**")
             PRC_METHOD_LABELS = {
                 "Line through each fly's post-pulse peaks": "regression",
@@ -741,6 +760,7 @@ with _tab_setup:
             day_origin=day_origin,
             baseline_day=baseline_day,
             difference_sign=difference_sign,
+            estimator=group_estimator,
             filter_hours=float(filter_hours),
             peak_prominence_frac=float(peak_prominence_frac),
             peak_distance_hours=float(peak_distance_hours),
@@ -1297,7 +1317,14 @@ if _tab_results.open:
                                 facet_cols = st.multiselect(
                                     "One figure per",
                                     _facet_opts,
-                                    default=_facet_opts,
+                                    # A column with one value across the plotted groups (every
+                                    # pulse 10 min long) splits nothing and only lengthens titles.
+                                    default=[
+                                        c
+                                        for c in _facet_opts
+                                        if len({str(_gvals.get(g, {}).get(c, "")) for g in others}) > 1
+                                    ]
+                                    or _facet_opts,
                                     help="Each combination of these gets its own figure — e.g. condition and "
                                     "sex gives one chart per pulse dose per sex.",
                                 )
@@ -1336,9 +1363,29 @@ if _tab_results.open:
                                 if len(others) < _before:
                                     st.caption(f"Showing **{len(others)} of {_before}** groups.")
 
-                            # Error bars. The plotted point is the peak of the group's MEAN trace, so
-                            # there is no per-fly spread to average into a SEM — the uncertainty has to
-                            # come from resampling the flies and re-running the whole pipeline.
+                            VIEW_LABELS = {
+                                "Difference from control": "difference",
+                                "Peak time": "peak",
+                            }
+                            _view = VIEW_LABELS[
+                                st.segmented_control(
+                                    "Show",
+                                    list(VIEW_LABELS),
+                                    default="Difference from control",
+                                    key="ps_over_time_view",
+                                    persist_state="session",
+                                    help="Peak time plots each group's daily peak as a clock "
+                                    "time, with its unpulsed control dashed in the same colour. "
+                                    "A line's slope is the group's free-running period, so it "
+                                    "shows whether a difference that drifts comes from the "
+                                    "pulsed group and its control running at different periods.",
+                                )
+                                or "Difference from control"
+                            ]
+
+                            # Error bars. The difference is between two group-level peaks, so
+                            # its uncertainty comes from resampling the flies of both groups and
+                            # re-running the whole pipeline.
                             eb1, eb2, eb3 = st.columns([2, 1, 1])
                             with eb1:
                                 show_err = st.checkbox(
@@ -1346,6 +1393,7 @@ if _tab_results.open:
                                     value=False,
                                     key="ps_err_on",
                                     persist_state="session",
+                                    disabled=_view == "peak",
                                     help="Resamples the flies of every group with replacement and repeats "
                                     "the whole analysis, so the interval covers the control arm as well "
                                     "as the pulsed one. Takes a few seconds to a minute; the result is "
@@ -1367,7 +1415,7 @@ if _tab_results.open:
                                 )
 
                             boot = None
-                            if show_err:
+                            if show_err and _view == "difference":
                                 _sig = (
                                     repr(sorted(gres["params"].items())),
                                     int(n_boot),
@@ -1396,6 +1444,7 @@ if _tab_results.open:
                                                     "day_origin",
                                                     "baseline_day",
                                                     "difference_sign",
+                                                    "estimator",
                                                     "filter_hours",
                                                     "peak_prominence_frac",
                                                     "peak_distance_hours",
@@ -1496,11 +1545,123 @@ if _tab_results.open:
                                 # plotly wants distances from the point, never absolute bounds
                                 return np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)
 
+                            def _clock_line(grp):
+                                """(days, peak clock time in h after ZT0) for one group, unwrapped
+                                so a peak drifting past midnight continues instead of jumping a
+                                day, and started inside 0-24 h."""
+                                sub = per_day[per_day["group"] == grp].sort_values("day_index")
+                                sub = sub[np.isfinite(sub["peak_hours"].astype(float))]
+                                if sub.empty:
+                                    return sub["day_index"].to_numpy(), np.array([])
+                                days_g = sub["day_index"].to_numpy()
+                                clock = sub["peak_hours"].to_numpy(dtype=float) - 24.0 * days_g
+                                clock = np.unwrap(clock, period=24.0)
+                                return days_g, clock - 24.0 * np.floor(clock[0] / 24.0)
+
+                            _peak_lines = {}
+                            if _view == "peak":
+                                for g in others:
+                                    for gg in (g, control_map.get(g)):
+                                        if gg is not None and gg not in _peak_lines:
+                                            _peak_lines[gg] = _clock_line(gg)
+                                _peak_vals = np.concatenate(
+                                    [v for _, v in _peak_lines.values() if len(v)] or [np.array([])]
+                                )
+                                _peak_range = (
+                                    [float(_peak_vals.min()) - 0.5, float(_peak_vals.max()) + 0.5]
+                                    if len(_peak_vals)
+                                    else None
+                                )
+
+                            def _peak_time_figure(title, grps):
+                                """The facet's groups as peak clock times, controls dashed."""
+                                fig = go.Figure()
+                                drawn_ctrl = set()
+                                for grp in grps:
+                                    name = str(_gvals.get(grp, {}).get(series_col, grp))
+                                    colour = _colour.get(name)
+                                    x, y = _peak_lines.get(grp, ([], []))
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=x, y=y, mode="lines+markers",
+                                            name=f"{name} (n={_n(grp)})",
+                                            legendgroup=name,
+                                            line=dict(color=colour, width=2.5),
+                                            marker=dict(size=8),
+                                            hovertemplate=(
+                                                "day %{x}<br>peak %{y:.2f} h after ZT0"
+                                                f"<extra>{name}</extra>"
+                                            ),
+                                        )
+                                    )
+                                    ctrl = control_map.get(grp)
+                                    if ctrl is None or ctrl in drawn_ctrl:
+                                        continue
+                                    drawn_ctrl.add(ctrl)
+                                    cname = str(_gvals.get(ctrl, {}).get(series_col, ctrl))
+                                    cx, cy = _peak_lines.get(ctrl, ([], []))
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=cx, y=cy, mode="lines+markers",
+                                            name=f"{cname} no pulse (n={_n(ctrl)})",
+                                            legendgroup=name,
+                                            line=dict(
+                                                color=_colour.get(cname, "#7F8C8D"),
+                                                width=2, dash="dash",
+                                            ),
+                                            marker=dict(size=6, symbol="circle-open"),
+                                            hovertemplate=(
+                                                "day %{x}<br>peak %{y:.2f} h after ZT0"
+                                                f"<extra>{cname} no pulse</extra>"
+                                            ),
+                                        )
+                                    )
+                                if _pulse_x is not None:
+                                    fig.add_vline(
+                                        x=_pulse_x, line_dash="dash", line_color="#555555",
+                                        annotation_text="light pulse", annotation_position="top",
+                                    )
+                                fig.update_layout(
+                                    title=dict(text=title, font=dict(size=21)),
+                                    xaxis_title=(
+                                        "days from first DD day" if _origin == "dd_onset" else "day"
+                                    ),
+                                    yaxis_title="Peak time (h after ZT0)",
+                                    width=1250, height=560, font=dict(size=15),
+                                    legend=dict(
+                                        title=dict(text=series_col, font=dict(size=13)),
+                                        font=dict(size=12),
+                                    ),
+                                    margin=dict(t=70, l=100, r=30, b=80),
+                                )
+                                fig.update_xaxes(
+                                    dtick=1, zeroline=False, title_font=dict(size=17),
+                                    tickfont=dict(size=15),
+                                )
+                                fig.update_yaxes(
+                                    title_font=dict(size=17), tickfont=dict(size=15),
+                                    range=_peak_range,
+                                )
+                                return fig
+
                             for key in sorted(_facets):
                                 # Facet VALUES only — the column names ("condition ZT15…") were three
                                 # quarters of the title and said nothing the values do not.
                                 title = " · ".join(str(v) for v in key) or "All groups"
                                 _grps = sorted(_facets[key])
+                                if _view == "peak":
+                                    charts.plotly_chart(
+                                        _peak_time_figure(title, _grps),
+                                        filename=f"phase_peak_time_{title}",
+                                        width="stretch",
+                                    )
+                                    st.caption(
+                                        "Solid: pulsed group. Dashed, same colour: its unpulsed "
+                                        "control. A line's slope is its free-running period; the "
+                                        "vertical gap between a solid line and its dashed one is "
+                                        "the difference the other view plots, before zeroing."
+                                    )
+                                    continue
                                 fig = go.Figure()
                                 for grp in _grps:
                                     sub = per_day[per_day["group"] == grp].sort_values("day_index")

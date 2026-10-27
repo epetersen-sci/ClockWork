@@ -429,3 +429,24 @@ def test_the_page_stops_cleanly_without_a_pulse_column(app, master_ds):
     at = app(ds=master_ds, page="phase_shift")
     assert not at.exception
     assert any("pulse_time" in e.value for e in at.error)
+
+
+@pytest.mark.parametrize("view", ["Difference from control", "Peak time"])
+def test_phase_over_time_draws_either_view(app, pulse_ds, view):
+    """Phase over Time draws the difference from the control or the peak clock
+    times, the controls dashed beside their groups."""
+    at = app(ds=pulse_ds, page="phase_shift")
+    at = [b for b in at.button if "Run Group Phase Comparison" in b.label][0].click().run()
+    assert not at.exception
+    at.session_state["phase_shift_tab"] = "Results"
+    at.session_state["phase_shift_results_tab"] = "Phase over Time"
+    at.session_state["ps_over_time_view"] = view
+    at = at.run()
+    assert not at.exception, f"raised: {at.exception}"
+    charts = at.get("plotly_chart")
+    assert charts, "no figure drawn"
+    names = " ".join(str(c.proto.spec) for c in charts)
+    if view == "Peak time":
+        assert "no pulse" in names and "Peak time (h after ZT0)" in names
+    else:
+        assert "Phase difference (h)" in names

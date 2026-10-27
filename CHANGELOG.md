@@ -40,6 +40,22 @@ command that runs the GUI or runs a whole analysis from a YAML file.
   flies of a six-genotype experiment) median / 90th-percentile error: regression
   with group baseline 0.86 / 2.1 h, regression with per-fly baseline 0.71 /
   2.3 h, daily 0.84 / 2.4 h.
+- **Phase over Time values are different.** `compute_group_phase_difference`
+  now defaults to `estimator="fly_median"`: a group's daily peak is the
+  clock-face median of its flies' own daily peaks (`n_flies_with_peak` per row).
+  The peak of the group's averaged trace (`peakphaseplot.m`) is
+  `estimator="mean_trace"`. Differences are wrapped into ±12 h. On a six-genotype
+  light-pulse experiment the averaged trace read Y318A at ZT17 as −9.4 h on DD
+  day 6 (−4.8 h on day 5, −4.9 h on day 7); the median reads −5.8 h.
+- **Daily peak tracking follows a peak past midnight.** The tracked window was
+  clipped to the calendar day, so a free-running peak crossing midnight was
+  pinned at 0 or 24 h for the rest of the record (a 25.5 h rhythm read 23.98 h on
+  every day from the fourth on). This changes late-DD markers, and with them
+  phase shifts, phase response values and Phase over Time, for flies whose peak
+  crosses midnight.
+- **Phase over Time** has a "Peak time" view: each group's daily peak as a clock
+  time, with its unpulsed control dashed in the same colour. Figure titles leave
+  out grouping columns with a single value.
 - **The phase response curve** joins each line's means with a spline, plots the
   unpulsed controls at a "no pulse" tick, and drops grouping columns that only
   re-label the pulse time from the line definition. The per-fly violins take the
