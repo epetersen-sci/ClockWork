@@ -291,10 +291,11 @@ group the flies.
 | `genotype` | **Yes** | `w1118` | Attached to every fly. The default group label. |
 | `first_DD_day` | For DD/LD work | `2025-01-18 09:00:00` | **CT0 (subjective morning) of the first full DD day** — not the last lights-off. Without it there is no LD/DD split and period analysis silently runs on the combined record. |
 | `region_id` | Situational | `1-16`, `5`, `1,3,5`, `65-96` | Which channels this row covers. Blank → channels **1–32 only**. Required on non-DAM monitor sources (e.g. FlyBox) — see [Format rules](#format-rules). |
-| `pulse_time` | Phase shift only | `2025-01-17 00:00:00` | Light-pulse onset, written **in the same format as `start_datetime`**. Because `start_datetime` is ZT0, the pulse's day and its ZT are both worked out from it (here ZT15 on day 2). The older ZT-hour shorthand (`ZT15`, `15`) is still read, and then assumes the pulse fell on the last LD day before `first_DD_day`. Leave **blank** for unpulsed controls. |
-| `pulse_duration_min` | Phase shift | `60` | Pulse length in minutes. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. **Write `0`, not a blank, for unpulsed controls** — that 0 is how phase shift identifies them. |
+| `pulse_datetime` | Phase shift only | `2025-01-17 00:00:00` | Light-pulse onset, written **in the same format as `start_datetime`**. Because `start_datetime` is ZT0, the pulse's day and its ZT are both worked out from it (here ZT15 on day 2); the ZT becomes the `pulse_time` grouping factor. Leave **blank** for unpulsed controls. |
+| `pulse_duration` | Phase shift | `60` | Pulse length in minutes, above 0 for every pulsed row. **0 for unpulsed controls** (a blank beside a blank `pulse_datetime` reads as 0); that 0 is how phase shift identifies them. The pulse window is NaN-masked so the acute startle isn't mistaken for a phase marker. Stored as `pulse_duration_min`. |
+| `pulse_time`, `pulse_duration_min` | Older files | `ZT15`, `60` | The earlier pair, still read. `pulse_time` may be a date-time or the ZT-hour shorthand (`ZT15`, `15`), which assumes the pulse fell on the last LD day before `first_DD_day`; a blank `pulse_duration_min` reads as not recorded. A file uses one pair or the other. |
 | `pulse_intensity` | Optional | `100` | Pulse intensity, in whatever unit your rig reports. Not required, but when present it is what separates two arms that share a genotype, time and duration, and phase shift draws those side by side. |
-| `condition` | Optional | `ZT15_60min` | A readable label for an arm. Once a grouping factor in its own right for phase shift; the control is now found from `pulse_duration_min` instead, so this is just another column you can group by. |
+| `condition` | Optional | `ZT15_60min` | A readable label for an arm. Once a grouping factor in its own right for phase shift; the control is now found from `pulse_duration` instead, so this is just another column you can group by. |
 | `temperature` | Optional | `25C` | Historically the second half of the default group label. |
 | `sex`, `treatment`, `incubator`, `notes`, … | Optional | `M` | **Any column you invent** becomes a per-fly coordinate and an eligible grouping factor. |
 
@@ -320,7 +321,7 @@ every cached analysis result, because `group` feeds all of them.
 | Creating the dataset | the above **plus** `genotype` |
 | Period analysis (DD) | `first_DD_day` — without it the split doesn't exist and LD+DD get analysed together |
 | Activity & Sleep (LD) | `first_DD_day`, and `start_datetime` set to ZT0 |
-| Phase shift | `pulse_time` (**hard requirement**, the page stops without it); `first_DD_day` only when `pulse_time` uses the older ZT-hour shorthand, to anchor it. `pulse_duration_min` in practice too: it is how the unpulsed control is identified, and without it every group is reported blank for want of one. `pulse_intensity` optional |
+| Phase shift | `pulse_datetime` and `pulse_duration` (the page stops without a pulse column; import stops when a pulse has no duration or a duration has no pulse). `sex`, `pulse_intensity` and other grouping columns optional. The older `pulse_time` / `pulse_duration_min` pair is still read, with `first_DD_day` anchoring the ZT-hour shorthand |
 | Sleep deprivation | `first_DD_day` (LD-only analysis). The SD day, start ZT and duration are entered in the UI, not the metadata |
 | SCAMP export | nothing extra; monitor and region are recovered from the fly ID |
 | Grouping / faceting only | `Monitor`, `temperature`, `sex`, `condition`, `notes`, or anything else you add |
@@ -514,9 +515,9 @@ free-running period. Below the controls, five tabs:
 
 ### Phase shift
 
-Measures how far each fly's rhythm moved after a light pulse. Needs `pulse_time`
-in the metadata — the pulse's date and time, in the same format as
-`start_datetime` — plus `pulse_duration_min` for the reason below.
+Measures how far each fly's rhythm moved after a light pulse. Needs
+`pulse_datetime` in the metadata — the pulse's date and time, in the same format
+as `start_datetime` — plus `pulse_duration` for the reason below.
 
 **Setup** and **Results** are separate tabs, with the run button at the foot of
 Setup.

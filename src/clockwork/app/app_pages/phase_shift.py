@@ -1,10 +1,12 @@
 """
 Phase Shift Analysis — measure each fly's phase shift after a light pulse.
 
-Requires a ``pulse_time`` column in the metadata: the pulse's date and time, in the
-same format as ``start_datetime`` (which is ZT0), so its day and ZT follow from it.
-The older ZT-hour shorthand (ZT15) also works, anchored by ``first_DD_day`` to the
-last entrained day before DD release.
+Requires ``pulse_datetime`` and ``pulse_duration`` columns in the metadata: the
+pulse's date and time, in the same format as ``start_datetime`` (which is ZT0), so
+its day and ZT follow from it, and its length in minutes. An unpulsed control has a
+blank ``pulse_datetime`` and a ``pulse_duration`` of 0. Files written with the older
+``pulse_time`` / ``pulse_duration_min`` columns (``pulse_time`` may also be the
+ZT-hour shorthand, anchored by ``first_DD_day``) are still read.
 """
 
 
@@ -43,15 +45,17 @@ ds = require_dataset()
 
 if "pulse_time" not in ds.coords:
     st.error(
-        "This dataset has no **pulse_time** column. Phase-shift analysis needs to know at "
-        "what circadian time the light pulse was given.\n\n"
-        "Add a `pulse_time` column to your metadata file — the pulse's date and time, in "
-        "the same format as `start_datetime` (e.g. `1/17/2024 0:00`) — "
-        "and a `pulse_duration_min` column, then reload the dataset on the "
-        "**Data → Import** page. See `metadata_template.csv` for the format.\n\n"
-        "For a group that received no pulse, leave `pulse_time` blank and write **0** "
-        "in `pulse_duration_min`. The 0 is what identifies it as the control; a blank "
-        "there reads as \"not recorded\" and leaves the group unmatched."
+        "This dataset has no light-pulse columns. Phase-shift analysis needs to know "
+        "when each fly's light pulse was given.\n\n"
+        "Add two columns to your metadata file and reload it on the **Data → Import** "
+        "page (see `metadata_template.csv`):\n\n"
+        "- `pulse_datetime` — the pulse's date and time, in the same format as "
+        "`start_datetime` (e.g. `1/17/2024 0:00`). Its ZT is worked out from "
+        "`start_datetime`, which is ZT0.\n"
+        "- `pulse_duration` — its length in minutes.\n\n"
+        "For a group that received no pulse, leave `pulse_datetime` blank and write "
+        "**0** in `pulse_duration`. Sex, pulse intensity or any other column can still "
+        "be used to define groups."
     )
     st.stop()
 
@@ -75,7 +79,7 @@ n_total = pulse_minutes.size
 
 if n_pulsed == 0:
     st.error(
-        "Every fly's `pulse_time` is blank, so there is no pulse to measure a shift "
+        "Every fly's `pulse_datetime` is blank, so there is no pulse to measure a shift "
         "around. Fill in the pulse time for at least one group and reload."
     )
     st.stop()
@@ -364,7 +368,7 @@ with _tab_setup:
                 st.caption(
                     "None of the grouping columns hold numbers, so the unpulsed arm "
                     "cannot be recognised by its pulse being zero. Name it below. "
-                    "Adding a `pulse_duration_min` column to the metadata — 0 for the "
+                    "Adding a `pulse_duration` column to the metadata — 0 for the "
                     "unpulsed flies — removes this step for good."
                 )
                 control_on = st.selectbox(
@@ -2077,7 +2081,7 @@ if _tab_results.open:
                         st.markdown("**Why some flies have no value**")
                         _explain = {
                             "ok": "phase shift measured",
-                            "no_pulse": "no pulse_time in the metadata (unpulsed control)",
+                            "no_pulse": "no pulse_datetime in the metadata (unpulsed control)",
                             "pulse_outside_record": "the pulse time falls outside this fly's recording",
                             "insufficient_pre": "too few usable days before the pulse",
                             "insufficient_post": "too few usable days after the pulse",

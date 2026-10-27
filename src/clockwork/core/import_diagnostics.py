@@ -45,6 +45,7 @@ REASON_METADATA_UNREADABLE = "metadata_unreadable"
 REASON_METADATA_MISSING_COLUMNS = "metadata_missing_columns"
 REASON_METADATA_BAD_DATETIME = "metadata_bad_datetime"
 REASON_METADATA_EMPTY = "metadata_empty"
+REASON_METADATA_BAD_PULSE = "metadata_bad_pulse"
 REASON_STOP_BEFORE_START = "stop_before_start"
 
 TITLES = {
@@ -61,6 +62,7 @@ TITLES = {
     REASON_METADATA_MISSING_COLUMNS: "metadata is missing required columns",
     REASON_METADATA_BAD_DATETIME: "metadata has unparseable date/time values",
     REASON_METADATA_EMPTY: "metadata file has no rows",
+    REASON_METADATA_BAD_PULSE: "metadata light-pulse columns disagree or cannot be read",
     REASON_STOP_BEFORE_START: "stop_datetime is not after start_datetime",
 }
 
@@ -125,6 +127,11 @@ HINTS = {
         "in a required datetime column also lands here."
     ),
     REASON_METADATA_EMPTY: "The metadata file has a header but no data rows.",
+    REASON_METADATA_BAD_PULSE: (
+        "pulse_datetime is the pulse's date and time in the same format as "
+        "start_datetime, blank for an unpulsed fly; pulse_duration is its length "
+        "in minutes, 0 for an unpulsed fly."
+    ),
     REASON_STOP_BEFORE_START: (
         "Each row's stop_datetime must be later than its start_datetime. Swapped "
         "columns and a mis-typed year are the usual causes."

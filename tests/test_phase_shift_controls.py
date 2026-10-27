@@ -428,7 +428,7 @@ def test_the_page_stops_cleanly_without_a_pulse_column(app, master_ds):
     add rather than crash."""
     at = app(ds=master_ds, page="phase_shift")
     assert not at.exception
-    assert any("pulse_time" in e.value for e in at.error)
+    assert any("pulse_datetime" in e.value for e in at.error)
 
 
 @pytest.mark.parametrize("view", ["Difference from control", "Peak time"])

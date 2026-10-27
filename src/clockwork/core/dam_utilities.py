@@ -537,6 +537,103 @@ def _pulse_datetime(cell):
     return None if pd.isna(ts) else ts
 
 
+#: The metadata's light-pulse columns: when the pulse began, written in the same
+#: format as ``start_datetime`` (blank = no pulse), and how long it lasted in
+#: minutes (0 for an unpulsed control). Import maps them onto the ``pulse_time``
+#: (the ZT the pulse fell at, plus a ``pulse_datetime`` coord) and
+#: ``pulse_duration_min`` coords every analysis reads.
+PULSE_DATETIME_COLUMN = "pulse_datetime"
+PULSE_DURATION_COLUMN = "pulse_duration"
+
+
+def normalize_pulse_columns(metadata, *, first_row=2):
+    """Map the ``pulse_datetime`` / ``pulse_duration`` metadata columns onto the
+    ``pulse_time`` / ``pulse_duration_min`` columns import reads, checking them.
+
+    A blank ``pulse_datetime`` is an unpulsed fly, and its ``pulse_duration`` must
+    be 0 or blank (blank is read as 0). A filled one must be a date and time — the
+    ZT-hour shorthand belongs to the older ``pulse_time`` column — and needs a
+    duration above 0. Files written with ``pulse_time`` / ``pulse_duration_min``
+    pass through unchanged, under their own rules.
+
+    ``first_row`` is the spreadsheet row of ``metadata``'s first row, so errors
+    name rows the user can find (2: row 1 is the header).
+
+    Raises ``ValueError`` naming the rows when a cell cannot be read, a pulse has
+    no duration, or a duration has no pulse.
+    """
+    has_dt = PULSE_DATETIME_COLUMN in metadata.columns
+    has_dur = PULSE_DURATION_COLUMN in metadata.columns
+    if not (has_dt or has_dur):
+        return metadata
+    for new, old in ((PULSE_DATETIME_COLUMN, "pulse_time"), (PULSE_DURATION_COLUMN, "pulse_duration_min")):
+        if new in metadata.columns and old in metadata.columns:
+            raise ValueError(
+                f"The metadata has both '{new}' and '{old}'. They hold the same thing; "
+                f"keep '{new}' and delete '{old}'."
+            )
+    if has_dur and not has_dt:
+        raise ValueError(
+            f"The metadata has '{PULSE_DURATION_COLUMN}' but no '{PULSE_DATETIME_COLUMN}'. "
+            "Add the pulse's date and time (blank for an unpulsed control)."
+        )
+
+    out = metadata.copy()
+    cells = out[PULSE_DATETIME_COLUMN].to_numpy()
+    blank = np.array(
+        [c is None or (isinstance(c, float) and np.isnan(c)) or str(c).strip() in ("", "NaT", "nan") for c in cells]
+    )
+    stamps = [None if b else _pulse_datetime(c) for c, b in zip(cells, blank)]
+    unread = [i for i, (s, b) in enumerate(zip(stamps, blank)) if not b and s is None]
+
+    def _rows(idx):
+        return ", ".join(str(first_row + i) for i in idx[:10]) + (" ..." if len(idx) > 10 else "")
+
+    if unread:
+        raise ValueError(
+            f"{len(unread)} '{PULSE_DATETIME_COLUMN}' value(s) could not be read as a date "
+            f"and time (spreadsheet row(s) {_rows(unread)}; e.g. {cells[unread[0]]!r}). "
+            "Write it in the same format as start_datetime, or leave it blank for a "
+            "fly that got no pulse."
+        )
+
+    if has_dur:
+        raw = out[PULSE_DURATION_COLUMN]
+        dur = pd.to_numeric(raw, errors="coerce").to_numpy(dtype=float)
+        bad = [i for i, (r, d) in enumerate(zip(raw, dur)) if np.isnan(d) and str(r).strip() not in ("", "nan", "None")]
+        if bad:
+            raise ValueError(
+                f"{len(bad)} '{PULSE_DURATION_COLUMN}' value(s) are not a number of minutes "
+                f"(spreadsheet row(s) {_rows(bad)}; e.g. {raw.iloc[bad[0]]!r})."
+            )
+    else:
+        dur = np.full(len(out), np.nan)
+    # An unpulsed fly's duration is 0 whether written or left blank.
+    dur = np.where(blank & np.isnan(dur), 0.0, dur)
+    no_duration = [i for i in range(len(out)) if not blank[i] and not (dur[i] > 0)]
+    if no_duration:
+        raise ValueError(
+            f"{len(no_duration)} row(s) have a '{PULSE_DATETIME_COLUMN}' but no "
+            f"'{PULSE_DURATION_COLUMN}' above 0 (spreadsheet row(s) {_rows(no_duration)}). "
+            "Write the pulse length in minutes."
+        )
+    stray = [i for i in range(len(out)) if blank[i] and dur[i] != 0]
+    if stray:
+        raise ValueError(
+            f"{len(stray)} row(s) have a '{PULSE_DURATION_COLUMN}' above 0 but no "
+            f"'{PULSE_DATETIME_COLUMN}' (spreadsheet row(s) {_rows(stray)}). Add the "
+            "pulse's date and time, or write 0 for an unpulsed control."
+        )
+
+    # ISO text, "" where unpulsed: a column of Timestamps and blanks becomes
+    # datetime64 with NaT, and import reads the pulse back from text either way.
+    out["pulse_time"] = pd.Series(
+        ["" if s is None else s.isoformat() for s in stamps], index=out.index, dtype=object
+    )
+    out["pulse_duration_min"] = dur.astype("float32")
+    return out.drop(columns=[c for c in (PULSE_DATETIME_COLUMN, PULSE_DURATION_COLUMN) if c in out.columns])
+
+
 def pulse_zt_hours(ds):
     """Each fly's light-pulse time as a ZT hour (float64), NaN where unpulsed.
 
@@ -546,8 +643,9 @@ def pulse_zt_hours(ds):
     """
     if "pulse_time" not in ds.coords:
         raise ValueError(
-            "This dataset has no 'pulse_time' coordinate. Add a 'pulse_time' column to "
-            "the metadata (a ZT hour such as 'ZT15'; see metadata_template.csv) and reload it."
+            "This dataset has no light-pulse columns. Add 'pulse_datetime' (the pulse's "
+            "date and time, in the same format as start_datetime) and 'pulse_duration' "
+            "(minutes) to the metadata (see metadata_template.csv) and reload it."
         )
     return np.array([_parse_zt_hour(v) for v in np.asarray(ds["pulse_time"].values)], dtype="float64")
 
@@ -796,6 +894,7 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     # order-independent: from here on, row i of metadata IS column i of the
     # activity matrix, by fly id rather than by luck.
     # ---------------------------------------------------------------------
+    metadata = normalize_pulse_columns(metadata)
     if "id" not in metadata.columns:
         raise ValueError(
             "metadata must carry an 'id' column to be aligned with the activity "
@@ -1625,10 +1724,10 @@ def _derive_pulse_minute(ds):
     """
     if "pulse_time" not in ds.coords:
         raise ValueError(
-            "Cannot derive 'pulse_minute': dataset has no 'pulse_time' coordinate. "
-            "Add a 'pulse_time' column to the metadata (the pulse's date and time, in "
-            "the same format as start_datetime; see metadata_template.csv) and reload "
-            "the dataset."
+            "Cannot derive 'pulse_minute': dataset has no light-pulse columns. Add "
+            "'pulse_datetime' (the pulse's date and time, in the same format as "
+            "start_datetime) and 'pulse_duration' to the metadata (see "
+            "metadata_template.csv) and reload the dataset."
         )
     if ds.attrs.get("time_is_relative_minutes", 0) != 1:
         raise ValueError(
@@ -1654,7 +1753,7 @@ def _derive_pulse_minute(ds):
                 raise ValueError(
                     "Cannot derive 'pulse_minute': a pulse given as a ZT hour alone is "
                     "anchored to the LD-DD boundary, so the metadata also needs a "
-                    "'first_DD_day' column. Or write pulse_time as a date and time in "
+                    "'first_DD_day' column. Or use a pulse_datetime column, a date and time in "
                     "the same format as start_datetime."
                 )
             ds = add_phase_metadata(ds)
