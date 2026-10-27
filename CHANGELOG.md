@@ -126,9 +126,8 @@ clockwork run my_experiment.yaml
   fly and are drawn on the figure: brackets with stars or the p-value for two or
   three groups, a compact letter display for four or more, and the omnibus
   p-value when it is not significant. Sleep architecture uses Kruskal-Wallis +
-  Dunn (Holm); everything else uses Welch ANOVA + Games-Howell. A **Group
-  statistics** setting in the sidebar can apply one family everywhere, and the
-  QC report reads `outputs.group_stats`. A line under each tested figure names
+  Dunn (Holm); everything else uses Welch ANOVA + Games-Howell. The CLI QC
+  report's `outputs.group_stats` can apply one family everywhere. A line under each tested figure names
   the test. The full list is in `docs/stats-inventory.md`.
 - **Exports are Excel workbooks.** The analysis pages' CSV exports are `.xlsx`,
   and a figure with statistics adds a `Stats` sheet. The Export Data page, the

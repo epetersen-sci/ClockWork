@@ -26,6 +26,23 @@ import xarray as xr
 
 from clockwork.core import dam_utilities
 
+#: zlib level for saved .nc files.
+NETCDF_COMPLEVEL = 4
+
+
+def _compression_encoding(ds: xr.Dataset) -> dict:
+    """zlib + shuffle for every numeric, boolean or datetime variable with at least
+    one dimension. Strings (variable-length in netCDF4) and scalars are left as is.
+
+    Set on every save, so a Dataset loaded from an uncompressed .nc is written
+    compressed rather than with the encoding it was read with.
+    """
+    return {
+        name: {"zlib": True, "complevel": NETCDF_COMPLEVEL, "shuffle": True}
+        for name, var in ds.variables.items()
+        if var.ndim > 0 and var.dtype.kind in "biufcmM"
+    }
+
 
 def save_dataset_to_netcdf(
     ds: xr.Dataset, output_filename: str, output_dir: str = None, engine="netcdf4"
@@ -94,7 +111,9 @@ def save_dataset_to_netcdf(
     if output_dir is not None:
         output_filename = os.path.join(output_dir, output_filename)
     try:
-        ds_to_save.to_netcdf(output_filename, engine=engine)
+        ds_to_save.to_netcdf(
+            output_filename, engine=engine, encoding=_compression_encoding(ds_to_save)
+        )
     except Exception as e:
         # The Dataset is the single source of truth. A silent save
         # failure — no file written, no signal — is worse than any attribute issue,

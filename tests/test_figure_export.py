@@ -163,40 +163,40 @@ class TestTheButtonReallyWritesFiles:
     is named by the experiment on the dataset.
     """
 
-    def _loaded(self, master_ds, tmp_path, name="exp8"):
+    @staticmethod
+    def _loaded(master_ds, tmp_path, name="exp8"):
         ds = master_ds.copy()
         ds.attrs["source_data_dir"] = str(tmp_path)
         ds.attrs["experiment_name"] = name
         return ds
 
-    def test_clicking_it_writes_a_png_per_figure(self, app, master_ds, tmp_path):
-        from pathlib import Path
+    @pytest.fixture(scope="class")
+    def clicked(self, master_ds, tmp_path_factory):
+        """One click, shared: rendering the page's PNGs is the slow part."""
+        from conftest import make_app
 
-        at = app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
+        tmp_path = tmp_path_factory.mktemp("figures")
+        at = make_app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
         expected = [name for name, _ in at.session_state["_figures_drawn_this_run"]]
-        assert expected, "fixture drew no figures, so this test proves nothing"
-
         at.button(key="save_page_figures").click().run()
+        return at, expected, tmp_path / "Graph Exports_exp8"
 
-        out = Path(tmp_path) / "Graph Exports_exp8"
+    def test_clicking_it_writes_a_png_per_figure(self, clicked):
+        _, expected, out = clicked
+        assert expected, "fixture drew no figures, so this test proves nothing"
         written = sorted(p.name for p in out.glob("*.png"))
         assert written == sorted(expected)
 
-    def test_the_files_are_real_pngs(self, app, master_ds, tmp_path):
-        from pathlib import Path
-
-        at = app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
-        at.button(key="save_page_figures").click().run()
-
-        for path in (Path(tmp_path) / "Graph Exports_exp8").glob("*.png"):
+    def test_the_files_are_real_pngs(self, clicked):
+        _, _, out = clicked
+        for path in out.glob("*.png"):
             assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", f"{path.name} is not a PNG"
             assert path.stat().st_size > 1000, f"{path.name} is suspiciously small"
 
-    def test_it_reports_where_they_went(self, app, master_ds, tmp_path):
+    def test_it_reports_where_they_went(self, clicked):
         """The confirmation has to survive the rerun the click causes, or the only
         record of where a dozen files landed is gone by the time you look."""
-        at = app(ds=self._loaded(master_ds, tmp_path), page="sleep_activity")
-        at.button(key="save_page_figures").click().run()
+        at, _, _ = clicked
         assert any("Graph Exports_exp8" in s.value for s in at.success)
 
     def test_renaming_the_experiment_moves_the_output(self, app, master_ds, tmp_path):
@@ -209,5 +209,5 @@ class TestTheButtonReallyWritesFiles:
         at.switch_page("app_pages/sleep_activity.py").run()
         at.button(key="save_page_figures").click().run()
 
-        assert (Path(tmp_path) / "Graph Exports_after").glob("*.png")
+        assert list((Path(tmp_path) / "Graph Exports_after").glob("*.png"))
         assert not list((Path(tmp_path) / "Graph Exports_before").glob("*.png"))

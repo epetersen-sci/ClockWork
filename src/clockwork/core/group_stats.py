@@ -36,7 +36,7 @@ RECOMMENDED = "recommended"
 #: Counts rather than per-fly values: the share of flies called rhythmic.
 PROPORTION = "proportion"
 
-#: The sidebar / CLI setting: ``recommended`` uses each measure's own family.
+#: The CLI setting: ``recommended`` uses each measure's own family.
 SETTINGS = {
     RECOMMENDED: "Recommended per measure",
     WELCH: "Welch ANOVA + Games-Howell for everything",
