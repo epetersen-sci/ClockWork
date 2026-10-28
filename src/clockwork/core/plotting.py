@@ -2422,17 +2422,21 @@ def sleep_state_scalogram(
     return fig
 
 
-def single_fly_scalogram_plotly(scalogram_data, fly_id=""):
+def single_fly_scalogram_plotly(scalogram_data, fly_id="", max_columns=2000):
     """
     Interactive Plotly scalogram for a single fly's CWT results.
 
     Parameters
     ----------
     scalogram_data : dict
-        Output of periodograms.compute_single_fly_scalogram(). Expected keys:
-        'power', 'periods_hours', 'activity_processed', 'smoothed_periods'.
+        Output of periodograms.compute_single_fly_scalogram(): ``power``,
+        ``periods_hours``, ``time_hours``, ``activity`` and ``ridge_periods``
+        (``activity_processed`` / ``smoothed_periods`` are read too).
     fly_id : str
         Fly identifier for the plot title.
+    max_columns : int
+        Time columns drawn at most; every n-th column is kept beyond that, which
+        keeps a 1-minute record of many days small enough to send to a browser.
 
     Returns
     -------
@@ -2452,8 +2456,9 @@ def single_fly_scalogram_plotly(scalogram_data, fly_id=""):
 
     power = scalogram_data.get("power")
     periods = scalogram_data.get("periods_hours")
-    activity = scalogram_data.get("activity_processed")
-    ridge = scalogram_data.get("smoothed_periods")
+    activity = scalogram_data.get("activity", scalogram_data.get("activity_processed"))
+    ridge = scalogram_data.get("ridge_periods", scalogram_data.get("smoothed_periods"))
+    time_h = scalogram_data.get("time_hours")
 
     if power is None or periods is None:
         return go.Figure().add_annotation(
@@ -2466,7 +2471,13 @@ def single_fly_scalogram_plotly(scalogram_data, fly_id=""):
         )
 
     n_t = power.shape[1]
-    t = np.arange(n_t)
+    t = np.asarray(time_h, dtype=float) if time_h is not None else np.arange(n_t) / 60.0
+    step = max(1, int(np.ceil(n_t / max(1, int(max_columns)))))
+    if step > 1:
+        power = power[:, ::step]
+        t = t[::step]
+        activity = None if activity is None else np.asarray(activity)[::step]
+        ridge = None if ridge is None else np.asarray(ridge)[::step]
 
     fig = make_subplots(
         rows=2,
@@ -2541,7 +2552,7 @@ def single_fly_scalogram_plotly(scalogram_data, fly_id=""):
         )
     else:
         fig.update_yaxes(type="linear", title_text="Period (hours)", row=2, col=1)
-    fig.update_xaxes(title_text="Time (minutes)", row=2, col=1)
+    fig.update_xaxes(title_text="Time (hours)", row=2, col=1)
     fig.update_layout(title=f"CWT Scalogram — {fly_id}", height=600)
     return fig
 

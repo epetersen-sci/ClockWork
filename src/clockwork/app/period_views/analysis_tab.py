@@ -5,16 +5,14 @@ re-run?" checkbox and its own Run button. They are four checkboxes and one butto
 now: which methods to run is the decision, and it is made once.
 """
 
-import os
 
 import streamlit as st
 
 from clockwork import pipeline
-from clockwork.app import export_helpers
 from clockwork.app.preprocessing_widgets import render_preprocess_controls
 from clockwork.app.ui.changed import flag_if_changed
 from clockwork.app.ui.period_context import store_master
-from clockwork.core import dam_utilities, periodograms
+from clockwork.core import periodograms
 from clockwork.core.calibrations import DEFAULT_CWT_METHOD
 
 #: (key, label, the per-fly output that says it has been run)
@@ -209,28 +207,10 @@ def _advanced_options():
                 persist_state="session",
             )
             flag_if_changed(opts["cwt_method"], DEFAULT_CWT_METHOD)
-            c1, c2 = st.columns(2)
-            with c1:
-                opts["cwt_group_averages"] = st.checkbox(
-                    "Compute group-averaged scalograms (saved to disk)",
-                    value=False,
-                    help="Writes one PNG + CSV per group to "
-                    "'<working_dir>/Averaged Scalograms/'.",
-                    key="cwt_compute_group_averages",
-                    persist_state="session",
-                )
-                flag_if_changed(opts["cwt_group_averages"], False)
-            with c2:
-                opts["cwt_avg_filter"] = st.checkbox(
-                    "Only AC-rhythmic flies in the average",
-                    value=True,
-                    help="Off-rhythm power spectra are mostly noise and smear the group "
-                    "mean. Disable when loss of rhythmicity is the point.",
-                    key="cwt_avg_filter_nonrhythmic",
-                    persist_state="session",
-                    disabled=not opts["cwt_group_averages"],
-                )
-                flag_if_changed(opts["cwt_avg_filter"], True)
+            st.caption(
+                "Scalograms are drawn on the **Scalograms** tab after the run, so "
+                "the flies averaged can follow a rhythmic call made afterwards."
+            )
         with t_ls:
             opts["ls_oversampling"] = st.number_input(
                 "Oversampling (samples_per_peak)",
@@ -317,8 +297,6 @@ def _config(key, ctx, opts):
             "voices_per_octave": opts["cwt_voices"],
             "reduction": opts["cwt_method"],
             "preprocessing": pipeline.Preprocessing.from_core(pre["CWT"]),
-            "group_scalograms": bool(opts["cwt_group_averages"]),
-            "scalogram_flies": "rhythmic" if opts["cwt_avg_filter"] else "all",
         }
     elif key == "ls":
         method = {
@@ -356,15 +334,9 @@ def _run_one(key, ctx, opts, progress):
     def _cb(done, total):
         progress.progress(done / total, text=f"{LABELS[key]}: fly {done}/{total}")
 
-    out_dir = None
-    if key == "cwt" and opts["cwt_group_averages"]:
-        # Beside the source monitor data (survives a .nc reload), never the launch dir.
-        wd = dam_utilities.resolve_export_dir(ctx.ds, st.session_state.get("working_dir"))
-        out_dir = os.path.join(wd, "Averaged Scalograms")
-
     # The MASTER, as every write must be (ARCHITECTURE rule 11). The averages'
     # file names carry the phase run, so DD and LD reruns don't overwrite each other.
-    master, averages = pipeline.run_period_method(
+    master, _ = pipeline.run_period_method(
         st.session_state.dataset,
         _config(key, ctx, opts),
         _METHOD_FOR_KEY[key],
@@ -372,12 +344,7 @@ def _run_one(key, ctx, opts, progress):
     )
     store_master(master)
     if key == "cwt":
-        saved = []
-        if averages and out_dir:
-            saved = export_helpers.save_group_average_scalograms(averages, out_dir, ds=master)
-        if saved:
-            return f"CWT done; {len(saved)} averaged scalogram(s) saved to `{out_dir}`."
-        return "CWT done."
+        return "CWT done. Group scalograms are on the Scalograms tab."
     return f"{LABELS[key]} done."
 
 
@@ -411,29 +378,11 @@ def render(ctx):
 
     opts = _advanced_options()
 
-    # Averaging CWT scalograms over AC-rhythmic flies needs the AC classification;
-    # without it the filter would quietly include every fly. CWT can take many
-    # minutes, so say so before the run rather than after.
-    need_confirm = (
-        "cwt" in chosen
-        and opts["cwt_group_averages"]
-        and opts["cwt_avg_filter"]
-        and "ac_rhythmic" not in ctx.period_ds.coords
-    )
-    proceed = True
-    if need_confirm:
-        st.warning(
-            "**Autocorrelation has not been classified**, so the averaged scalograms "
-            "would include every fly. Classify on the **Rhythmicity cutoff** tab first, "
-            "or proceed anyway."
-        )
-        proceed = st.checkbox("Proceed without AC rhythmic filtering", key="cwt_avg_proceed_unfiltered")
-
     if st.button(
         "Run analysis",
         type="primary",
         key="run_period_analysis",
-        disabled=not chosen or not proceed,
+        disabled=not chosen,
         help="Runs each ticked method in turn on the phase and period range above.",
     ):
         notes = []

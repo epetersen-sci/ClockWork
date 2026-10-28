@@ -114,6 +114,14 @@ clockwork run my_experiment.yaml
 
 ### New in the GUI
 
+- **Period & rhythmicity → Scalograms** draws CWT scalograms after the CWT has
+  run: group averages over all flies or over the flies one method calls rhythmic
+  (autocorrelation, CWT or Lomb-Scargle), saved as PNG + CSV to
+  `Averaged Scalograms/` in the working folder, and one fly's scalogram with its
+  activity and ridge. The transform is recomputed for the chosen flies with the
+  settings the CWT run recorded. The Analysis tab's "Compute group-averaged
+  scalograms" and "Only AC-rhythmic flies" checkboxes are gone; `clockwork run`
+  still takes `group_scalograms` in a config.
 - **Save & export → Settings (.yaml)** writes the config for every analysis that
   has run on the dataset, read off the dataset itself (so it works on a `.nc`
   saved long ago too). Run it with `clockwork run` to repeat the analysis, or

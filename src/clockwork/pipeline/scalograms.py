@@ -3,8 +3,13 @@
 A CWT run can average each group's scalogram (period x time x power), optionally
 over only the flies autocorrelation calls rhythmic. ``periodograms.wavelet_analysis``
 returns the arrays; this writes them, so the analysis never decides where files
-go. The Period page (into ``Averaged Scalograms/`` in the working folder) and
-``clockwork run`` (into ``scalograms/`` in the run's output folder) both call it.
+go. The Period page's Scalograms tab (into ``Averaged Scalograms/`` in the
+working folder) and ``clockwork run`` (into ``scalograms/`` in the run's output
+folder) both call it.
+
+The Scalograms tab computes its averages after the run, with
+:func:`compute_group_average_scalograms`, so the flies averaged can follow a
+rhythmic call made after the CWT ran.
 """
 
 from __future__ import annotations
@@ -13,6 +18,76 @@ import datetime
 import json
 import os
 import re
+
+#: The rhythmic calls a scalogram average can be restricted to, in the order
+#: offered: ``{flag coord: label}``.
+RHYTHMIC_FLAGS = {
+    "ac_rhythmic": "Autocorrelation-rhythmic",
+    "cwt_rhythmic": "CWT-rhythmic",
+    "ls_rhythmic": "Lomb-Scargle-rhythmic",
+}
+
+
+def compute_group_average_scalograms(master, *, groups=None, flag=None, progress=None):
+    """Group-averaged CWT scalograms for a dataset the CWT has already run on.
+
+    The transform is recomputed for the chosen flies only, with the settings the
+    CWT run recorded on ``master`` (phase, period range, wavelet resolution,
+    reduction, preprocessing, gap bridging), so it is the same calculation as
+    the run's own averages. ``master`` is not changed.
+
+    Parameters
+    ----------
+    groups : iterable of str, optional
+        ``group`` labels to average; every group when None.
+    flag : str, optional
+        A boolean per-fly coord from :data:`RHYTHMIC_FLAGS`; only flies where it
+        is True are averaged. None averages every fly.
+    progress : callable, optional
+        ``progress(done, total)``.
+
+    Returns
+    -------
+    (list of dict, dict)
+        The averages as :func:`periodograms.wavelet_analysis` returns them, and
+        ``{group: (n flies averaged, n flies in the group)}``.
+
+    Raises
+    ------
+    ValueError
+        When the CWT has not run on ``master``, ``flag`` is not on it, or no fly
+        is left to average.
+    """
+    import numpy as np
+
+    from clockwork.pipeline import period as _period
+
+    config = _period.PeriodConfig.from_attrs(master.attrs, master.coords)
+    if config is None or config.methods.cwt is None:
+        raise ValueError("The CWT has not been run on this dataset. Run it on the Analysis tab first.")
+    if flag is not None and flag not in master.coords:
+        raise ValueError(f"No '{flag}' call on this dataset. Classify it on the Rhythmicity cutoff tab.")
+
+    labels = np.asarray(master["group"].values).astype(str)
+    keep = np.ones(labels.size, dtype=bool)
+    if groups is not None:
+        keep &= np.isin(labels, [str(g) for g in groups])
+    in_group = {str(g): int(np.sum(keep & (labels == g))) for g in np.unique(labels[keep])}
+    if flag is not None:
+        keep &= np.asarray(master[flag].values, dtype=bool)
+    if not keep.any():
+        raise ValueError("No fly is left to average with these groups and this rhythmic call.")
+
+    cwt = config.methods.cwt.model_copy(update={"group_scalograms": True, "scalogram_flies": "all"})
+    config = config.model_copy(update={"methods": config.methods.model_copy(update={"cwt": cwt})})
+    _, averages = _period.run_period_method(
+        master.isel(id=np.flatnonzero(keep)), config, "cwt", progress
+    )
+    counts = {
+        a["group"]: (int(a["n_flies"]), in_group.get(a["group"], int(a["n_flies"])))
+        for a in averages
+    }
+    return averages, counts
 
 
 def save_group_average_scalograms(group_averages, out_dir, ds=None, *, timestamp=True):

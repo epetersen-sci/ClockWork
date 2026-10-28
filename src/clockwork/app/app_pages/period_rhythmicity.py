@@ -26,6 +26,7 @@ from clockwork.app.period_views import (
     period_length_tab,
     periodograms_tab,
     rhythmicity_tab,
+    scalograms_tab,
 )
 from clockwork.app.ui import facet_panels
 from clockwork.app.ui.filters import DISPLAY_GROUPS_KEY, group_filter_sidebar
@@ -84,6 +85,7 @@ _TABS = [
     ("Period length", period_length_tab),
     ("Rhythmicity", rhythmicity_tab),
     ("Periodograms", periodograms_tab),
+    ("Scalograms", scalograms_tab),
 ]
 for tab, (_, view) in zip(
     st.tabs([name for name, _ in _TABS], key="period_rhythm_tab", on_change="rerun"), _TABS

@@ -83,28 +83,57 @@ class TestCutoffTab:
 
 
 class TestGroupScalograms:
-    def test_the_checkbox_is_recorded_and_the_files_are_written(self, app, page_ds, tmp_path):
-        """The page's "group-averaged scalograms" choice is part of the CWT's
-        config, so Export settings carries it to `clockwork run`."""
-        ticks = {f"run_method_{m}": m == "cwt" for m in METHODS}
-        at = app(
-            ds=page_ds,
-            page=PAGE,
-            **{TAB: "Analysis"},
-            **ticks,
-            **SETTINGS,
-            working_dir=str(tmp_path),
-            cwt_compute_group_averages=True,
-            # Every fly: no autocorrelation call exists to filter by.
-            cwt_avg_filter_nonrhythmic=False,
+    @pytest.fixture(scope="class")
+    def cwt_ds(self, page_ds):
+        config = PeriodConfig(
+            period_range_hours=(18.0, 30.0),
+            min_dd_days=3.0,
+            methods={"cwt": {"group_scalograms": True, "scalogram_flies": "all"}},
         )
-        at.button(key="run_period_analysis").click()
-        at.session_state[TAB] = "Analysis"
+        master, averages = pipeline.run_period_method(page_ds, config, "cwt")
+        return master, averages
+
+    def test_the_tab_recomputes_what_the_run_averaged(self, cwt_ds):
+        """Recomputed afterwards from the recorded settings, the averages are the
+        ones the CWT run itself produced."""
+        from clockwork.pipeline import scalograms
+
+        master, run_averages = cwt_ds
+        again, counts = scalograms.compute_group_average_scalograms(master)
+        by_group = {a["group"]: a for a in run_averages}
+        assert {a["group"] for a in again} == set(by_group)
+        for a in again:
+            ref = by_group[a["group"]]
+            assert a["n_flies"] == ref["n_flies"] == counts[a["group"]][0]
+            np.testing.assert_allclose(a["mean_power"], ref["mean_power"], rtol=1e-5)
+
+    def test_a_rhythmic_call_narrows_the_flies(self, cwt_ds):
+        from clockwork.pipeline import scalograms
+
+        master, _ = cwt_ds
+        flag = np.zeros(master.sizes["id"], dtype=bool)
+        flag[0] = True
+        marked = master.assign_coords(ac_rhythmic=("id", flag))
+        averages, counts = scalograms.compute_group_average_scalograms(marked, flag="ac_rhythmic")
+        assert sum(n for n, _ in counts.values()) == 1
+        assert len(averages) == 1
+
+    def test_without_a_cwt_run_it_says_so(self, page_ds):
+        from clockwork.pipeline import scalograms
+
+        with pytest.raises(ValueError, match="CWT has not been run"):
+            scalograms.compute_group_average_scalograms(page_ds)
+
+    def test_the_tab_draws_and_saves_them(self, app, cwt_ds, tmp_path):
+        master, _ = cwt_ds
+        at = app(ds=master, page=PAGE, **{TAB: "Scalograms"}, **SETTINGS, working_dir=str(tmp_path))
+        assert not at.exception, at.exception
+        at.button(key="scalogram_run").click()
+        at.session_state[TAB] = "Scalograms"
         at.run()
         assert not at.exception, at.exception
-        ds = at.session_state["dataset"]
-        cwt = PeriodConfig.from_attrs(ds.attrs, ds.coords).methods.cwt
-        assert cwt.group_scalograms is True
-        assert cwt.scalogram_flies == "all"
-        pngs = list((tmp_path / "Averaged Scalograms").glob("averaged_scalogram_*_DD_*.png"))
-        assert len(pngs) == len({str(g) for g in page_ds["group"].values})
+        assert not at.error, [e.value for e in at.error]
+        pngs = list((tmp_path / "Averaged Scalograms").glob("averaged_scalogram_*.png"))
+        assert len(pngs) == len({str(g) for g in master["group"].values})
+        # And the one-fly view below it draws a figure.
+        assert at.get("plotly_chart")
