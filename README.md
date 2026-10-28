@@ -296,7 +296,7 @@ group the flies.
 | `pulse_time`, `pulse_duration_min` | Older files | `ZT15`, `60` | The earlier pair, still read. `pulse_time` may be a date-time or the ZT-hour shorthand (`ZT15`, `15`), which assumes the pulse fell on the last LD day before `first_DD_day`; a blank `pulse_duration_min` reads as not recorded. A file uses one pair or the other. |
 | `pulse_intensity` | Optional | `100` | Pulse intensity, in whatever unit your rig reports. Not required, but when present it is what separates two arms that share a genotype, time and duration, and phase shift draws those side by side. |
 | `condition` | Optional | `ZT15_60min` | A readable label for an arm. Once a grouping factor in its own right for phase shift; the control is now found from `pulse_duration` instead, so this is just another column you can group by. |
-| `temperature` | Optional | `25C` | Historically the second half of the default group label. |
+| `temperature` | Optional | `25C` | A grouping factor like any other column. |
 | `sex`, `treatment`, `incubator`, `notes`, … | Optional | `M` | **Any column you invent** becomes a per-fly coordinate and an eligible grouping factor. |
 
 Do **not** add an `id` column — ClockWork computes it as

@@ -504,7 +504,7 @@ class TestCommands:
         path = tmp_path / "new.yaml"
         assert cli.main(["init", str(path), "--metadata", str(raw / "metadata.csv")]) == 0
         text = path.read_text(encoding="utf-8")
-        assert "by: [genotype, temperature]" in text
+        assert "by: [genotype]" in text
         assert "split:" in text and "phase: DD" in text
         assert cli.main(["validate", str(path)]) == 0
         assert "OK" in capsys.readouterr().out

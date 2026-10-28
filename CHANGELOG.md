@@ -75,7 +75,9 @@ command that runs the GUI or runs a whole analysis from a YAML file.
   an unpulsed fly with a blank duration counts as 0.
 - **Phase shift can use rhythmic flies only**, by the autocorrelation calls from
   the Period page. On by default when those calls exist.
-- **Import groups by genotype by default** (was genotype + temperature).
+- **Import groups by genotype by default** (was genotype + temperature), on the
+  Import page and in `clockwork run` when `groups.by` is not set;
+  `clockwork init` writes `by: [genotype]`.
 - **The phase response curve** joins each line's means with a spline, plots the
   unpulsed controls at a "no pulse" tick, and drops grouping columns that only
   re-label the pulse time from the line definition. The per-fly violins take the

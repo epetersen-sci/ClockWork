@@ -196,7 +196,7 @@ class TestSubsets:
         out = pipeline.subset(built, keep)
         expected = [i for i, g in zip(built["id"].values, built["group"].values) if str(g) == label]
         assert list(out["id"].values) == expected
-        assert all(set(combo) == {"genotype", "temperature"} for combo in keep)
+        assert all(set(combo) == {"genotype"} for combo in keep)
 
 
 class TestValidation:

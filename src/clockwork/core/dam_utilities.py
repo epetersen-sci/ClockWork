@@ -1131,13 +1131,13 @@ def create_xarray_dataset(dam_data: pd.DataFrame, metadata: pd.DataFrame, group_
     attrs["metadata_coords"] = sorted(_meta_coords)
 
     # Combined group label for group-level analysis. ``group_columns`` chooses which
-    # metadata factors define the comparison group; when None we reproduce the
-    # historical default (genotype[-temperature]) exactly. The chosen columns are
-    # recorded in attrs so the grouping is persistent and re-derivable.
+    # metadata factors define the comparison group; when None it is genotype, as
+    # on the Import page. The chosen columns are recorded in attrs so the
+    # grouping is persistent and re-derivable.
     if group_columns:
         chosen = [c for c in group_columns if c in metadata.columns]
     else:
-        chosen = [c for c in ("genotype", "temperature") if c in metadata.columns]
+        chosen = [c for c in ("genotype",) if c in metadata.columns]
     if chosen:
         # From the coords just built, by the same function Redefine groups uses,
         # so the labels cannot depend on which path made them (BACKLOG 21).

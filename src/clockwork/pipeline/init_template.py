@@ -36,10 +36,10 @@ def init_text(out: Path, metadata=None, monitors=None) -> str:
 
     if columns is not None:
         groupable = [c for c in columns if c not in GROUP_EXCLUDE_COLUMNS]
-        by = [c for c in ("genotype", "temperature") if c in columns] or groupable[:1]
+        by = [c for c in ("genotype",) if c in columns] or groupable[:1]
         boundary = "first_DD_day" in columns
     else:
-        groupable, by, boundary = None, ["genotype", "temperature"], True
+        groupable, by, boundary = None, ["genotype"], True
 
     def rel(p, fallback):
         if p is None:

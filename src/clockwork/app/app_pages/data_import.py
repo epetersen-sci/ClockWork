@@ -386,8 +386,7 @@ with tab_fresh:
             with st.spinner("Creating xarray dataset..."):
                 try:
                     # The chosen group columns (persisted via the multiselect key);
-                    # none chosen falls back to the historical genotype-temperature
-                    # default. The experiment name is the field's, "" included: the
+                    # none chosen falls back to genotype. The experiment name is the field's, "" included: the
                     # field was seeded from the metadata file's name, so a name the
                     # user cleared stays cleared.
                     ds = pipeline.build_dataset(
