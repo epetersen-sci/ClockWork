@@ -54,7 +54,14 @@ class TestImportPage:
 
         at = _import_through_the_page(app, raw_folder)
         inputs = InputsConfig(metadata=raw_folder / "metadata_exp17.csv", monitors=raw_folder)
-        direct = pipeline.build_dataset(pipeline.read_monitors(inputs), inputs, experiment_name="exp17")
+        # The page groups by genotype alone by default; the pipeline's default
+        # (groups.by unset) is genotype + temperature.
+        direct = pipeline.build_dataset(
+            pipeline.read_monitors(inputs),
+            inputs,
+            GroupsConfig(by=["genotype"]),
+            experiment_name="exp17",
+        )
         page = at.session_state["dataset"]
         assert page.attrs["experiment_name"] == direct.attrs["experiment_name"] == "exp17"
         assert page.identical(direct)
