@@ -1,10 +1,12 @@
 """
 Phase Shift Analysis — measure each fly's phase shift after a light pulse.
 
-Requires a ``pulse_time`` column in the metadata: the pulse's date and time, in the
-same format as ``start_datetime`` (which is ZT0), so its day and ZT follow from it.
-The older ZT-hour shorthand (ZT15) also works, anchored by ``first_DD_day`` to the
-last entrained day before DD release.
+Requires ``pulse_datetime`` and ``pulse_duration`` columns in the metadata: the
+pulse's date and time, in the same format as ``start_datetime`` (which is ZT0), so
+its day and ZT follow from it, and its length in minutes. An unpulsed control has a
+blank ``pulse_datetime`` and a ``pulse_duration`` of 0. Files written with the older
+``pulse_time`` / ``pulse_duration_min`` columns (``pulse_time`` may also be the
+ZT-hour shorthand, anchored by ``first_DD_day``) are still read.
 """
 
 
@@ -43,15 +45,17 @@ ds = require_dataset()
 
 if "pulse_time" not in ds.coords:
     st.error(
-        "This dataset has no **pulse_time** column. Phase-shift analysis needs to know at "
-        "what circadian time the light pulse was given.\n\n"
-        "Add a `pulse_time` column to your metadata file — the pulse's date and time, in "
-        "the same format as `start_datetime` (e.g. `1/17/2024 0:00`) — "
-        "and a `pulse_duration_min` column, then reload the dataset on the "
-        "**Data → Import** page. See `metadata_template.csv` for the format.\n\n"
-        "For a group that received no pulse, leave `pulse_time` blank and write **0** "
-        "in `pulse_duration_min`. The 0 is what identifies it as the control; a blank "
-        "there reads as \"not recorded\" and leaves the group unmatched."
+        "This dataset has no light-pulse columns. Phase-shift analysis needs to know "
+        "when each fly's light pulse was given.\n\n"
+        "Add two columns to your metadata file and reload it on the **Data → Import** "
+        "page (see `metadata_template.csv`):\n\n"
+        "- `pulse_datetime` — the pulse's date and time, in the same format as "
+        "`start_datetime` (e.g. `1/17/2024 0:00`). Its ZT is worked out from "
+        "`start_datetime`, which is ZT0.\n"
+        "- `pulse_duration` — its length in minutes.\n\n"
+        "For a group that received no pulse, leave `pulse_datetime` blank and write "
+        "**0** in `pulse_duration`. Sex, pulse intensity or any other column can still "
+        "be used to define groups."
     )
     st.stop()
 
@@ -65,9 +69,33 @@ if ds.attrs.get("time_is_relative_minutes", 0) != 1:
 # Pulse position per fly, in minutes from that fly's recording start.
 try:
     ds_pulse = ds if "pulse_minute" in ds.coords else dam_utilities.add_pulse_metadata(ds)
+    ds_pulse = dam_utilities.add_pulse_zt(ds_pulse)
 except Exception as exc:  # surfacing the reason beats a blank page
     st.error(f"Could not derive the pulse position from the metadata: {exc}")
     st.stop()
+
+# Flies called arrhythmic by autocorrelation (Period page) are left out of every
+# result on this page, pulsed and control alike.
+_has_ac = "ac_rhythmic" in ds_pulse.coords
+rhythmic_only = st.checkbox(
+    "Rhythmic flies only (autocorrelation)",
+    value=_has_ac,
+    disabled=not _has_ac,
+    key="ps_rhythmic_only",
+    help="Uses the autocorrelation calls from the Period page.",
+)
+if not _has_ac:
+    st.caption(
+        "No autocorrelation calls on this dataset. Run autocorrelation on the Period "
+        "page to use only rhythmic flies."
+    )
+elif rhythmic_only:
+    _ac_keep = np.asarray(ds_pulse["ac_rhythmic"].values, dtype=bool)
+    st.caption(
+        f"{int((~_ac_keep).sum())} of {_ac_keep.size} flies called arrhythmic by "
+        "autocorrelation are left out."
+    )
+    ds_pulse = ds_pulse.isel(id=np.flatnonzero(_ac_keep))
 
 pulse_minutes = np.asarray(ds_pulse["pulse_minute"].values, dtype=float)
 n_pulsed = int(np.isfinite(pulse_minutes).sum())
@@ -75,7 +103,7 @@ n_total = pulse_minutes.size
 
 if n_pulsed == 0:
     st.error(
-        "Every fly's `pulse_time` is blank, so there is no pulse to measure a shift "
+        "Every fly's `pulse_datetime` is blank, so there is no pulse to measure a shift "
         "around. Fill in the pulse time for at least one group and reload."
     )
     st.stop()
@@ -159,13 +187,7 @@ with _tab_setup:
     reference = REFERENCE_LABELS[reference_label]
 
     if reference == "control":
-        st.caption(
-            "This is the lab's `peakphaseplot.m` comparison: average each group's activity, "
-            "smooth it, take one peak per day, and report the pulsed group's peak time minus "
-            "the unpulsed control's on the same day. Validated against the lab's own SCAMP "
-            "exports — from day 1 on, the two agree to a median of 2 min (worst 12 min). "
-            "Results are per group per day, not per fly."
-        )
+        st.caption("Each group's daily peak time minus its unpulsed control's on the same day.")
         if _pre_pulse_days < int(DEFAULT_PHASE_SHIFT_MIN_PRE_DAYS):
             st.info(
                 f"This protocol leaves only **{_pre_pulse_days}** full day(s) before the pulse, "
@@ -192,7 +214,6 @@ with _tab_setup:
         # peakphaseplot.m is a peak-matching method; there is no onset variant of it to
         # be faithful to, so don't offer one here.
         method = "peak"
-        st.caption("Peak matching, as in `peakphaseplot.m`.")
 
         # Which metadata factors define a group. Splitting by sex as well as genotype and
         # condition is the usual reason to change this — the lab plots the sexes apart.
@@ -205,70 +226,26 @@ with _tab_setup:
         if not _coord_opts:
             st.error("This dataset has no categorical metadata coordinates to group by.")
             st.stop()
-        # Start from the grouping the dataset already has (get_group_coord_names),
-        # so this page partitions the flies the way every other page does.
-        #
-        # Unlike the actograms page this cannot simply select the `group` coord: the
-        # matched pairing needs a column that separates pulsed from unpulsed, which
-        # means the grouping has to stay decomposable. A column that does that is
-        # added when the import grouping did not include one — without it every
-        # group is its own control and the pairing has nothing to do.
-        #
-        # Pulse duration leads the list because it is what now identifies a control
-        # (a group whose pulse was 0 minutes long), and the unpulsed arm has to be a
-        # group of its own before it can be found.
-        _grp_default = [
-            c for c in dam_utilities.get_group_coord_names(ds) if c in _coord_opts
-        ]
-
+        # Genotype and the pulse's ZT. `pulse_ZT` is worked out from the pulse time
+        # when the metadata has no such column (dam_utilities.add_pulse_zt).
         def _separates_something(col):
-            """Whether ``col`` takes more than one value across these flies.
-
-            A column that does not splits nothing, and adding it to the grouping
-            only lengthens every label — ``A_LP`` becomes ``A_LP_nan``. That is
-            exactly what happens with the ``pulse_duration_min`` that
-            ``add_pulse_metadata`` invents, all-NaN, for a dataset whose metadata
-            never carried one.
-            """
+            """Whether ``col`` takes more than one value across these flies."""
             if col not in ds_pulse.coords:
                 return False
             vals = {v for v in np.asarray(ds_pulse[col].values).astype(str) if v != "nan"}
             return len(vals) > 1
 
-        _cond_like = next(
-            (
+        _zt_col = dam_utilities.PULSE_ZT_COORD
+        if "genotype" in _coord_opts:
+            _grp_default = ["genotype"]
+        else:
+            _grp_default = [
                 c
-                for c in (
-                    "pulse_duration_min",
-                    "condition",
-                    "treatment",
-                    "pulse_time",
-                )
-                if c in _coord_opts and _separates_something(c)
-            ),
-            None,
-        )
-        if _cond_like and _cond_like not in _grp_default:
-            _grp_default = _grp_default + [_cond_like]
-        # The phase response curve's x axis is the pulse time, so pulses given at
-        # different times must be different groups.
-        _pulse_times = (
-            {
-                str(v)
-                for v, m in zip(np.asarray(ds_pulse["pulse_time"].values), pulse_minutes)
-                if np.isfinite(m)
-            }
-            if "pulse_time" in ds_pulse.coords
-            else set()
-        )
-        if (
-            "pulse_time" in _coord_opts
-            and len(_pulse_times) > 1
-            and "pulse_time" not in _grp_default
-        ):
-            _grp_default = _grp_default + ["pulse_time"]
-        if not _grp_default:
-            _grp_default = [c for c in ("genotype", "condition") if c in _coord_opts]
+                for c in dam_utilities.get_group_coord_names(ds)
+                if c in _coord_opts and c not in ps_module.PULSE_COORDS
+            ]
+        if _zt_col in _coord_opts and _separates_something(_zt_col):
+            _grp_default = _grp_default + [_zt_col]
         group_by = st.multiselect(
             "Group-defining columns",
             _coord_opts,
@@ -286,18 +263,6 @@ with _tab_setup:
 
         def _looks_unpulsed(text):
             return any(t in str(text).lower() for t in ("nolp", "no_lp", "no lp", "control"))
-
-        def _is_numeric_coord(dset, col):
-            """Whether ``col`` holds numbers — a duration, an intensity, a ZT hour.
-
-            Asked of the VALUES rather than of the dtype: coords arrive as strings
-            often enough (a metadata column with one blank cell comes in as object)
-            that a dtype check would reject the very column the control test needs.
-            """
-            vals = pd.to_numeric(
-                pd.Series(np.asarray(dset[col].values).astype(str)), errors="coerce"
-            )
-            return bool(vals.notna().any())
 
         # What a control has to SHARE with the group it references: everything that
         # defines a group except the pulse itself, since the pulse is what the two
@@ -337,35 +302,21 @@ with _tab_setup:
         pairing = PAIRING_LABELS[pairing_label]
 
         if pairing == "matched":
-            # Which group is the control is read off the PULSE: a group whose pulse
-            # duration is 0 got no pulse, whatever the metadata calls it. The
-            # previous version searched a `condition` column for the literal string
-            # "noLP", which worked on this lab's spreadsheet and silently found
-            # nothing on anyone else's — and took three widgets to configure a
-            # question the data already answers. The control is matched on every
-            # grouping column EXCEPT the pulse ones, so one unpulsed cohort serves
-            # every dose its genotype received.
-            # "No pulse" is the number zero, so it needs a column that holds
-            # numbers. A dataset recorded before anyone wrote a pulse duration down
-            # has only a categorical arm label ("noLP"), and for those the control
-            # value is still named by hand — the old behaviour, kept for old data
-            # rather than left in the way of new.
-            _numeric_cols = [c for c in _cols if _is_numeric_coord(ds_pulse, c)]
-            _dur_default = next(
-                (
-                    c
-                    for c in ("pulse_duration_min", "pulse_duration", "duration")
-                    if c in _numeric_cols
-                ),
-                _numeric_cols[0] if _numeric_cols else None,
+            # A control is a group whose flies all had a 0-minute pulse, read off
+            # `pulse_duration_min` whether or not it is a grouping column. An
+            # unpulsed fly with a blank duration counts as 0 (add_pulse_zt). Data
+            # with no 0 duration names its control arm by hand.
+            _durs = (
+                np.asarray(ds_pulse["pulse_duration_min"].values, dtype=float)
+                if "pulse_duration_min" in ds_pulse.coords
+                else np.array([])
             )
+            _dur_default = "pulse_duration_min" if bool((_durs == 0).any()) else None
 
             if _dur_default is None:
                 st.caption(
-                    "None of the grouping columns hold numbers, so the unpulsed arm "
-                    "cannot be recognised by its pulse being zero. Name it below. "
-                    "Adding a `pulse_duration_min` column to the metadata — 0 for the "
-                    "unpulsed flies — removes this step for good."
+                    "No fly has a pulse duration of 0, so the unpulsed arm cannot be "
+                    "found from the pulse. Name it below."
                 )
                 control_on = st.selectbox(
                     "Column that marks the unpulsed control",
@@ -381,8 +332,7 @@ with _tab_setup:
                     ),
                 )
                 # The arm label itself is what the two arms differ in, so it is the
-                # one column a control must NOT share — the same rule the numeric
-                # path applies to the pulse coords.
+                # one column a control must NOT share.
                 _matched_on = [c for c in _match_cols if c != control_on]
                 try:
                     control_group = ps_module.build_matched_control_map(
@@ -397,13 +347,7 @@ with _tab_setup:
                     st.stop()
                 _controls = sorted({g for g in _groups if control_group.get(g) == g})
             else:
-                control_on = st.selectbox(
-                    "Column that marks the unpulsed control",
-                    _numeric_cols,
-                    index=_numeric_cols.index(_dur_default),
-                    help="A group whose value here is 0 is a control. Pulse duration "
-                    "is the honest one — a fly that got no light got a 0-minute pulse.",
-                )
+                control_on = _dur_default
                 _matched_on = list(_match_cols)
                 try:
                     control_group, _controls = ps_module.control_map_from_pulse(
@@ -601,6 +545,25 @@ with _tab_setup:
                 )
             st.divider()
 
+            st.markdown("**Group peak per day**")
+            GROUP_ESTIMATOR_LABELS = {
+                "Median of the flies' own daily peaks": "fly_median",
+                "Peak of the group's averaged activity (peakphaseplot.m)": "mean_trace",
+            }
+            group_estimator = GROUP_ESTIMATOR_LABELS[
+                st.radio(
+                    "How each group's daily peak is found",
+                    list(GROUP_ESTIMATOR_LABELS),
+                    index=0,
+                    key="ps_group_estimator",
+                    help="Used by Phase over Time. The two agree while the flies are in "
+                    "step. Later in DD, flies with different periods drift apart, the "
+                    "averaged trace can have two humps, and its peak can move between "
+                    "them from one day to the next.",
+                )
+            ]
+            st.divider()
+
             st.markdown("**Phase response curve**")
             PRC_METHOD_LABELS = {
                 "Line through each fly's post-pulse peaks": "regression",
@@ -741,6 +704,7 @@ with _tab_setup:
             day_origin=day_origin,
             baseline_day=baseline_day,
             difference_sign=difference_sign,
+            estimator=group_estimator,
             filter_hours=float(filter_hours),
             peak_prominence_frac=float(peak_prominence_frac),
             peak_distance_hours=float(peak_distance_hours),
@@ -1215,22 +1179,10 @@ if _tab_results.open:
             if _tab_over_time.open:
                 with _tab_over_time:
 
+                    # The sidebar layout the other pages offer: "Compare" is the
+                    # line within a figure, "One panel per" the figures.
+                    _facet_spec_t, _ = facet_panels.facet_controls(ds_pulse)
                     st.subheader("Results")
-                    if single_control:
-                        st.caption(
-                            "Phase difference = each group's daily peak time against "
-                            f"**{single_control}**'s on the same day."
-                        )
-                    else:
-                        st.caption(
-                            "Phase difference = each group's daily peak time minus **its own matched "
-                            "control**'s on the same day (the `control_group` column names it)."
-                        )
-                    st.caption(
-                        "Reported as **control − pulsed**, so a delay reads negative and an "
-                        "advance positive — the same sign convention as the phase response "
-                        "curve on the other tab."
-                    )
 
                     tab_plot, tab_table = st.tabs(
                         ["Phase Difference by Day", "Table & Export"],
@@ -1279,33 +1231,31 @@ if _tab_results.open:
                             def _pretty(col):
                                 return _PLURAL.get(col, str(col).replace("_", " ").capitalize())
 
-                            # One figure per light-pulse condition, one line per genotype — the lab's layout.
-                            # Whichever column carries the series becomes the legend; the rest split figures.
-                            pc1, pc2 = st.columns(2)
-                            with pc1:
-                                _series_default = (
+                            # Default: one figure per pulse, one line per genotype.
+                            _varying = [
+                                c
+                                for c in _gcols
+                                if len({str(_gvals.get(g, {}).get(c, "")) for g in others}) > 1
+                            ]
+                            if _facet_spec_t.active and _facet_spec_t.compare_by in _gcols:
+                                series_col = _facet_spec_t.compare_by
+                                facet_cols = [c for c in _facet_spec_t.panel_by if c in _gcols]
+                            else:
+                                series_col = (
                                     "genotype" if "genotype" in _gcols else (_gcols[0] if _gcols else "")
                                 )
-                                series_col = st.selectbox(
-                                    "One line per",
-                                    _gcols,
-                                    index=_gcols.index(_series_default) if _series_default in _gcols else 0,
-                                    help="The factor compared within each figure. The legend shows its values.",
-                                )
-                            with pc2:
-                                _facet_opts = [c for c in _gcols if c != series_col]
-                                facet_cols = st.multiselect(
-                                    "One figure per",
-                                    _facet_opts,
-                                    default=_facet_opts,
-                                    help="Each combination of these gets its own figure — e.g. condition and "
-                                    "sex gives one chart per pulse dose per sex.",
-                                )
+                                facet_cols = [c for c in _varying if c != series_col]
+                                if _facet_spec_t.active:
+                                    st.caption(
+                                        f"`{_facet_spec_t.compare_by}` is not a grouping column "
+                                        f"here ({', '.join(_gcols)}), so the figures keep the "
+                                        "default layout."
+                                    )
 
                             # Only the factors that are actually pooled INTO a figure can be filtered
                             # here. The faceting columns are excluded: each of their values already
                             # gets a figure of its own, so unticking one is "do not draw that figure",
-                            # which is what the "One figure per" picker is for.
+                            # which is what the sidebar's "One panel per" is for.
                             _filterable = [c for c in _gcols if c != series_col and c not in facet_cols]
                             _incl_values = {}
                             for c in _filterable:
@@ -1336,80 +1286,26 @@ if _tab_results.open:
                                 if len(others) < _before:
                                     st.caption(f"Showing **{len(others)} of {_before}** groups.")
 
-                            # Error bars. The plotted point is the peak of the group's MEAN trace, so
-                            # there is no per-fly spread to average into a SEM — the uncertainty has to
-                            # come from resampling the flies and re-running the whole pipeline.
-                            eb1, eb2, eb3 = st.columns([2, 1, 1])
-                            with eb1:
-                                show_err = st.checkbox(
-                                    "Error bars (bootstrap over flies)",
-                                    value=False,
-                                    key="ps_err_on",
+                            VIEW_LABELS = {
+                                "Difference from control": "difference",
+                                "Peak time": "peak",
+                            }
+                            _view = VIEW_LABELS[
+                                st.segmented_control(
+                                    "Show",
+                                    list(VIEW_LABELS),
+                                    default="Difference from control",
+                                    key="ps_over_time_view",
                                     persist_state="session",
-                                    help="Resamples the flies of every group with replacement and repeats "
-                                    "the whole analysis, so the interval covers the control arm as well "
-                                    "as the pulsed one. Takes a few seconds to a minute; the result is "
-                                    "cached until the comparison is re-run.",
+                                    help="**Difference from control**: the daily peak time "
+                                    "of the genotype-matched unpulsed control minus that of the "
+                                    "pulsed group.\n\n"
+                                    "**Peak time**: the daily peak times themselves, pulsed "
+                                    "solid and control dashed, to check that the right peak "
+                                    "was picked each day.",
                                 )
-                            with eb2:
-                                err_kind = st.selectbox(
-                                    "Bars show",
-                                    ["95% CI", "±1 SE"],
-                                    key="ps_err_kind",
-                                    persist_state="session",
-                                    disabled=not show_err,
-                                )
-                            with eb3:
-                                n_boot = st.selectbox(
-                                    "Resamples", [50, 100, 200, 500], index=1, key="ps_err_nboot",
-                                    persist_state="session",
-                                    disabled=not show_err,
-                                )
-
-                            boot = None
-                            if show_err:
-                                _sig = (
-                                    repr(sorted(gres["params"].items())),
-                                    int(n_boot),
-                                    repr(sorted(control_map.items())),
-                                )
-                                _cache = st.session_state.get("_ps_boot") or {}
-                                if _cache.get("key") == _sig:
-                                    boot = _cache["df"]
-                                else:
-                                    _bar = st.progress(0.0, text=f"Resampling flies ({n_boot} draws)…")
-                                    try:
-                                        boot = ps_module.bootstrap_group_phase_difference(
-                                            ds_pulse,
-                                            control_map,
-                                            n_boot=int(n_boot),
-                                            seed=0,
-                                            progress_callback=lambda f: _bar.progress(
-                                                min(1.0, f), text=f"Resampling flies ({n_boot} draws)…"
-                                            ),
-                                            **{
-                                                k: v
-                                                for k, v in gres["params"].items()
-                                                if k
-                                                in (
-                                                    "group_by",
-                                                    "day_origin",
-                                                    "baseline_day",
-                                                    "difference_sign",
-                                                    "filter_hours",
-                                                    "peak_prominence_frac",
-                                                    "peak_distance_hours",
-                                                    "search_half_width_hours",
-                                                )
-                                            },
-                                        )
-                                        st.session_state["_ps_boot"] = {"key": _sig, "df": boot}
-                                    except Exception as exc:
-                                        st.warning(f"Could not compute error bars: {exc}")
-                                        boot = None
-                                    finally:
-                                        _bar.empty()
-                                st.session_state["_ps_boot_df"] = boot
+                                or "Difference from control"
+                            ]
 
                             _rebased = _params.get("baseline_day") is not None
                             y_col = (
@@ -1443,23 +1339,8 @@ if _tab_results.open:
                             for g in others:
                                 _facets.setdefault(_facet_key(g), []).append(g)
 
-                            # The range has to cover the error bars too, or the widest ones get clipped
-                            # at the axis edge and read as though they stopped there.
                             _plot_rows = per_day[per_day["group"].isin(others)]
-                            _extent = [np.asarray(_plot_rows[y_col], dtype=float)]
-                            if boot is not None and not _plot_rows.empty:
-                                _st = y_col.replace("_hours", "")
-                                _b = _plot_rows.merge(boot, on=["group", "day_index"], how="left")
-                                _yv = np.asarray(_b[y_col], dtype=float)
-                                if err_kind == "±1 SE":
-                                    _sd = np.asarray(_b[f"{_st}_boot_sd"], dtype=float)
-                                    _extent += [_yv - _sd, _yv + _sd]
-                                else:
-                                    _extent += [
-                                        np.asarray(_b[f"{_st}_lo"], dtype=float),
-                                        np.asarray(_b[f"{_st}_hi"], dtype=float),
-                                    ]
-                            _y_all = np.concatenate([a.ravel() for a in _extent]) if _extent else np.array([])
+                            _y_all = np.asarray(_plot_rows[y_col], dtype=float)
                             _y_all = _y_all[np.isfinite(_y_all)]
                             if len(_y_all):
                                 _pad = max(0.35, 0.08 * (float(_y_all.max()) - float(_y_all.min())))
@@ -1477,35 +1358,142 @@ if _tab_results.open:
                                 n = _n_of.get(grp)
                                 return int(n) if n is not None and np.isfinite(n) else None
 
-                            _stem = y_col.replace("_hours", "")
+                            def _clock_line(grp):
+                                """(days, peak clock time in h after ZT0) for one group, unwrapped
+                                so a peak drifting past midnight continues instead of jumping a
+                                day, and started inside 0-24 h."""
+                                sub = per_day[per_day["group"] == grp].sort_values("day_index")
+                                sub = sub[np.isfinite(sub["peak_hours"].astype(float))]
+                                if sub.empty:
+                                    return sub["day_index"].to_numpy(), np.array([])
+                                days_g = sub["day_index"].to_numpy()
+                                clock = sub["peak_hours"].to_numpy(dtype=float) - 24.0 * days_g
+                                clock = np.unwrap(clock, period=24.0)
+                                return days_g, clock - 24.0 * np.floor(clock[0] / 24.0)
 
-                            def _err_arrays(sub, grp):
-                                """(below, above) distances for one group's days, or (None, None)."""
-                                if boot is None or sub.empty:
-                                    return None, None
-                                b = boot[boot["group"] == grp].set_index("day_index")
-                                if b.empty:
-                                    return None, None
-                                y = sub[y_col].to_numpy(dtype=float)
-                                days_idx = sub["day_index"].to_numpy()
-                                if err_kind == "±1 SE":
-                                    sd = b[f"{_stem}_boot_sd"].reindex(days_idx).to_numpy(dtype=float)
-                                    return sd, sd
-                                lo = b[f"{_stem}_lo"].reindex(days_idx).to_numpy(dtype=float)
-                                hi = b[f"{_stem}_hi"].reindex(days_idx).to_numpy(dtype=float)
-                                # plotly wants distances from the point, never absolute bounds
-                                return np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)
+                            _peak_lines = {}
+                            if _view == "peak":
+                                for g in others:
+                                    for gg in (g, control_map.get(g)):
+                                        if gg is not None and gg not in _peak_lines:
+                                            _peak_lines[gg] = _clock_line(gg)
+                                _peak_vals = np.concatenate(
+                                    [v for _, v in _peak_lines.values() if len(v)] or [np.array([])]
+                                )
+                                _peak_range = (
+                                    [float(_peak_vals.min()) - 0.5, float(_peak_vals.max()) + 0.5]
+                                    if len(_peak_vals)
+                                    else None
+                                )
+
+                            def _peak_time_figure(title, grps):
+                                """The facet's groups as peak clock times, controls dashed."""
+                                fig = go.Figure()
+                                drawn_ctrl = set()
+                                for grp in grps:
+                                    name = str(_gvals.get(grp, {}).get(series_col, grp))
+                                    colour = _colour.get(name)
+                                    x, y = _peak_lines.get(grp, ([], []))
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=x, y=y, mode="lines+markers",
+                                            name=f"{name} (n={_n(grp)})",
+                                            legendgroup=name,
+                                            line=dict(color=colour, width=2.5),
+                                            marker=dict(size=8),
+                                            hovertemplate=(
+                                                "day %{x}<br>peak %{y:.2f} h after ZT0"
+                                                f"<extra>{name}</extra>"
+                                            ),
+                                        )
+                                    )
+                                    ctrl = control_map.get(grp)
+                                    if ctrl is None or ctrl in drawn_ctrl:
+                                        continue
+                                    drawn_ctrl.add(ctrl)
+                                    cname = str(_gvals.get(ctrl, {}).get(series_col, ctrl))
+                                    # Lines per pulse: every control is the same "no pulse".
+                                    clabel = (
+                                        "no pulse"
+                                        if series_col in ps_module.PULSE_COORDS
+                                        else f"{cname} no pulse"
+                                    )
+                                    cx, cy = _peak_lines.get(ctrl, ([], []))
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=cx, y=cy, mode="lines+markers",
+                                            name=f"{clabel} (n={_n(ctrl)})",
+                                            legendgroup=name,
+                                            line=dict(
+                                                color=_colour.get(cname, "#7F8C8D"),
+                                                width=2, dash="dash",
+                                            ),
+                                            marker=dict(size=6, symbol="circle-open"),
+                                            hovertemplate=(
+                                                "day %{x}<br>peak %{y:.2f} h after ZT0"
+                                                f"<extra>{clabel}</extra>"
+                                            ),
+                                        )
+                                    )
+                                if _pulse_x is not None:
+                                    fig.add_vline(
+                                        x=_pulse_x, line_dash="dash", line_color="#555555",
+                                        annotation_text="light pulse", annotation_position="top",
+                                    )
+                                fig.update_layout(
+                                    title=dict(text=title, font=dict(size=21)),
+                                    xaxis_title=(
+                                        "days from first DD day" if _origin == "dd_onset" else "day"
+                                    ),
+                                    yaxis_title="Peak time (h after ZT0)",
+                                    width=1250, height=560, font=dict(size=15),
+                                    legend=dict(
+                                        title=dict(text=series_col, font=dict(size=13)),
+                                        font=dict(size=12),
+                                    ),
+                                    margin=dict(t=70, l=100, r=30, b=80),
+                                )
+                                fig.update_xaxes(
+                                    dtick=1, zeroline=False, title_font=dict(size=17),
+                                    tickfont=dict(size=15),
+                                )
+                                fig.update_yaxes(
+                                    title_font=dict(size=17), tickfont=dict(size=15),
+                                    range=_peak_range,
+                                )
+                                return fig
+
+                            def _facet_title(key):
+                                """``"Light pulse at ZT14"`` for the pulse, the value for anything
+                                else; a value repeated by two columns is written once."""
+                                parts = []
+                                for c, v in zip(facet_cols, key):
+                                    text = f"Light pulse at {v}" if c in ps_module.PULSE_COORDS else str(v)
+                                    if text not in parts:
+                                        parts.append(text)
+                                return " · ".join(parts) or "All groups"
+
+                            if _view == "peak":
+                                st.caption(
+                                    "Solid: pulsed group. Dashed, same colour: its unpulsed control."
+                                )
+                            else:
+                                st.caption(f"Difference direction: {_axis_note}.")
 
                             for key in sorted(_facets):
-                                # Facet VALUES only — the column names ("condition ZT15…") were three
-                                # quarters of the title and said nothing the values do not.
-                                title = " · ".join(str(v) for v in key) or "All groups"
+                                title = _facet_title(key)
                                 _grps = sorted(_facets[key])
+                                if _view == "peak":
+                                    charts.plotly_chart(
+                                        _peak_time_figure(title, _grps),
+                                        filename=f"phase_peak_time_{title}",
+                                        width="stretch",
+                                    )
+                                    continue
                                 fig = go.Figure()
                                 for grp in _grps:
                                     sub = per_day[per_day["group"] == grp].sort_values("day_index")
                                     name = str(_gvals.get(grp, {}).get(series_col, grp))
-                                    _elo, _ehi = _err_arrays(sub, grp)
                                     fig.add_trace(
                                         go.Scatter(
                                             x=sub["day_index"],
@@ -1514,19 +1502,6 @@ if _tab_results.open:
                                             name=f"{name} (n={_n(grp)})",
                                             line=dict(color=_colour.get(name), width=2.5),
                                             marker=dict(size=8),
-                                            error_y=(
-                                                None
-                                                if _elo is None
-                                                else dict(
-                                                    type="data",
-                                                    symmetric=False,
-                                                    array=_ehi,
-                                                    arrayminus=_elo,
-                                                    thickness=1.4,
-                                                    width=4,
-                                                    color=_colour.get(name),
-                                                )
-                                            ),
                                             hovertemplate=(
                                                 "day %{x}<br>%{y:.2f} h<br>"
                                                 + "<br>vs "
@@ -1579,10 +1554,6 @@ if _tab_results.open:
                                     # A shared y-range across figures keeps the doses visually comparable.
                                     fig.update_yaxes(range=_y_range)
                                 charts.plotly_chart(fig, filename=f"phase_shift_{title}", width="stretch")
-                                # The axis names only the quantity; which way round the subtraction goes
-                                # and which day was zeroed are choices made above, so they are stated
-                                # here rather than crammed into the label.
-                                st.caption(f"Difference direction: {_axis_note}.")
 
                                 # Which group each line is measured against, spelled out. The
                                 # legend has room for a line's own name and its n, not for its
@@ -1638,23 +1609,16 @@ if _tab_results.open:
                                 """The sheets of the per-day workbook.
 
                                 Passed to save_excel_button as a CALLABLE, so it runs on the click rather
-                                than on every rerun — it merges the bootstrap frame and pivots a matrix,
-                                which is real work to do for a button nobody has pressed.
+                                than on every rerun — it pivots a matrix, which is real work to do
+                                for a button nobody has pressed.
                                 """
                                 _plotted = st.session_state.get("_ps_plotted_groups") or []
                                 _ycol = st.session_state.get("_ps_y_col", "phase_difference_hours")
-                                _boot = st.session_state.get("_ps_boot_df")
 
-                                def _with_boot(df):
-                                    """Attach the bootstrap interval when error bars were computed."""
-                                    if _boot is None or df.empty:
-                                        return df
-                                    return df.merge(_boot, on=["group", "day_index"], how="left")
-
-                                sheets = [("per_day", _with_boot(per_day))]
+                                sheets = [("per_day", per_day)]
                                 if _plotted:
                                     sub = per_day[per_day["group"].isin(_plotted)].copy()
-                                    sheets.append(("per_day_plotted", _with_boot(sub)))
+                                    sheets.append(("per_day_plotted", sub))
                                     # A day-by-group grid: the layout to read a shift off by eye, and the
                                     # one that pastes straight into a figure or a stats package.
                                     if not sub.empty:
@@ -1916,7 +1880,7 @@ if _tab_results.open:
                         st.markdown("**Why some flies have no value**")
                         _explain = {
                             "ok": "phase shift measured",
-                            "no_pulse": "no pulse_time in the metadata (unpulsed control)",
+                            "no_pulse": "no pulse_datetime in the metadata (unpulsed control)",
                             "pulse_outside_record": "the pulse time falls outside this fly's recording",
                             "insufficient_pre": "too few usable days before the pulse",
                             "insufficient_post": "too few usable days after the pulse",

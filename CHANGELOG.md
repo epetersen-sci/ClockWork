@@ -40,6 +40,44 @@ command that runs the GUI or runs a whole analysis from a YAML file.
   flies of a six-genotype experiment) median / 90th-percentile error: regression
   with group baseline 0.86 / 2.1 h, regression with per-fly baseline 0.71 /
   2.3 h, daily 0.84 / 2.4 h.
+- **Light pulses are written as two metadata columns:** `pulse_datetime` (the
+  pulse's date and time, in the same format as `start_datetime`; blank for an
+  unpulsed fly) and `pulse_duration` (minutes; 0 for an unpulsed fly, and a blank
+  beside a blank `pulse_datetime` reads as 0). The pulse's ZT is worked out from
+  `start_datetime` and stored as the `pulse_time` grouping factor; the duration
+  is stored as `pulse_duration_min`. Import stops, naming the spreadsheet rows,
+  when a pulse has no duration above 0, a duration above 0 has no pulse, a
+  `pulse_datetime` is not a date and time, or a file has both the new and the
+  older column for the same thing. Files written with `pulse_time` /
+  `pulse_duration_min` are read as before. `metadata_template.csv` uses the new
+  columns.
+- **Phase over Time values are different.** `compute_group_phase_difference`
+  now defaults to `estimator="fly_median"`: a group's daily peak is the
+  clock-face median of its flies' own daily peaks (`n_flies_with_peak` per row).
+  The peak of the group's averaged trace (`peakphaseplot.m`) is
+  `estimator="mean_trace"`. Differences are wrapped into ±12 h. On a six-genotype
+  light-pulse experiment the averaged trace read Y318A at ZT17 as −9.4 h on DD
+  day 6 (−4.8 h on day 5, −4.9 h on day 7); the median reads −5.8 h.
+- **Daily peak tracking follows a peak past midnight.** The tracked window was
+  clipped to the calendar day, so a free-running peak crossing midnight was
+  pinned at 0 or 24 h for the rest of the record (a 25.5 h rhythm read 23.98 h on
+  every day from the fourth on). This changes late-DD markers, and with them
+  phase shifts, phase response values and Phase over Time, for flies whose peak
+  crosses midnight.
+- **Phase over Time** has a "Peak time" view: each group's daily peak as a clock
+  time, with its unpulsed control dashed in the same colour. Figure titles leave
+  out grouping columns with a single value. The sidebar's "Compare within
+  panels" sets the lines and figures. The bootstrap error bars are removed.
+- **Phase shift groups by genotype and `pulse_ZT` by default.** `pulse_ZT` is
+  read from the metadata when present and otherwise worked out from the pulse
+  time ("ZT14", "no pulse"). The unpulsed control is the group whose flies all
+  have a pulse duration of 0, whether or not the duration is a grouping column;
+  an unpulsed fly with a blank duration counts as 0.
+- **Phase shift can use rhythmic flies only**, by the autocorrelation calls from
+  the Period page. On by default when those calls exist.
+- **Import groups by genotype by default** (was genotype + temperature), on the
+  Import page and in `clockwork run` when `groups.by` is not set;
+  `clockwork init` writes `by: [genotype]`.
 - **The phase response curve** joins each line's means with a spline, plots the
   unpulsed controls at a "no pulse" tick, and drops grouping columns that only
   re-label the pulse time from the line definition. The per-fly violins take the

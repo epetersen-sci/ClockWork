@@ -318,8 +318,12 @@ def _track_days(days, values, minutes, pick_seed, pick_tracked, search_half_widt
             picker = pick_seed
         else:
             predicted = prev_marker + MINUTES_PER_DAY * (day - prev_day)
-            lo = max(day_lo, predicted - search_half_width_minutes)
-            hi = min(day_hi, predicted + search_half_width_minutes)
+            # Not clipped to the calendar day: a free-running peak that drifts past
+            # midnight is the same cycle's peak, and clipping pinned it to the
+            # day's edge (0 or 24 h) instead of following it. Successive windows are
+            # a day apart and narrower than one, so no peak is read twice.
+            lo = predicted - search_half_width_minutes
+            hi = predicted + search_half_width_minutes
             picker = pick_tracked
         i0, i1 = _window_slice(minutes, lo, hi)
         if i1 - i0 < 2:
@@ -862,6 +866,11 @@ def build_matched_control_map(
 DAY_ORIGINS = ("recording_start", "dd_onset")
 DIFFERENCE_SIGNS = ("group_minus_control", "control_minus_group")
 
+#: How :func:`compute_group_phase_difference` finds a group's peak on each day:
+#: ``fly_median`` — the median of the flies' own daily peaks; ``mean_trace`` — the
+#: peak of the group's averaged activity trace (``peakphaseplot.m``).
+GROUP_ESTIMATORS = ("fly_median", "mean_trace")
+
 
 def _resolve_origin_days(ds, labels, groups, day_origin):
     """``{group: absolute day index that becomes that group's day 0}``.
@@ -938,7 +947,7 @@ PRC_BASELINES = ("group", "fly", "none")
 #: Coord names that describe the light pulse itself rather than the animal. Groups
 #: differ in these BECAUSE of the treatment, so they are the columns a control is
 #: matched ACROSS rather than on — see :func:`control_map_from_pulse`.
-PULSE_COORDS = ("pulse_time", "pulse_duration_min", "pulse_intensity")
+PULSE_COORDS = ("pulse_time", "pulse_ZT", "pulse_duration_min", "pulse_intensity")
 
 
 def control_map_from_pulse(ds, group_by, *, duration_coord="pulse_duration_min"):
@@ -1038,8 +1047,22 @@ def _centred_mean_hours(hours):
     h = h[np.isfinite(h)]
     if not h.size:
         return np.nan
-    centre = np.angle(np.mean(np.exp(2j * np.pi * h / 24.0))) * 24.0 / (2 * np.pi)
+    centre = (np.angle(np.mean(np.exp(2j * np.pi * h / 24.0))) * 24.0 / (2 * np.pi)) % 24.0
     return float(centre + np.mean(_wrap_hours(h - centre)))
+
+
+def _centred_median_hours(hours):
+    """Median of clock-time phases that may straddle midnight, in hours.
+
+    As :func:`_centred_mean_hours`, with the median of the wrapped distances from
+    the circular centre in place of their mean.
+    """
+    h = np.asarray(hours, dtype=float)
+    h = h[np.isfinite(h)]
+    if not h.size:
+        return np.nan
+    centre = (np.angle(np.mean(np.exp(2j * np.pi * h / 24.0))) * 24.0 / (2 * np.pi)) % 24.0
+    return float(centre + np.median(_wrap_hours(h - centre)))
 
 
 def _reference_pulse_minutes(ds, pulse_minutes):
@@ -1560,6 +1583,74 @@ def summarize_phase_response(per_fly, by=("zt", "group")):
     return out
 
 
+def _group_fly_markers(
+    ds,
+    *,
+    activity_var="activity",
+    filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
+    peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
+    peak_distance_hours=DEFAULT_PHASE_SHIFT_PEAK_DISTANCE_HOURS,
+    search_half_width_hours=DEFAULT_PHASE_SHIFT_MARKER_SEARCH_HALF_WIDTH_HOURS,
+):
+    """``{fly id: {day: peak minute}}`` for every fly, for the ``fly_median`` estimator.
+
+    With pulse information the days are split at each fly's own pulse, exactly as
+    for the phase response (:func:`_per_fly_markers`), so a shift of any size is
+    followed. Without it every day is tracked as one run.
+    """
+    from clockwork.core.dam_utilities import add_phase_metadata, add_pulse_metadata
+    from clockwork.core.preprocessing import PreprocessConfig, preprocess_activity
+
+    if "pulse_minute" not in ds.coords and "pulse_time" in ds.coords:
+        with contextlib.suppress(ValueError):
+            ds = add_pulse_metadata(ds)
+    if "split_minute" not in ds.coords and "first_DD_day" in ds.coords:
+        with contextlib.suppress(ValueError):
+            ds = add_phase_metadata(ds)
+    kw = dict(
+        activity_var=activity_var,
+        filter_hours=filter_hours,
+        peak_prominence_frac=peak_prominence_frac,
+        peak_distance_hours=peak_distance_hours,
+        search_half_width_hours=search_half_width_hours,
+    )
+    if "pulse_minute" in ds.coords:
+        pulse = np.asarray(ds["pulse_minute"].values, dtype=float)
+        if np.isfinite(pulse).any():
+            ref = _reference_pulse_minutes(ds, pulse)
+            markers = _per_fly_markers(ds, ref, **kw)
+            # The tracker gives the pulse day to neither side of the pulse. Its peak
+            # precedes the pulse, so it is read as the last pre-pulse day instead:
+            # the same detection with the split moved a day later.
+            later = _per_fly_markers(ds, ref + MINUTES_PER_DAY, **kw)
+            for fly_id, r in zip((str(i) for i in ds["id"].values), ref):
+                if not np.isfinite(r):
+                    continue
+                day = int(np.floor(r / MINUTES_PER_DAY))
+                if day in later.get(fly_id, {}):
+                    markers.setdefault(fly_id, {})[day] = later[fly_id][day]
+            return markers
+
+    source = (
+        preprocess_activity(
+            ds, PreprocessConfig(lopass_hours=float(filter_hours)), activity_var=activity_var
+        )[activity_var]
+        if filter_hours > 0
+        else ds[activity_var]
+    )
+    values_2d = np.asarray(source.transpose("time", "id").values, dtype=float)
+    minutes = np.asarray(ds["time"].values, dtype=float)
+    dt_min = float(np.median(np.diff(minutes))) if minutes.size > 1 else 1.0
+    seed, tracked = _peak_pickers(dt_min, peak_prominence_frac, peak_distance_hours)
+    days = list(range(max(1, int(np.floor((minutes[-1] + 1) / MINUTES_PER_DAY)))))
+    return {
+        str(fly_id): _track_days(
+            days, values_2d[:, i], minutes, seed, tracked, search_half_width_hours * 60.0
+        )
+        for i, fly_id in enumerate(ds["id"].values)
+    }
+
+
 def compute_group_phase_difference(
     ds,
     control_group,
@@ -1569,6 +1660,8 @@ def compute_group_phase_difference(
     day_origin="recording_start",
     baseline_day=None,
     difference_sign="group_minus_control",
+    estimator="fly_median",
+    fly_markers=None,
     filter_hours=DEFAULT_PHASE_SHIFT_FILTER_HOURS,
     peak_prominence_frac=DEFAULT_PHASE_SHIFT_PEAK_PROMINENCE_FRAC,
     peak_distance_hours=DEFAULT_PHASE_SHIFT_PEAK_DISTANCE_HOURS,
@@ -1676,6 +1769,21 @@ def compute_group_phase_difference(
     difference_sign : {"group_minus_control", "control_minus_group"}
         Direction of the subtraction. Default is group minus control (positive =
         delayed); ``"control_minus_group"`` is the ``noLP - LP`` convention.
+    estimator : {"fly_median", "mean_trace"}
+        How a group's peak on a day is found. ``"fly_median"`` (default) detects each
+        fly's own daily peak (as :func:`compute_phase_response` does, days split at
+        each fly's pulse) and takes their median on the clock face; ``n_flies_with_peak``
+        says how many flies contributed. A median rather than a mean because on
+        entrained days a few flies' tallest smoothed hump is the morning one (4.5 %
+        of per-fly LD peaks on a six-genotype light-pulse experiment), which moved a
+        group mean by up to 1.7 h from one LD day to the next. ``"mean_trace"`` takes the peak of the
+        group's averaged activity, as ``peakphaseplot.m`` does. The two agree while
+        the flies are in step; once flies with different periods drift apart in DD
+        the averaged trace can carry two humps, and its peak moves between them
+        from one day to the next.
+    fly_markers : dict, optional
+        ``{fly id: {day: peak minute}}`` already detected, for ``fly_median``. Lets
+        :func:`bootstrap_group_phase_difference` detect once and resample the flies.
 
     Returns
     -------
@@ -1728,49 +1836,79 @@ def compute_group_phase_difference(
     dt_min = float(np.median(np.diff(minutes))) if minutes.size > 1 else 1.0
     activity = np.asarray(ds[activity_var].transpose("time", "id").values, dtype=float)
 
-    # peakphaseplot.m averages the group FIRST and filters the mean, so match that
-    # order — filtering per fly and then averaging is a different operation.
-    peak_times = {}
-    for grp in groups:
-        member = labels == grp
-        block = activity[:, member]
-        finite = np.isfinite(block)
-        counts = finite.sum(axis=1)
-        # Mean over the flies actually measured at each minute. A minute measured in
-        # no fly of the group stays NaN, never 0 (§2a).
-        mean_trace = np.full(block.shape[0], np.nan, dtype=float)
-        measured = counts > 0
-        mean_trace[measured] = (
-            np.where(finite[measured], block[measured], 0.0).sum(axis=1) / counts[measured]
-        )
-        one = xr.Dataset(
-            {activity_var: (["time", "id"], mean_trace[:, None].astype("float32"))},
-            coords={"time": ("time", time_vals), "id": ("id", [grp])},
-            attrs=dict(ds.attrs),
-        )
-        if filter_hours > 0:
-            smoothed = np.asarray(
-                preprocess_activity(one, PreprocessConfig(lopass_hours=float(filter_hours)))[
-                    activity_var
-                ]
-                .transpose("time", "id")
-                .values[:, 0],
-                dtype=float,
-            )
-        else:
-            smoothed = mean_trace
+    if estimator not in GROUP_ESTIMATORS:
+        raise ValueError(f"estimator must be one of {GROUP_ESTIMATORS}, got {estimator!r}")
 
-        n_days = max(1, int(np.floor((minutes[-1] + 1) / MINUTES_PER_DAY)))
-        seed, tracked = _peak_pickers(dt_min, peak_prominence_frac, peak_distance_hours)
-        markers = _track_days(
-            list(range(n_days)),
-            smoothed,
-            minutes,
-            seed,
-            tracked,
-            search_half_width_hours * 60.0,
-        )
-        peak_times[grp] = {d: m / 60.0 for d, m in markers.items()}
+    peak_counts = {}
+    if estimator == "fly_median":
+        if fly_markers is None:
+            fly_markers = _group_fly_markers(
+                ds,
+                activity_var=activity_var,
+                filter_hours=filter_hours,
+                peak_prominence_frac=peak_prominence_frac,
+                peak_distance_hours=peak_distance_hours,
+                search_half_width_hours=search_half_width_hours,
+            )
+        fly_ids = [str(i) for i in ds["id"].values]
+        peak_times = {}
+        for grp in groups:
+            by_day = {}
+            for fly_id, lab in zip(fly_ids, labels):
+                if lab != grp:
+                    continue
+                for d, m in fly_markers.get(fly_id, {}).items():
+                    by_day.setdefault(int(d), []).append((m - int(d) * MINUTES_PER_DAY) / 60.0)
+            # Averaged on the clock face, so a group whose flies straddle midnight
+            # does not average to noon.
+            peak_times[grp] = {
+                d: d * 24.0 + _centred_median_hours(h) for d, h in sorted(by_day.items())
+            }
+            peak_counts[grp] = {d: len(h) for d, h in by_day.items()}
+    else:
+        # peakphaseplot.m averages the group FIRST and filters the mean, so match that
+        # order — filtering per fly and then averaging is a different operation.
+        peak_times = {}
+        for grp in groups:
+            member = labels == grp
+            block = activity[:, member]
+            finite = np.isfinite(block)
+            counts = finite.sum(axis=1)
+            # Mean over the flies actually measured at each minute. A minute measured in
+            # no fly of the group stays NaN, never 0 (§2a).
+            mean_trace = np.full(block.shape[0], np.nan, dtype=float)
+            measured = counts > 0
+            mean_trace[measured] = (
+                np.where(finite[measured], block[measured], 0.0).sum(axis=1) / counts[measured]
+            )
+            one = xr.Dataset(
+                {activity_var: (["time", "id"], mean_trace[:, None].astype("float32"))},
+                coords={"time": ("time", time_vals), "id": ("id", [grp])},
+                attrs=dict(ds.attrs),
+            )
+            if filter_hours > 0:
+                smoothed = np.asarray(
+                    preprocess_activity(one, PreprocessConfig(lopass_hours=float(filter_hours)))[
+                        activity_var
+                    ]
+                    .transpose("time", "id")
+                    .values[:, 0],
+                    dtype=float,
+                )
+            else:
+                smoothed = mean_trace
+
+            n_days = max(1, int(np.floor((minutes[-1] + 1) / MINUTES_PER_DAY)))
+            seed, tracked = _peak_pickers(dt_min, peak_prominence_frac, peak_distance_hours)
+            markers = _track_days(
+                list(range(n_days)),
+                smoothed,
+                minutes,
+                seed,
+                tracked,
+                search_half_width_hours * 60.0,
+            )
+            peak_times[grp] = {d: m / 60.0 for d, m in markers.items()}
 
     # Shift each group onto its own origin. Both the day index and the peak time move,
     # because the peak is measured from the recording start: leaving the hours on the
@@ -1801,8 +1939,12 @@ def compute_group_phase_difference(
                     "day_index": rel_day,
                     "peak_hours": rel_hours,
                     "control_peak_hours": ctrl,
-                    "phase_difference_hours": (rel_hours - ctrl if ctrl is not None else np.nan),
+                    # A phase difference is only defined modulo a day.
+                    "phase_difference_hours": (
+                        float(_wrap_hours(rel_hours - ctrl)) if ctrl is not None else np.nan
+                    ),
                     "n_flies": int((labels == grp).sum()),
+                    "n_flies_with_peak": peak_counts.get(grp, {}).get(day, np.nan),
                     # Kept alongside the aligned values so a row can always be traced
                     # back to a wall-clock position in its own recording.
                     "absolute_day_index": day,
@@ -1845,6 +1987,7 @@ def compute_group_phase_difference(
             "day_origin": str(day_origin),
             "baseline_day": (None if baseline_day is None else int(baseline_day)),
             "difference_sign": str(difference_sign),
+            "estimator": str(estimator),
             "filter_hours": float(filter_hours),
             "peak_prominence_frac": float(peak_prominence_frac),
             "peak_distance_hours": float(peak_distance_hours),
@@ -1912,6 +2055,21 @@ def bootstrap_group_phase_difference(
 
     rng = np.random.default_rng(seed)
     value_cols = ["phase_difference_hours", "phase_difference_from_baseline_hours"]
+    # Per-fly peaks do not depend on which flies are drawn, so they are detected
+    # once and every resample reuses them.
+    if kwargs.get("estimator", "fly_median") == "fly_median" and kwargs.get("fly_markers") is None:
+        detect_kw = {
+            k: kwargs[k]
+            for k in (
+                "activity_var",
+                "filter_hours",
+                "peak_prominence_frac",
+                "peak_distance_hours",
+                "search_half_width_hours",
+            )
+            if k in kwargs
+        }
+        kwargs = {**kwargs, "fly_markers": _group_fly_markers(ds, **detect_kw)}
     draws = {c: {} for c in value_cols}     # {col: {(group, day): [values]}}
 
     for b in range(int(n_boot)):

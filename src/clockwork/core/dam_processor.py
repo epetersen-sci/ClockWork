@@ -392,6 +392,15 @@ class MetadataProcessor:
             ) from e
 
         self._check_metadata_shape(meta_df)
+        # pulse_datetime / pulse_duration are checked against each other here, on
+        # the rows as written, so an error names the spreadsheet row. Imported here:
+        # dam_utilities imports this module.
+        from clockwork.core import dam_utilities
+
+        try:
+            meta_df = dam_utilities.normalize_pulse_columns(meta_df)
+        except ValueError as e:
+            raise MetadataError(import_diagnostics.REASON_METADATA_BAD_PULSE, str(e)) from e
 
         # Region expansion is PER ROW, not per file (see _parse_region_ids):
         #   * a blank / missing region_id  -> the whole monitor (tubes 1-32)
