@@ -351,7 +351,7 @@ def test_the_page_runs_the_matched_comparison(app, pulse_ds):
 
     res = at.session_state["phase_shift_group_results"]
     per_day = res["per_day"]
-    assert res["control_map"]["A_LP"] == "A_noLP"
+    assert res["control_map"]["A_ZT15"] == "A_no pulse"
 
     # Every fly here shares one DD release day, so the page leaves the origin at the
     # recording start (it only preselects dd_onset for a combined dataset) and zeroes
@@ -367,22 +367,21 @@ def test_the_page_runs_the_matched_comparison(app, pulse_ds):
 
     col = "phase_difference_from_baseline_hours"
     # The day before the pulse: nothing has happened yet.
-    assert abs(_diff(per_day, "A_LP", PULSE_DD_DAY - 1, col)) < TOL
+    assert abs(_diff(per_day, "A_ZT15", PULSE_DD_DAY - 1, col)) < TOL
     # Two days after it: the designed delay, through the page's own defaults.
-    assert abs(_diff(per_day, "A_LP", PULSE_DD_DAY + 1, col) - expected) < TOL
-    assert abs(_diff(per_day, "B_LP", PULSE_DD_DAY + 1, col) - expected) < TOL
+    assert abs(_diff(per_day, "A_ZT15", PULSE_DD_DAY + 1, col) - expected) < TOL
+    assert abs(_diff(per_day, "B_ZT15", PULSE_DD_DAY + 1, col) - expected) < TOL
     # And the unpulsed arms stay flat, which is what the matched pairing buys.
-    assert abs(_diff(per_day, "B_noLP", PULSE_DD_DAY + 1, col)) < TOL
+    assert abs(_diff(per_day, "B_no pulse", PULSE_DD_DAY + 1, col)) < TOL
 
 
 def test_the_page_builds_the_phase_response_from_the_same_click(app, pulse_ds):
     """One button, two answers. The phase response curve is what a pulse experiment
     is run to produce, so it must not be behind a second button somebody has to find.
 
-    This fixture has no pulse-duration column — its unpulsed arm is the string
-    ``noLP`` — which is exactly the case that cannot identify a control by "duration
-    is zero". It still gets a phase response, because the page hands over the
-    pairing it already resolved instead of making core work it out again.
+    The page groups by genotype and ``pulse_ZT`` (worked out from ``pulse_time``)
+    and finds the unpulsed arm by its 0-minute pulse; the fixture has no duration
+    column, so a blank pulse counts as 0.
     """
     at = app(ds=pulse_ds, page="phase_shift")
     run = [b for b in at.button if "Run Group Phase Comparison" in b.label]
@@ -393,7 +392,7 @@ def test_the_page_builds_the_phase_response_from_the_same_click(app, pulse_ds):
     assert pres is not None, "the response was not computed"
     per_fly = pres["per_fly"]
     assert not per_fly.empty
-    assert pres["control_map"]["A_LP"] == "A_noLP"
+    assert pres["control_map"]["A_ZT15"] == "A_no pulse"
 
     # The fixture DELAYS the pulsed arms, and a delay reads negative.
     pulsed = per_fly[per_fly["zt"].notna()]

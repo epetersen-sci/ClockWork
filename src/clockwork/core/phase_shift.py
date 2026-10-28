@@ -947,7 +947,7 @@ PRC_BASELINES = ("group", "fly", "none")
 #: Coord names that describe the light pulse itself rather than the animal. Groups
 #: differ in these BECAUSE of the treatment, so they are the columns a control is
 #: matched ACROSS rather than on — see :func:`control_map_from_pulse`.
-PULSE_COORDS = ("pulse_time", "pulse_duration_min", "pulse_intensity")
+PULSE_COORDS = ("pulse_time", "pulse_ZT", "pulse_duration_min", "pulse_intensity")
 
 
 def control_map_from_pulse(ds, group_by, *, duration_coord="pulse_duration_min"):

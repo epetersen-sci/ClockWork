@@ -178,3 +178,24 @@ def test_the_metadata_reader_reports_a_pulse_problem_as_a_metadata_error(tmp_pat
         MetadataProcessor(str(path), str(tmp_path)).expand_metadata()
     assert err.value.reason == REASON_METADATA_BAD_PULSE
     assert "row(s) 3" in str(err.value)
+
+
+def test_pulse_zt_is_worked_out_and_offered_as_a_grouping_factor():
+    ds = dam_utilities.add_pulse_zt(
+        dam_utilities.add_pulse_metadata(_build(["1/17/2025 21:00", ""]))
+    )
+    assert list(ds["pulse_ZT"].values) == ["ZT12", dam_utilities.NO_PULSE_LABEL]
+    assert "pulse_ZT" in dam_utilities.group_defining_coords(ds)
+    np.testing.assert_array_equal(ds["pulse_duration_min"].values, [60, 0])
+
+
+def test_a_pulse_zt_column_from_the_metadata_is_kept():
+    ds = dam_utilities.add_pulse_metadata(_build(["1/17/2025 21:00", ""]))
+    ds = ds.assign_coords(pulse_ZT=("id", np.array(["ZT12", "none"], dtype=object)))
+    assert list(dam_utilities.add_pulse_zt(ds)["pulse_ZT"].values) == ["ZT12", "none"]
+
+
+def test_a_blank_duration_on_an_unpulsed_fly_reads_as_zero():
+    ds = dam_utilities.add_pulse_metadata(_build(["1/17/2025 21:00", ""]))
+    ds = ds.assign_coords(pulse_duration_min=("id", np.array([60, np.nan], dtype="float32")))
+    np.testing.assert_array_equal(dam_utilities.add_pulse_zt(ds)["pulse_duration_min"].values, [60, 0])

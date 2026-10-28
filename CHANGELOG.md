@@ -66,7 +66,16 @@ command that runs the GUI or runs a whole analysis from a YAML file.
   crosses midnight.
 - **Phase over Time** has a "Peak time" view: each group's daily peak as a clock
   time, with its unpulsed control dashed in the same colour. Figure titles leave
-  out grouping columns with a single value.
+  out grouping columns with a single value. The sidebar's "Compare within
+  panels" sets the lines and figures. The bootstrap error bars are removed.
+- **Phase shift groups by genotype and `pulse_ZT` by default.** `pulse_ZT` is
+  read from the metadata when present and otherwise worked out from the pulse
+  time ("ZT14", "no pulse"). The unpulsed control is the group whose flies all
+  have a pulse duration of 0, whether or not the duration is a grouping column;
+  an unpulsed fly with a blank duration counts as 0.
+- **Phase shift can use rhythmic flies only**, by the autocorrelation calls from
+  the Period page. On by default when those calls exist.
+- **Import groups by genotype by default** (was genotype + temperature).
 - **The phase response curve** joins each line's means with a spline, plots the
   unpulsed controls at a "no pulse" tick, and drops grouping columns that only
   re-label the pulse time from the line definition. The per-fly violins take the

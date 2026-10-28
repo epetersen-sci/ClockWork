@@ -650,6 +650,42 @@ def pulse_zt_hours(ds):
     return np.array([_parse_zt_hour(v) for v in np.asarray(ds["pulse_time"].values)], dtype="float64")
 
 
+#: Coord holding each fly's pulse as ZT text ("ZT14"), a grouping factor.
+PULSE_ZT_COORD = "pulse_ZT"
+#: ``pulse_ZT`` of an unpulsed fly when the coord is worked out here.
+NO_PULSE_LABEL = "no pulse"
+
+
+def add_pulse_zt(ds):
+    """``ds`` with a ``pulse_ZT`` grouping coord and a 0 duration for unpulsed flies.
+
+    A ``pulse_ZT`` column from the metadata is kept as written. Otherwise it is
+    worked out from ``pulse_time``: ``"ZT14"``, and :data:`NO_PULSE_LABEL` where
+    the fly had no pulse. It is added to ``metadata_coords`` so it is offered as
+    a grouping factor. ``pulse_duration_min`` is set to 0 where it is blank and
+    the fly had no pulse.
+    """
+    out = ds
+    if PULSE_ZT_COORD not in out.coords:
+        hours = pulse_zt_hours(out)
+        text = np.array(
+            [f"ZT{h:g}" if np.isfinite(h) else NO_PULSE_LABEL for h in hours], dtype=object
+        )
+        out = out.assign_coords({PULSE_ZT_COORD: ("id", _as_numpy_array(text))})
+        out.attrs = dict(ds.attrs)
+        recorded = [str(v) for v in np.atleast_1d(out.attrs.get("metadata_coords", []))]
+        out.attrs["metadata_coords"] = recorded + [PULSE_ZT_COORD]
+    if "pulse_duration_min" in out.coords:
+        unpulsed = ~np.isfinite(pulse_zt_hours(out))
+        dur = np.asarray(out["pulse_duration_min"].values, dtype="float32")
+        fill = unpulsed & ~np.isfinite(dur)
+        if fill.any():
+            attrs = dict(out.attrs)
+            out = out.assign_coords(pulse_duration_min=("id", np.where(fill, 0.0, dur).astype("float32")))
+            out.attrs = attrs
+    return out
+
+
 def migrate_legacy_pulse_coords(ds):
     """Rename an older dataset's pulse coords to the names datasets now use.
 

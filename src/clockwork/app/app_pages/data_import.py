@@ -286,9 +286,9 @@ with tab_fresh:
         # The chosen columns drive every group-level comparison (period plots, HMM,
         # exports) via the single `group` coord. Candidates auto-exclude id/file/monitor/
         # region and datetime columns (dam_utilities.group_defining_columns). Default =
-        # genotype+temperature (the historical behavior).
+        # genotype.
         _grp_candidates = dam_utilities.group_defining_columns(metadata)
-        _grp_default = [c for c in ("genotype", "temperature") if c in _grp_candidates]
+        _grp_default = [c for c in ("genotype",) if c in _grp_candidates]
         group_columns = _grp_default
         if _grp_candidates:
             group_columns = st.multiselect(
@@ -299,15 +299,15 @@ with tab_fresh:
                 # Without this the selection is gone the moment you leave the page:
                 # Streamlit drops a keyed widget's value once the widget stops being
                 # rendered, and a page switch is exactly that. Coming back to Import
-                # then showed the DEFAULT — genotype + temperature — while the loaded
+                # then showed the DEFAULT — genotype — while the loaded
                 # dataset was still grouped by whatever had actually been ticked, so
                 # the page contradicted the data it had just built. `persist_state` is
                 # Streamlit's own answer; ui/filters.py uses it for the same reason.
                 persist_state="session",
                 help="Which metadata factors define the comparison 'group' used throughout "
-                "the analysis (e.g. add 'sex', or use genotype alone). Datetime, monitor, "
+                "the analysis (e.g. add 'sex' or 'temperature'). Datetime, monitor, "
                 "region and id columns are excluded automatically. "
-                "Default: genotype + temperature.",
+                "Default: genotype.",
             )
             _labels = dam_utilities.derive_group_labels(metadata, group_columns)
             if _labels is None:
